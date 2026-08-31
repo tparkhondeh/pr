@@ -16,6 +16,10 @@ Static در cPanel عبور می‌کند، بدون اینکه Basic Auth حذ�
 از `.htaccess` روی Host مجاز نباشد، استقرار باید Fail closed و به Backup قبلی برگردد؛
 حذف Basic Auth برای دورزدن این محدودیت مجاز نیست.
 
+`PR_BIND_HOST` در Production فقط می‌تواند loopback صریح (`127.0.0.1` یا `::1`)
+باشد. استفاده از wildcardهایی مانند `0.0.0.0` یا `::` در Bootstrap رد می‌شود تا
+پورت Node نتواند Basic Auth و Proxy دامنه را دور بزند.
+
 Backend این Preview تا زمان Provision شدن PostgreSQL با Store حافظه‌ای اجرا می‌شود؛
 Restart پروسه state را پاک می‌کند. این تنظیم برای Production نهایی نیست. Production
 به احراز هویت واقعی، PostgreSQL دارای Backup و ثبت PM2 Startup توسط مالک cPanel نیاز

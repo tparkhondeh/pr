@@ -12,6 +12,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         LOG_LEVEL: 'info',
+        PR_BIND_HOST: '127.0.0.1',
         PORT: 31056,
         PR_STATIC_ROOT: '/home/wealthos/apps/pr/apps/web/dist',
         // Private owner preview only. Remove this override when PostgreSQL is provisioned.

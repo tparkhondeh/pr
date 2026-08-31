@@ -169,9 +169,9 @@ const server = createServer((request, response) => {
   });
 });
 
-server.listen(environment.port, () => {
+server.listen(environment.port, environment.bindHost, () => {
   process.stdout.write(
-    `PR foundation listening on :${String(environment.port)} ` +
+    `PR foundation listening on ${environment.bindHost}:${String(environment.port)} ` +
       `persistence=${environment.runtime.persistence} ` +
       `durability=${environment.runtime.durability}\n`,
   );

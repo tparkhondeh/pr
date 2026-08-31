@@ -5,6 +5,7 @@ describe('loadEnvironment', () => {
   it('uses safe defaults', () => {
     expect(loadEnvironment({})).toEqual({
       nodeEnv: 'development',
+      bindHost: '127.0.0.1',
       port: 3000,
       logLevel: 'info',
       runtime: {
@@ -17,6 +18,19 @@ describe('loadEnvironment', () => {
 
   it('rejects an invalid port', () => {
     expect(() => loadEnvironment({ PORT: '70000' })).toThrow('Invalid PORT');
+  });
+
+  it('fails production closed when the API would bind to a public interface', () => {
+    expect(() => loadEnvironment({
+      NODE_ENV: 'production',
+      PR_BIND_HOST: '0.0.0.0',
+      PR_ALLOW_EPHEMERAL_PRODUCTION: 'true',
+    })).toThrow('must be an explicit loopback address');
+    expect(loadEnvironment({
+      NODE_ENV: 'production',
+      PR_BIND_HOST: '::1',
+      PR_ALLOW_EPHEMERAL_PRODUCTION: 'true',
+    }).bindHost).toBe('::1');
   });
 
   it('loads an optional static application root', () => {

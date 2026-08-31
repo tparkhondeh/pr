@@ -1,5 +1,6 @@
 export type Environment = Readonly<{
   nodeEnv: 'development' | 'test' | 'production';
+  bindHost: string;
   port: number;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   staticRoot?: string;
@@ -33,6 +34,7 @@ export function loadEnvironment(
 ): Environment {
   const nodeEnv = input['NODE_ENV'] ?? 'development';
   const logLevel = input['LOG_LEVEL'] ?? 'info';
+  const bindHost = input['PR_BIND_HOST']?.trim() || '127.0.0.1';
   const port = Number(input['PORT'] ?? '3000');
   const staticRoot = input['PR_STATIC_ROOT']?.trim();
   const allowEphemeralProduction = parseBoolean(
@@ -46,6 +48,10 @@ export function loadEnvironment(
 
   if (!allowedLogLevels.has(logLevel as Environment['logLevel'])) {
     throw new Error(`Invalid LOG_LEVEL: ${logLevel}`);
+  }
+
+  if (nodeEnv === 'production' && bindHost !== '127.0.0.1' && bindHost !== '::1') {
+    throw new Error('Production PR_BIND_HOST must be an explicit loopback address.');
   }
 
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -67,6 +73,7 @@ export function loadEnvironment(
 
   return {
     nodeEnv: nodeEnv as Environment['nodeEnv'],
+    bindHost,
     logLevel: logLevel as Environment['logLevel'],
     port,
     runtime: database
