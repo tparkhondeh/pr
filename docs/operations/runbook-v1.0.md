@@ -2,7 +2,10 @@
 
 ## وضعیت فعلی
 
-این Runbook قرارداد عملیاتی Foundation است. Backup/restore واقعی PostgreSQL هنوز اجرا نشده، چون محیط PostgreSQL تأییدشده در اختیار نیست. Production Gate تا اجرای موفق آن بسته می‌ماند.
+این Runbook قرارداد عملیاتی Foundation است. CI روی PostgreSQL 16 واقعی migrations،
+RLS و logical dump/restore را در یک دیتابیس تازه drill می‌کند و RTO را در Job Summary
+ثبت می‌کند. محیط Production PostgreSQL هنوز provision نشده است؛ Gate نهایی Production
+تا اجرای restore drill روی سرویس واقعی و تأیید retention/TLS بسته می‌ماند.
 
 ## Health semantics
 
@@ -30,6 +33,9 @@ Load balancer فقط باید `/ready` را مبنای Routing قرار دهد.
 8. RPO/RTO واقعی را ثبت کن؛ سپس backup را `restorable` علامت بزن.
 
 Backup بدون restore drill، backup تأییدشده محسوب نمی‌شود.
+
+CI drill فقط portability منطقی Schema و RPO صفر برای snapshot آزمایشی را اثبات می‌کند؛
+جایگزین PITR، encryption، retention و restore آزموده‌شده سرویس Production نیست.
 
 ## Incident levels
 

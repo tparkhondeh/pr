@@ -26,3 +26,55 @@ jobs:
       - run: pnpm security:scan
       - run: pnpm build
       - run: pnpm web:build
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pr_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pr_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PR_TEST_ADMIN_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/pr_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:test:integration
+      - name: Logical backup and restore drill
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .tmp/postgres-drill
+          started_at=$(date +%s)
+          docker run --rm --network host -e PGPASSWORD=postgres postgres:16-alpine \
+            pg_dump -h 127.0.0.1 -U postgres -d pr_test --format=custom \
+            --no-owner --no-privileges > .tmp/postgres-drill/pr_test.dump
+          docker run --rm --network host -e PGPASSWORD=postgres postgres:16-alpine \
+            psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c 'CREATE DATABASE pr_restore_test'
+          docker run --rm --network host -e PGPASSWORD=postgres \
+            -v "$PWD/.tmp/postgres-drill:/backup:ro" postgres:16-alpine \
+            pg_restore -h 127.0.0.1 -U postgres -d pr_restore_test \
+            --exit-on-error --no-owner --no-privileges /backup/pr_test.dump
+          PR_TEST_RESTORED_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/pr_restore_test \
+            pnpm db:test:restore
+          elapsed_seconds=$(($(date +%s) - started_at))
+          echo "PostgreSQL logical restore drill: RPO 0, RTO ${elapsed_seconds}s." >> "$GITHUB_STEP_SUMMARY"
+          rm -f .tmp/postgres-drill/pr_test.dump

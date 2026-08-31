@@ -1,0 +1,187 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { Client, type QueryResultRow } from 'pg';
+import {
+  applyMigrations,
+  type MigrationConnection,
+} from '../src/database/migration-runner.js';
+import type { SqlQueryResult } from '../src/database/sql.js';
+import { defineMigration } from '../src/kernel/migrations.js';
+
+const tenantA = '11111111-1111-4111-8111-111111111111';
+const tenantB = '22222222-2222-4222-8222-222222222222';
+const userA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const userB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+class PgMigrationConnection implements MigrationConnection {
+  public constructor(private readonly client: Client) {}
+
+  public async query<Row>(
+    sql: string,
+    values: readonly unknown[] = [],
+  ): Promise<SqlQueryResult<Row>> {
+    const result = await this.client.query<QueryResultRow>(sql, [...values]);
+    return {
+      rows: result.rows as unknown as readonly Row[],
+      rowCount: result.rowCount ?? 0,
+    };
+  }
+}
+
+async function main(): Promise<void> {
+  const connectionString = requiredEnvironment('PR_TEST_ADMIN_DATABASE_URL');
+  const client = new Client({ connectionString, application_name: 'wealthos-pr-integration' });
+  await client.connect();
+  try {
+    const migrations = readdirSync(resolve('db/migrations'))
+      .filter((name) => /^\d{4}_[a-z0-9_]+\.sql$/u.test(name))
+      .sort()
+      .map((name) => defineMigration(name.replace(/\.sql$/u, ''), readFileSync(resolve('db/migrations', name), 'utf8')));
+    const migrationResult = await applyMigrations(new PgMigrationConnection(client), migrations);
+    if (migrationResult.applied.length + migrationResult.alreadyApplied.length !== migrations.length) {
+      throw new Error('Not every migration was accounted for.');
+    }
+
+    await createApplicationRole(client);
+    await seedIsolationFixtures(client);
+    await verifyTenantPolicies(client);
+    await verifyRuntimeIsolation(client);
+    process.stdout.write(
+      `PostgreSQL integration passed (${String(migrations.length)} migrations, RLS enforced).\n`,
+    );
+  } finally {
+    await client.end();
+  }
+}
+
+async function createApplicationRole(client: Client): Promise<void> {
+  await client.query(`
+    DO $$ BEGIN
+      CREATE ROLE pr_app_test NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$
+  `);
+  await client.query('GRANT USAGE ON SCHEMA app TO pr_app_test');
+  await client.query('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app TO pr_app_test');
+  await client.query('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO pr_app_test');
+  await client.query('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA app TO pr_app_test');
+}
+
+async function seedIsolationFixtures(client: Client): Promise<void> {
+  await client.query(
+    `INSERT INTO app.tenants (id, slug, display_name) VALUES
+       ($1, 'tenant-a', 'Tenant A'), ($2, 'tenant-b', 'Tenant B')
+     ON CONFLICT (id) DO NOTHING`,
+    [tenantA, tenantB],
+  );
+  await client.query(
+    `INSERT INTO app.users (id, external_subject) VALUES
+       ($1, 'owner-a'), ($2, 'owner-b')
+     ON CONFLICT (id) DO NOTHING`,
+    [userA, userB],
+  );
+  await client.query(
+    `INSERT INTO app.memberships (tenant_id, user_id, role) VALUES
+       ($1, $2, 'owner'), ($3, $4, 'owner')
+     ON CONFLICT (tenant_id, user_id) DO NOTHING`,
+    [tenantA, userA, tenantB, userB],
+  );
+  await client.query(
+    `INSERT INTO app.assets (
+       tenant_id, owner_user_id, kind, object_key, content_sha256, data_class
+     ) VALUES
+       ($1, $2, 'text', 'fixture-a', $3, 'confidential'),
+       ($4, $5, 'text', 'fixture-b', $6, 'confidential')
+     ON CONFLICT (tenant_id, content_sha256) DO NOTHING`,
+    [tenantA, userA, 'a'.repeat(64), tenantB, userB, 'b'.repeat(64)],
+  );
+  await client.query(
+    `INSERT INTO app.audit_events (
+       tenant_id, event_type, resource_type, resource_id, decision, metadata
+     ) VALUES ($1, 'integration.seeded', 'integration', 'tenant-a', 'allowed', '{}')`,
+    [tenantA],
+  );
+}
+
+async function verifyTenantPolicies(client: Client): Promise<void> {
+  const result = await client.query<Readonly<{
+    table_name: string;
+    row_security: boolean;
+    force_row_security: boolean;
+    policy_count: number;
+  }>>(`
+    SELECT c.relname AS table_name,
+           c.relrowsecurity AS row_security,
+           c.relforcerowsecurity AS force_row_security,
+           count(p.polname)::integer AS policy_count
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN information_schema.columns col
+        ON col.table_schema = n.nspname
+       AND col.table_name = c.relname
+       AND col.column_name = 'tenant_id'
+      LEFT JOIN pg_policy p ON p.polrelid = c.oid
+     WHERE n.nspname = 'app' AND c.relkind = 'r'
+     GROUP BY c.relname, c.relrowsecurity, c.relforcerowsecurity
+     ORDER BY c.relname
+  `);
+  const violations = result.rows.filter(
+    (row) => !row.row_security || !row.force_row_security || row.policy_count < 1,
+  );
+  if (result.rows.length === 0 || violations.length > 0) {
+    throw new Error(`Tenant RLS policy violations: ${violations.map((row) => row.table_name).join(',')}`);
+  }
+}
+
+async function verifyRuntimeIsolation(client: Client): Promise<void> {
+  await client.query('SET ROLE pr_app_test');
+  try {
+    await client.query("SELECT set_config('app.tenant_id', $1, false)", [tenantA]);
+    const visible = await client.query<Readonly<{ tenant_id: string }>>(
+      'SELECT tenant_id::text FROM app.assets ORDER BY tenant_id',
+    );
+    if (visible.rows.length !== 1 || visible.rows[0]?.tenant_id !== tenantA) {
+      throw new Error('Cross-tenant read isolation failed.');
+    }
+    await expectDenied(
+      client.query(
+        `INSERT INTO app.assets (
+           tenant_id, owner_user_id, kind, object_key, content_sha256, data_class
+         ) VALUES ($1, $2, 'text', 'cross-tenant-write', $3, 'confidential')`,
+        [tenantB, userB, 'c'.repeat(64)],
+      ),
+      'Cross-tenant write was not denied.',
+    );
+    await expectDenied(
+      client.query("UPDATE app.audit_events SET decision = 'tampered' WHERE tenant_id = $1", [tenantA]),
+      'Audit mutation was not denied.',
+    );
+    await client.query("SELECT set_config('app.tenant_id', '', false)");
+    const withoutTenant = await client.query<Readonly<{ count: string }>>(
+      'SELECT count(*)::text AS count FROM app.assets',
+    );
+    if (withoutTenant.rows[0]?.count !== '0') throw new Error('Missing tenant context did not deny reads.');
+  } finally {
+    await client.query('RESET ROLE');
+  }
+}
+
+async function expectDenied(operation: Promise<unknown>, message: string): Promise<void> {
+  try {
+    await operation;
+  } catch {
+    return;
+  }
+  throw new Error(message);
+}
+
+function requiredEnvironment(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is required.`);
+  return value;
+}
+
+await main().catch((error: unknown) => {
+  process.stderr.write(`${error instanceof Error ? error.message : 'PostgreSQL integration failed.'}\n`);
+  process.exitCode = 1;
+});

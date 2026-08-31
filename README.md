@@ -68,6 +68,12 @@ PostgreSQL ذخیره و در همان Transaction به Audit Log و Outbox اف
 می‌کند تا حافظه موقت با ذخیره پایدار اشتباه گرفته نشود. با اتصال PostgreSQL، این
 Override باید حذف شود.
 
+Job مستقل `postgres-integration` در CI تمام migrationها را روی PostgreSQL 16 واقعی
+اعمال می‌کند، RLS و deny شدن read/write بین دو tenant را می‌آزماید و یک logical
+dump/restore را در دیتابیس تازه verify می‌کند. این drill جایگزین backup/PITR محیط
+Production نیست، اما قابلیت اعمال و بازیابی Schema را قبل از Provision سرور اثبات
+می‌کند.
+
 نمای «شروع و منابع» مسیر Cold Start محدود MVP را ارائه می‌کند. مالک از
 `POST /api/assets/text` عنوان، متن، تاریخ و برداشت پیشنهادی خود را همراه رضایت صریح
 وارد می‌کند. متن همیشه `confidential` است، مجوز عمومی نمی‌گیرد و در PostgreSQL،
