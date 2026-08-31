@@ -14,6 +14,10 @@ const classificationMigrationPath = fileURLToPath(
   new URL('../db/migrations/0002_assertion_data_class.sql', import.meta.url),
 );
 const classificationSql = readFileSync(classificationMigrationPath, 'utf8');
+const strategyMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0003_strategy_loop.sql', import.meta.url),
+);
+const strategySql = readFileSync(strategyMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -62,5 +66,19 @@ describe('foundation migration', () => {
     expect(classificationSql).toContain(
       "ADD COLUMN data_class app.data_class NOT NULL DEFAULT 'confidential'",
     );
+  });
+
+  it('adds tenant-isolated strategy tables', () => {
+    defineMigration('0003_strategy_loop', strategySql);
+    for (const table of [
+      'goals',
+      'positioning_snapshots',
+      'action_recommendations',
+      'action_options',
+    ]) {
+      expect(strategySql).toContain(`CREATE TABLE app.${table}`);
+      expect(strategySql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
+      expect(strategySql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
   });
 });
