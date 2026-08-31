@@ -18,3 +18,15 @@
 - cPanel document root: `/home/wealthos/pr.wealthos.ir`
 
 اطلاعات حساس، کلیدها و Secretها نباید وارد Git شوند.
+
+## اجرای Foundation در لوکال
+
+پیش‌نیاز: Node.js 22 و pnpm 10.
+
+```bash
+pnpm install
+pnpm check
+pnpm dev
+```
+
+Health endpoint پس از اجرا: `GET /health`
