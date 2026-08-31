@@ -1,6 +1,10 @@
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AuditTrailService, InMemoryAuditTrailRepository } from '../src/account/audit-trail.js';
+import {
+  InMemoryTextAssetRepository,
+  TextAssetIntakeService,
+} from '../src/assets/text-asset-intake.js';
 import { ConversationIntakeService } from '../src/conversation/intake.js';
 import { ContentDraftService, InMemoryDraftWorkspaceRepository } from '../src/claims/workspace.js';
 import {
@@ -604,6 +608,79 @@ describe('operational endpoints', () => {
     });
   });
 
+  it('imports a consented text asset and derives onboarding maturity from real evidence', async () => {
+    const activeTenant = tenantId('tenant_primary');
+    const owner = userId('owner_primary');
+    const fixedTime = new Date('2026-08-31T21:00:00.000Z');
+    const assets = new TextAssetIntakeService(new InMemoryTextAssetRepository(), {
+      tenantId: activeTenant,
+      ownerUserId: owner,
+    });
+    const auditTrail = new AuditTrailService(new InMemoryAuditTrailRepository(), {
+      tenantId: activeTenant,
+      ownerUserId: owner,
+    });
+    const dependencies: ApplicationDependencies = {
+      assets,
+      conversation: new ConversationIntakeService(),
+      auditTrail,
+      mutationAuditTrail: auditTrail,
+      tenantId: activeTenant,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+    const body = {
+      requestId: 'asset_http_note',
+      title: 'یادداشت جلسه تصمیم‌گیری',
+      content: 'در جلسه تصمیم‌گیری، بیان شفاف محدودیت‌ها باعث شد گفت‌وگو قابل‌اعتماد بماند.',
+      assertionText: 'من هنگام تصمیم‌گیری، شفافیت درباره محدودیت‌ها را به نمایش قطعیت ترجیح می‌دهم.',
+      occurredAt: '2026-08-20T12:00:00.000Z',
+      permissions: { personalUnderstanding: true, brandUsage: false },
+    };
+    const first = await request('/api/assets/text', () => ({ ready: true }), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }, dependencies);
+    expect(first.status).toBe(201);
+    await expect(first.json()).resolves.toMatchObject({
+      outcome: 'applied',
+      persistence: 'memory',
+      record: {
+        title: body.title,
+        sourceType: 'text_asset',
+        permissions: { personalUnderstanding: true, brandUsage: false },
+      },
+    });
+
+    const repeated = await request('/api/assets/text', () => ({ ready: true }), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }, dependencies);
+    expect(repeated.status).toBe(200);
+    await expect(repeated.json()).resolves.toMatchObject({ outcome: 'already_applied' });
+
+    const onboarding = await request(
+      '/api/onboarding',
+      () => ({ ready: true }),
+      undefined,
+      dependencies,
+    );
+    expect(onboarding.status).toBe(200);
+    await expect(onboarding.json()).resolves.toMatchObject({
+      modelMaturity: {
+        percent: 23,
+        evidenceCount: 1,
+        sourceTypes: ['text_asset'],
+        components: { importedEvidence: 15, sourceDiversity: 8 },
+      },
+      assets: { summary: { assets: 1, evidenceItems: 1, assertions: 1 } },
+    });
+    const activity = await auditTrail.snapshot(owner, fixedTime);
+    expect(activity.events.filter((event) => event.eventType === 'asset.text_imported')).toHaveLength(1);
+  });
+
   it('exposes an owner audit trail and a portable, auditable account export', async () => {
     const activeTenant = tenantId('tenant_primary');
     const owner = userId('owner_primary');
@@ -636,6 +713,10 @@ describe('operational endpoints', () => {
       tenantId: activeTenant,
       ownerUserId: owner,
     });
+    const assets = new TextAssetIntakeService(new InMemoryTextAssetRepository(), {
+      tenantId: activeTenant,
+      ownerUserId: owner,
+    });
     const dependencies: ApplicationDependencies = {
       workbench,
       strategy,
@@ -643,6 +724,7 @@ describe('operational endpoints', () => {
       drafts,
       learning,
       auditTrail,
+      assets,
       mutationAuditTrail: auditTrail,
       tenantId: activeTenant,
       resolveActor: () => owner,
@@ -687,14 +769,18 @@ describe('operational endpoints', () => {
     const portable = await exportResponse.json() as {
       schemaVersion: number;
       scope: string;
-      data: { memory: { records: unknown[] }; activity: { events: unknown[] } };
+      data: {
+        memory: { records: unknown[] };
+        assets: { records: unknown[] };
+        activity: { events: unknown[] };
+      };
     };
     expect(exportResponse.status).toBe(200);
     expect(exportResponse.headers.get('content-disposition')).toContain('pr-personal-data-2026-08-31.json');
     expect(portable).toMatchObject({
       schemaVersion: 1,
       scope: 'owner_portable_data',
-      data: { memory: { records: [] } },
+      data: { memory: { records: [] }, assets: { records: [] } },
     });
     expect(portable.data.activity.events).toHaveLength(1);
 

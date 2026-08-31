@@ -3,7 +3,8 @@
 این مخزن برای طراحی و توسعه یک سیستم هوشمند و ماندگار مدیریت برند شخصی، اعتبار، روایت، روابط و PR ایجاد شده است.
 
 وضعیت فعلی: **Foundation و MVP Workbench در حال توسعه**. Data/Policy Kernel، API،
-Workbench وب، Approval انسانی و ورودی مکالمه‌ای Consent-first پیاده‌سازی شده‌اند.
+Workbench وب، Approval انسانی، ورودی مکالمه‌ای Consent-first، ورود متن به‌عنوان
+Asset/Evidence و مرکز حقوق داده پیاده‌سازی شده‌اند.
 
 ## اسناد فعلی
 
@@ -52,6 +53,14 @@ Attention Budget، Evidence، Risk و Approval انسانی. View از `GET /api
 `DATABASE_URL`، `PR_TENANT_ID` و `PR_OWNER_USER_ID`، تأیید با Optimistic Lock در
 PostgreSQL ذخیره و در همان Transaction به Audit Log و Outbox افزوده می‌شود.
 نسخه خصوصی Sites همین قرارداد را با state موقت Worker برای تست UI ارائه می‌کند.
+
+نمای «شروع و منابع» مسیر Cold Start محدود MVP را ارائه می‌کند. مالک از
+`POST /api/assets/text` عنوان، متن، تاریخ و برداشت پیشنهادی خود را همراه رضایت صریح
+وارد می‌کند. متن همیشه `confidential` است، مجوز عمومی نمی‌گیرد و در PostgreSQL،
+Asset، Evidence، Assertion، Consent، Audit، Outbox و رکورد idempotency در یک
+Transaction ساخته می‌شوند. `GET /api/onboarding` منابع و بلوغ مدل را از شواهد واقعی،
+Self-reportهای فعال، تنوع منبع و اعمال حقوق داده محاسبه می‌کند؛ عدد نمایشی ثابت در UI
+استفاده نمی‌شود. Store محلی و Sites در نبود PostgreSQL با Restart پاک می‌شوند.
 
 دکمه «شروع گفت‌وگو» نیز به `POST /api/conversations/turns` متصل است. Opt-in ساخت
 پیشنهاد حافظه پیش‌فرض خاموش است و حتی پس از فعال‌کردن، ثبت نهایی فقط با درخواست دوم
@@ -102,7 +111,7 @@ Signal ثبت می‌کند. یک Edit یا Reject منفرد Voice Model را �
 
 نمای «داده و شفافیت» ردپای owner-scoped تصمیم‌ها، تأییدها، حقوق حافظه و Exportها را
 از `GET /api/account/activity` نمایش می‌دهد. کاربر از `GET /api/account/export` یک
-فایل JSON قابل‌حمل از Snapshot فعلی Workbench، Strategy، Memory، Draft، Feedback و
-Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
+فایل JSON قابل‌حمل از Snapshot فعلی Workbench، Strategy، Memory، Assets، Draft،
+Feedback و Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
 زیرساختی وارد فایل نمی‌شوند. در PostgreSQL این Timeline با RLS به Tenant و مالک فعال
 محدود است؛ نسخه‌های حافظه‌ای و Sites تا Restart موقت‌اند.

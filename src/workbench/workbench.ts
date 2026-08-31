@@ -228,7 +228,9 @@ export function createDefaultWorkbenchService(
         confidenceWeight: 0.15,
         attentionPenaltyPerHour: 2,
       },
-      profile: { maturityPercent: 32, evidenceCount: 4, openContradictions: 1 },
+      // The authoritative, evidence-derived maturity lives at /api/onboarding.
+      // Keep this legacy field neutral so no client mistakes seeded demo data for owner evidence.
+      profile: { maturityPercent: 0, evidenceCount: 0, openContradictions: 0 },
       options: [
         {
           id: 'conversation',

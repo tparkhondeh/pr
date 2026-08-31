@@ -269,6 +269,56 @@ export type AuditTrailSnapshot = Readonly<{
   }>[];
 }>;
 
+export type TextAssetRecord = Readonly<{
+  requestId: string;
+  assetId: string;
+  evidenceId: string;
+  assertionId: string;
+  title: string;
+  content: string;
+  assertionText: string;
+  sourceType: 'text_asset';
+  dataClass: 'confidential';
+  integritySha256: string;
+  occurredAt: string;
+  importedAt: string;
+  permissions: Readonly<{
+    personalUnderstanding: true;
+    brandUsage: boolean;
+  }>;
+}>;
+
+export type TextAssetSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  summary: Readonly<{ assets: number; evidenceItems: number; assertions: number }>;
+  records: readonly TextAssetRecord[];
+}>;
+
+export type OnboardingSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral' | 'mixed';
+  modelMaturity: Readonly<{
+    percent: number;
+    evidenceCount: number;
+    sourceTypes: readonly string[];
+    components: Readonly<{
+      importedEvidence: number;
+      confirmedSelfReports: number;
+      sourceDiversity: number;
+      exercisedDataControl: number;
+    }>;
+    nextStep: string;
+  }>;
+  assets: TextAssetSnapshot;
+}>;
+
+export type TextAssetImportResult = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  record: TextAssetRecord;
+}>;
+
 export type AccountDataExport = Readonly<{
   schemaVersion: 1;
   exportedAt: string;
@@ -278,6 +328,7 @@ export type AccountDataExport = Readonly<{
     workbench: WorkbenchSnapshot;
     strategy: StrategyContextSnapshot;
     memory: PersonalMemorySnapshot;
+    assets: TextAssetSnapshot;
     draft: DraftWorkspaceSnapshot | null;
     feedback: FeedbackLearningSnapshot;
     activity: AuditTrailSnapshot;
@@ -309,6 +360,39 @@ export async function loadPersonalMemory(signal?: AbortSignal): Promise<Personal
     throw new WorkbenchApiError(200, 'invalid_response');
   }
   return payload;
+}
+
+export async function loadOnboarding(signal?: AbortSignal): Promise<OnboardingSnapshot> {
+  const payload = await requestJson('/api/onboarding', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isOnboardingSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function importTextAsset(input: Readonly<{
+  requestId: string;
+  title: string;
+  content: string;
+  assertionText: string;
+  occurredAt: string;
+  permissions: Readonly<{ personalUnderstanding: true; brandUsage: boolean }>;
+}>): Promise<TextAssetImportResult> {
+  const payload = await requestJson('/api/assets/text', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (
+    !isRecord(payload) ||
+    (payload['outcome'] !== 'applied' && payload['outcome'] !== 'already_applied') ||
+    !isPersistence(payload['persistence']) ||
+    !isTextAssetRecord(payload['record'])
+  ) {
+    throw new WorkbenchApiError(200, 'invalid_response');
+  }
+  return payload as TextAssetImportResult;
 }
 
 export async function loadStrategyContext(signal?: AbortSignal): Promise<StrategyContextSnapshot> {
@@ -680,10 +764,60 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     payload['schemaVersion'] === 1 && payload['scope'] === 'owner_portable_data' &&
     payload['consistency'] === 'best_effort_snapshot' && typeof payload['exportedAt'] === 'string' &&
     isWorkbenchSnapshot(data['workbench']) && isStrategyContextSnapshot(data['strategy']) &&
-    isPersonalMemorySnapshot(data['memory']) &&
+    isPersonalMemorySnapshot(data['memory']) && isTextAssetSnapshot(data['assets']) &&
     (data['draft'] === null || isDraftWorkspaceSnapshot(data['draft'])) &&
     isFeedbackLearningSnapshot(data['feedback']) && isAuditTrailSnapshot(data['activity'])
   );
+}
+
+function isOnboardingSnapshot(payload: unknown): payload is OnboardingSnapshot {
+  if (!isRecord(payload) || !isRecord(payload['modelMaturity'])) return false;
+  const maturity = payload['modelMaturity'];
+  return (
+    typeof payload['generatedAt'] === 'string' &&
+    (
+      isPersistence(payload['persistence']) ||
+      payload['persistence'] === 'mixed'
+    ) &&
+    typeof maturity['percent'] === 'number' &&
+    typeof maturity['evidenceCount'] === 'number' &&
+    Array.isArray(maturity['sourceTypes']) &&
+    isRecord(maturity['components']) &&
+    typeof maturity['nextStep'] === 'string' &&
+    isTextAssetSnapshot(payload['assets'])
+  );
+}
+
+function isTextAssetSnapshot(payload: unknown): payload is TextAssetSnapshot {
+  if (!isRecord(payload) || !isRecord(payload['summary']) || !Array.isArray(payload['records'])) {
+    return false;
+  }
+  return (
+    typeof payload['generatedAt'] === 'string' &&
+    isPersistence(payload['persistence']) &&
+    typeof payload['summary']['assets'] === 'number' &&
+    typeof payload['summary']['evidenceItems'] === 'number' &&
+    typeof payload['summary']['assertions'] === 'number' &&
+    payload['records'].every(isTextAssetRecord)
+  );
+}
+
+function isTextAssetRecord(value: unknown): value is TextAssetRecord {
+  if (!isRecord(value) || !isRecord(value['permissions'])) return false;
+  return (
+    typeof value['requestId'] === 'string' && typeof value['assetId'] === 'string' &&
+    typeof value['evidenceId'] === 'string' && typeof value['assertionId'] === 'string' &&
+    typeof value['title'] === 'string' && typeof value['content'] === 'string' &&
+    typeof value['assertionText'] === 'string' && value['sourceType'] === 'text_asset' &&
+    value['dataClass'] === 'confidential' && typeof value['integritySha256'] === 'string' &&
+    typeof value['occurredAt'] === 'string' && typeof value['importedAt'] === 'string' &&
+    value['permissions']['personalUnderstanding'] === true &&
+    typeof value['permissions']['brandUsage'] === 'boolean'
+  );
+}
+
+function isPersistence(value: unknown): value is 'memory' | 'postgres' | 'ephemeral' {
+  return value === 'memory' || value === 'postgres' || value === 'ephemeral';
 }
 
 function isConversationTurnResult(payload: unknown): payload is ConversationTurnResult {

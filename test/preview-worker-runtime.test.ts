@@ -134,6 +134,32 @@ describe('private preview worker draft runtime', () => {
     expect(activity.summary.dataRights).toBeGreaterThanOrEqual(3);
     expect(activity.events.some((event) => event.eventType === 'draft.exported')).toBe(true);
 
+    const assetRequest = {
+      requestId: 'asset_runtime_note',
+      title: 'یادداشت تصمیم واقعی',
+      content: 'در یک تصمیم واقعی، بیان محدودیت‌ها کمک کرد اعتماد تیم و کیفیت تصمیم حفظ شود.',
+      assertionText: 'من شفافیت درباره محدودیت‌ها را بخشی از تصمیم‌گیری مسئولانه می‌دانم.',
+      occurredAt: '2026-08-20T12:00:00.000Z',
+      permissions: { personalUnderstanding: true, brandUsage: false },
+    };
+    const assetResponse = await post('/api/assets/text', assetRequest);
+    expect(assetResponse.status).toBe(201);
+    await expect(assetResponse.json()).resolves.toMatchObject({
+      outcome: 'applied',
+      record: { sourceType: 'text_asset', dataClass: 'confidential' },
+    });
+    const repeatedAsset = await post('/api/assets/text', assetRequest);
+    expect(repeatedAsset.status).toBe(200);
+    await expect(repeatedAsset.json()).resolves.toMatchObject({ outcome: 'already_applied' });
+    const onboardingResponse = await worker.fetch(
+      new Request('https://preview.example/api/onboarding'),
+      env,
+    );
+    await expect(onboardingResponse.json()).resolves.toMatchObject({
+      modelMaturity: { evidenceCount: 1 },
+      assets: { summary: { assets: 1, evidenceItems: 1, assertions: 1 } },
+    });
+
     const accountExportResponse = await worker.fetch(
       new Request('https://preview.example/api/account/export'),
       env,
@@ -141,11 +167,15 @@ describe('private preview worker draft runtime', () => {
     const accountExport = await accountExportResponse.json() as {
       schemaVersion: number;
       scope: string;
-      data: { memory: { records: Array<{ consent: { personalUnderstanding: boolean } }> } };
+      data: {
+        memory: { records: Array<{ consent: { personalUnderstanding: boolean } }> };
+        assets: { records: Array<{ sourceType: string }> };
+      };
     };
     expect(accountExportResponse.status).toBe(200);
     expect(accountExport).toMatchObject({ schemaVersion: 1, scope: 'owner_portable_data' });
     expect(accountExport.data.memory.records[0]?.consent.personalUnderstanding).toBe(false);
+    expect(accountExport.data.assets.records[0]?.sourceType).toBe('text_asset');
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

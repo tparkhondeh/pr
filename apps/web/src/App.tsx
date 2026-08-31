@@ -23,7 +23,7 @@ import {
   ThumbsDown,
   TriangleAlert,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState, type SyntheticEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type SyntheticEvent } from 'react';
 import {
   WorkbenchApiError,
   applyMemoryRight,
@@ -34,10 +34,12 @@ import {
   editDraft,
   exportAccountData,
   exportDraft,
+  importTextAsset,
   decideLearnedPreference,
   loadDraftWorkspace,
   loadFeedbackLearning,
   loadAuditTrail,
+  loadOnboarding,
   loadPersonalMemory,
   loadStrategyContext,
   loadWorkbench,
@@ -51,6 +53,7 @@ import {
   type DraftWorkspaceSnapshot,
   type FeedbackLearningSnapshot,
   type MemoryRightKind,
+  type OnboardingSnapshot,
   type PersonalMemoryRecord,
   type PersonalMemorySnapshot,
   type EditableStrategyContext,
@@ -77,7 +80,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'memory' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -113,13 +116,21 @@ export function App() {
   const [auditSnapshot, setAuditSnapshot] = useState<AuditTrailSnapshot | null>(null);
   const [dataViewState, setDataViewState] = useState<'idle' | 'loading' | 'ready' | 'exporting' | 'error'>('idle');
   const [dataViewError, setDataViewError] = useState<string | null>(null);
+  const [onboardingSnapshot, setOnboardingSnapshot] = useState<OnboardingSnapshot | null>(null);
+  const [onboardingState, setOnboardingState] = useState<'loading' | 'ready' | 'mutating' | 'error'>('loading');
+  const [onboardingError, setOnboardingError] = useState<string | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState('loading');
     setError(null);
     try {
-      const next = await loadWorkbench(signal);
+      const [next, onboarding] = await Promise.all([
+        loadWorkbench(signal),
+        loadOnboarding(signal),
+      ]);
       setSnapshot(next);
+      setOnboardingSnapshot(onboarding);
+      setOnboardingState('ready');
       setSelected((current) =>
         next.actions.some((action) => action.id === current)
           ? current
@@ -132,6 +143,47 @@ export function App() {
       setState('error');
     }
   }, []);
+
+  const refreshOnboarding = useCallback(async (signal?: AbortSignal) => {
+    setOnboardingState('loading');
+    setOnboardingError(null);
+    try {
+      setOnboardingSnapshot(await loadOnboarding(signal));
+      setOnboardingState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setOnboardingError(errorMessage(caught));
+      setOnboardingState('error');
+    }
+  }, []);
+
+  const addTextAsset = async (input: Readonly<{
+    title: string;
+    content: string;
+    assertionText: string;
+    occurredAt: string;
+    brandUsage: boolean;
+  }>) => {
+    setOnboardingState('mutating');
+    setOnboardingError(null);
+    try {
+      await importTextAsset({
+        requestId: `asset_${crypto.randomUUID()}`,
+        title: input.title,
+        content: input.content,
+        assertionText: input.assertionText,
+        occurredAt: input.occurredAt,
+        permissions: { personalUnderstanding: true, brandUsage: input.brandUsage },
+      });
+      setOnboardingSnapshot(await loadOnboarding());
+      setOnboardingState('ready');
+      await refreshAudit();
+    } catch (caught: unknown) {
+      setOnboardingError(errorMessage(caught));
+      setOnboardingState('error');
+      throw caught;
+    }
+  };
 
   const refreshMemory = useCallback(async (signal?: AbortSignal) => {
     setMemoryViewState('loading');
@@ -455,6 +507,7 @@ export function App() {
 
   const nav = [
     { label: 'امروز', icon: CircleGauge, view: 'today' as const },
+    { label: 'شروع و منابع', icon: BookOpenText, view: 'intake' as const },
     { label: 'حافظه من', icon: Fingerprint, view: 'memory' as const },
     { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
     { label: 'پیش‌نویس', icon: PencilLine, view: 'draft' as const },
@@ -485,6 +538,7 @@ export function App() {
               onClick={() => {
                 if (!view) return;
                 setActiveView(view);
+                if (view === 'intake') void refreshOnboarding();
                 if (view === 'memory') void refreshMemory();
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
@@ -500,9 +554,9 @@ export function App() {
           ))}
         </nav>
         <div className="rail-foot">
-          <div className="maturity"><span>بلوغ مدل شخصی</span><strong>{snapshot.profile.maturityPercent}٪</strong></div>
-          <div className="progress"><i style={{ width: `${String(snapshot.profile.maturityPercent)}%` }} /></div>
-          <small>{snapshot.profile.evidenceCount} شاهد معتبر · {snapshot.profile.openContradictions} تناقض باز</small>
+          <div className="maturity"><span>بلوغ مدل شخصی</span><strong>{onboardingSnapshot?.modelMaturity.percent ?? 0}٪</strong></div>
+          <div className="progress"><i style={{ width: `${String(onboardingSnapshot?.modelMaturity.percent ?? 0)}%` }} /></div>
+          <small>{onboardingSnapshot?.modelMaturity.evidenceCount ?? 0} شاهد واقعی · محاسبه‌شده از داده شما</small>
         </div>
       </aside>
 
@@ -512,6 +566,8 @@ export function App() {
             <span className="date">{formatDate(snapshot.generatedAt)}</span>
             <h1>{activeView === 'memory'
               ? 'حافظه‌ای که شما کنترل می‌کنید.'
+              : activeView === 'intake'
+                ? 'اولین شاهد واقعی را وارد کنید.'
               : activeView === 'strategy'
                 ? 'جهت را شما تعیین می‌کنید.'
                 : activeView === 'draft'
@@ -532,7 +588,15 @@ export function App() {
 
         {error ? <div className="inline-error" role="alert"><TriangleAlert size={16} />{error}</div> : null}
 
-        {activeView === 'memory' ? (
+        {activeView === 'intake' ? (
+          <AssetIntakePanel
+            error={onboardingError}
+            onImport={addTextAsset}
+            onRefresh={() => refreshOnboarding()}
+            snapshot={onboardingSnapshot}
+            state={onboardingState}
+          />
+        ) : activeView === 'memory' ? (
           <PersonalMemoryPanel
             error={memoryViewError}
             onRefresh={() => refreshMemory()}
@@ -1473,6 +1537,163 @@ function downloadText(filename: string, mimeType: string, content: string): void
 
 function lineItems(value: string): readonly string[] {
   return value.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean).slice(0, 8);
+}
+
+function AssetIntakePanel({
+  error,
+  onImport,
+  onRefresh,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onImport: (input: Readonly<{
+    title: string;
+    content: string;
+    assertionText: string;
+    occurredAt: string;
+    brandUsage: boolean;
+  }>) => Promise<void>;
+  onRefresh: () => Promise<void>;
+  snapshot: OnboardingSnapshot | null;
+  state: 'loading' | 'ready' | 'mutating' | 'error';
+}>) {
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [assertionText, setAssertionText] = useState('');
+  const [occurredOn, setOccurredOn] = useState(() => new Date().toISOString().slice(0, 10));
+  const [personalConsent, setPersonalConsent] = useState(false);
+  const [brandUsage, setBrandUsage] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const valid = title.trim().length >= 3 && content.trim().length >= 20 &&
+    assertionText.trim().length >= 10 && Boolean(occurredOn) && personalConsent;
+
+  const submit = async (event: SyntheticEvent) => {
+    event.preventDefault();
+    if (!valid || state === 'mutating') return;
+    setSaved(false);
+    try {
+      await onImport({
+        title: title.trim(),
+        content: content.trim(),
+        assertionText: assertionText.trim(),
+        occurredAt: new Date(`${occurredOn}T12:00:00.000Z`).toISOString(),
+        brandUsage,
+      });
+      setTitle('');
+      setContent('');
+      setAssertionText('');
+      setPersonalConsent(false);
+      setBrandUsage(false);
+      setSaved(true);
+    } catch {
+      // The parent exposes the safe API error without leaking submitted content.
+    }
+  };
+
+  if (state === 'loading' && !snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <LoaderCircle className="spin" size={24} />
+        <h2>در حال بازیابی منابع شما…</h2>
+        <p>فقط منابع محرمانه همین مالک خوانده می‌شوند.</p>
+      </section>
+    );
+  }
+  if (!snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <TriangleAlert size={25} />
+        <h2>شروع اولیه در دسترس نیست</h2>
+        <p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p>
+        <button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="asset-intake" aria-label="شروع اولیه و ورود منبع">
+      <header className="memory-view-head">
+        <div>
+          <p className="overline">Cold Start شفاف</p>
+          <h2>یک متن واقعی را به شاهد قابل‌ردیابی تبدیل کنید</h2>
+          <p>سیستم متن را تفسیر پنهانی نمی‌کند؛ برداشت اولیه را خودتان می‌نویسید و دامنه استفاده را جداگانه تعیین می‌کنید.</p>
+        </div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button">
+          <RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی
+        </button>
+      </header>
+
+      <div className="maturity-board">
+        <div className="maturity-ring" style={{ '--maturity': `${String(snapshot.modelMaturity.percent)}%` } as CSSProperties}>
+          <strong>{snapshot.modelMaturity.percent}٪</strong><span>بلوغ فعلی</span>
+        </div>
+        <div>
+          <h3>{snapshot.modelMaturity.nextStep}</h3>
+          <p>{snapshot.modelMaturity.evidenceCount} شاهد واقعی از {snapshot.modelMaturity.sourceTypes.length} نوع منبع در محاسبه فعلی حضور دارد.</p>
+          <ul>
+            <li>شواهد واردشده: {snapshot.modelMaturity.components.importedEvidence} امتیاز</li>
+            <li>Self-report تأییدشده: {snapshot.modelMaturity.components.confirmedSelfReports} امتیاز</li>
+            <li>تنوع منبع: {snapshot.modelMaturity.components.sourceDiversity} امتیاز</li>
+            <li>اعمال حق کنترل داده: {snapshot.modelMaturity.components.exercisedDataControl} امتیاز</li>
+          </ul>
+        </div>
+      </div>
+
+      <form className="asset-form" onSubmit={(event) => void submit(event)}>
+        <div className="asset-form-head">
+          <div><BookOpenText size={20} /><span>ورود متن محدود</span></div>
+          <small>حداکثر ۲۰٬۰۰۰ نویسه · محرمانه</small>
+        </div>
+        <label>عنوان منبع
+          <input maxLength={160} onChange={(event) => { setTitle(event.target.value); }} placeholder="مثلاً: یادداشت جلسه تصمیم‌گیری" value={title} />
+        </label>
+        <label>تاریخ رخداد یا نگارش
+          <input max={new Date().toISOString().slice(0, 10)} onChange={(event) => { setOccurredOn(event.target.value); }} type="date" value={occurredOn} />
+        </label>
+        <label className="asset-wide">متن منبع
+          <textarea maxLength={20000} onChange={(event) => { setContent(event.target.value); }} placeholder="بخش واقعی و مرتبط متن را اینجا وارد کنید…" rows={6} value={content} />
+        </label>
+        <label className="asset-wide">برداشت پیشنهادی شما
+          <textarea maxLength={1000} onChange={(event) => { setAssertionText(event.target.value); }} placeholder="این متن درباره شیوه تصمیم‌گیری، ارزش‌ها یا تجربه من چه چیزی نشان می‌دهد؟" rows={3} value={assertionText} />
+        </label>
+        <div className="asset-consents asset-wide">
+          <label>
+            <input checked={personalConsent} onChange={(event) => { setPersonalConsent(event.target.checked); }} type="checkbox" />
+            اجازه می‌دهم این متن فقط برای فهم شخصی ذخیره، پردازش و به Assertion متصل شود.
+          </label>
+          <label>
+            <input checked={brandUsage} onChange={(event) => { setBrandUsage(event.target.checked); }} type="checkbox" />
+            استفاده داخلی در تحلیل برند نیز مجاز باشد؛ این گزینه مجوز انتشار عمومی نیست.
+          </label>
+        </div>
+        <button className="asset-submit asset-wide" disabled={!valid || state === 'mutating'} type="submit">
+          {state === 'mutating' ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}
+          {state === 'mutating' ? 'در حال ثبت اتمیک…' : 'ثبت منبع، Evidence و Assertion'}
+        </button>
+        {saved ? <p className="asset-success asset-wide"><Check size={16} /> منبع با منشأ و مجوز قابل‌ردیابی ثبت شد.</p> : null}
+        {error ? <p className="asset-error asset-wide"><TriangleAlert size={16} /> {error}</p> : null}
+      </form>
+
+      <div className="asset-list">
+        <h3>منابع ثبت‌شده</h3>
+        {snapshot.assets.records.length === 0 ? (
+          <div className="memory-empty"><BookOpenText size={27} /><h3>هنوز منبعی وارد نشده است</h3><p>اولین متن، مسیر MVP را از داده نمونه به شاهد واقعی شما منتقل می‌کند.</p></div>
+        ) : snapshot.assets.records.map((record) => (
+          <article key={record.assetId}>
+            <header><strong>{record.title}</strong><span>{formatDate(record.importedAt)}</span></header>
+            <p>{record.content.length > 240 ? `${record.content.slice(0, 240)}…` : record.content}</p>
+            <blockquote>{record.assertionText}</blockquote>
+            <footer>
+              <span><Fingerprint size={14} /> SHA-256: {record.integritySha256.slice(0, 12)}…</span>
+              <span><BookOpenText size={14} /> Evidence متصل</span>
+              <span><LockKeyhole size={14} /> Public خاموش</span>
+            </footer>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function PersonalMemoryPanel({

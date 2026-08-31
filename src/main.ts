@@ -4,6 +4,11 @@ import {
   InMemoryAuditTrailRepository,
   PostgresAuditTrailRepository,
 } from './account/audit-trail.js';
+import {
+  InMemoryTextAssetRepository,
+  PostgresTextAssetRepository,
+  TextAssetIntakeService,
+} from './assets/text-asset-intake.js';
 import { loadEnvironment } from './config/environment.js';
 import {
   ContentDraftService,
@@ -63,6 +68,15 @@ const auditTrail = new AuditTrailService(
     : new InMemoryAuditTrailRepository(),
   { tenantId: activeTenant, ownerUserId: owner },
 );
+const assets = new TextAssetIntakeService(
+  postgres && environment.database
+    ? new PostgresTextAssetRepository(postgres, {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+      })
+    : new InMemoryTextAssetRepository(),
+  { tenantId: activeTenant, ownerUserId: owner },
+);
 const fallbackStrategy = defaultStrategyContext(activeTenant, owner);
 const strategyRepository = postgres && environment.database
   ? new PostgresStrategyContextRepository(
@@ -120,6 +134,7 @@ const requestHandler = createRequestHandler(
     learning,
     conversation,
     auditTrail,
+    assets,
     ...(!postgres ? { mutationAuditTrail: auditTrail } : {}),
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity

@@ -50,6 +50,10 @@ const feedbackWorkspaceMigrationPath = fileURLToPath(
   new URL('../db/migrations/0011_feedback_workspace.sql', import.meta.url),
 );
 const feedbackWorkspaceSql = readFileSync(feedbackWorkspaceMigrationPath, 'utf8');
+const textAssetMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0012_text_asset_intake.sql', import.meta.url),
+);
+const textAssetSql = readFileSync(textAssetMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -219,5 +223,17 @@ describe('foundation migration', () => {
     expect(feedbackWorkspaceSql).toContain('CREATE POLICY feedback_learning_requests_tenant_isolation');
     expect(feedbackWorkspaceSql).toContain("operation IN ('edited', 'rejected', 'decide')");
     expect(feedbackWorkspaceSql).toContain('preference_proposals_one_active_value_idx');
+  });
+
+  it('adds idempotent tenant-isolated text asset intake requests', () => {
+    defineMigration('0012_text_asset_intake', textAssetSql);
+    expect(textAssetSql).toContain('CREATE TABLE app.asset_intake_requests');
+    expect(textAssetSql).toContain(
+      'ALTER TABLE app.asset_intake_requests FORCE ROW LEVEL SECURITY',
+    );
+    expect(textAssetSql).toContain('CREATE POLICY asset_intake_requests_tenant_isolation');
+    expect(textAssetSql).toContain('UNIQUE (tenant_id, owner_user_id, client_ref)');
+    expect(textAssetSql).toContain('request_sha256 text NOT NULL');
+    expect(textAssetSql).toContain('result_snapshot jsonb NOT NULL');
   });
 });

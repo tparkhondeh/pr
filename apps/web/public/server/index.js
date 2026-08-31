@@ -29,6 +29,8 @@ const feedbackRequests = new Map();
 const memoryProposals = new Map();
 const memoryRightRequests = new Map();
 const auditEvents = new Map();
+const assetRequests = new Map();
+const textAssets = new Map();
 
 const actions = [
   {
@@ -111,6 +113,10 @@ export default {
       return json(auditSnapshot());
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/onboarding') {
+      return json(onboardingSnapshot());
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/account/export') {
       const exportedAt = new Date().toISOString();
       const activity = auditSnapshot();
@@ -132,11 +138,68 @@ export default {
           workbench: snapshot(),
           strategy,
           memory: memorySnapshot(),
+          assets: assetSnapshot(),
           draft: currentDraft ? draftSnapshot() : null,
           feedback: feedbackSnapshot(),
           activity,
         },
       });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/assets/text') {
+      const body = await readJson(request);
+      if (!validTextAsset(body)) return json({ error: 'invalid_text_asset' }, 400);
+      const importedAt = new Date();
+      const occurredAt = new Date(body.occurredAt);
+      if (Number.isNaN(occurredAt.getTime()) || occurredAt > importedAt) {
+        return json({ error: 'invalid_text_asset' }, 400);
+      }
+      const normalized = {
+        title: body.title.trim(),
+        content: body.content.trim(),
+        assertionText: body.assertionText.trim(),
+        occurredAt: occurredAt.toISOString(),
+        permissions: body.permissions,
+      };
+      const fingerprint = await sha256(JSON.stringify(normalized));
+      const repeated = assetRequests.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json({ outcome: 'already_applied', persistence: 'ephemeral', record: repeated.record })
+          : json({ error: 'asset_import_conflict' }, 409);
+      }
+      const integritySha256 = await sha256(normalized.content);
+      if ([...textAssets.values()].some((asset) => asset.integritySha256 === integritySha256)) {
+        return json({ error: 'asset_import_conflict' }, 409);
+      }
+      const record = {
+        requestId: body.requestId,
+        assetId: crypto.randomUUID(),
+        evidenceId: crypto.randomUUID(),
+        assertionId: crypto.randomUUID(),
+        title: normalized.title,
+        content: normalized.content,
+        assertionText: normalized.assertionText,
+        sourceType: 'text_asset',
+        dataClass: 'confidential',
+        integritySha256,
+        occurredAt: normalized.occurredAt,
+        importedAt: importedAt.toISOString(),
+        permissions: normalized.permissions,
+      };
+      textAssets.set(record.assetId, record);
+      assetRequests.set(body.requestId, { fingerprint, record });
+      recordAudit(`asset.import:${body.requestId}`, {
+        eventType: 'asset.text_imported', resourceType: 'asset', resourceId: record.assetId,
+        purpose: 'personal_understanding', decision: 'approved',
+        metadata: {
+          requestId: body.requestId, evidenceId: record.evidenceId,
+          assertionId: record.assertionId, sourceType: record.sourceType,
+          brandUsage: record.permissions.brandUsage,
+        },
+        occurredAt: record.importedAt,
+      });
+      return json({ outcome: 'applied', persistence: 'ephemeral', record }, 201);
     }
 
     const draftRejection = url.pathname.match(/^\/api\/feedback\/drafts\/([0-9a-f-]{36})\/reject$/i);
@@ -585,10 +648,15 @@ export default {
 };
 
 function snapshot() {
+  const maturity = modelMaturity();
   return {
     generatedAt: new Date().toISOString(),
     runtime: { source: 'preview_worker', persistence: 'ephemeral' },
-    profile: { maturityPercent: 32, evidenceCount: 4, openContradictions: 1 },
+    profile: {
+      maturityPercent: maturity.percent,
+      evidenceCount: maturity.evidenceCount,
+      openContradictions: memorySnapshot().records.filter((record) => record.lifecycle.status === 'contested').length,
+    },
     goal: {
       id: strategy.goalId,
       revision: strategy.revision,
@@ -606,6 +674,58 @@ function snapshot() {
         ? { approvedActionId: approval.actionId, approvedAt: approval.approvedAt }
         : {}),
     },
+  };
+}
+
+function assetSnapshot() {
+  const records = [...textAssets.values()]
+    .sort((left, right) => right.importedAt.localeCompare(left.importedAt));
+  return {
+    generatedAt: new Date().toISOString(),
+    persistence: 'ephemeral',
+    summary: { assets: records.length, evidenceItems: records.length, assertions: records.length },
+    records,
+  };
+}
+
+function modelMaturity() {
+  const assets = assetSnapshot();
+  const memory = memorySnapshot();
+  const activeMemory = memory.records.filter((record) => record.lifecycle.status === 'active');
+  const controlledMemory = memory.records.some((record) => record.lifecycle.status !== 'active');
+  const sourceTypes = new Set([
+    ...assets.records.map((record) => record.sourceType),
+    ...activeMemory.flatMap((record) => record.provenance.sourceTypes),
+  ]);
+  const components = {
+    importedEvidence: Math.min(45, assets.summary.evidenceItems * 15),
+    confirmedSelfReports: Math.min(30, activeMemory.length * 10),
+    sourceDiversity: Math.min(15, sourceTypes.size * 8),
+    exercisedDataControl: controlledMemory ? 10 : 0,
+  };
+  return {
+    percent: Math.min(100, Object.values(components).reduce((total, value) => total + value, 0)),
+    evidenceCount: assets.summary.evidenceItems + activeMemory.reduce(
+      (total, record) => total + record.provenance.evidenceCount, 0,
+    ),
+    sourceTypes: [...sourceTypes].sort(),
+    components,
+    nextStep: assets.summary.assets === 0
+      ? 'یک یادداشت یا متن واقعی وارد کنید.'
+      : activeMemory.length === 0
+        ? 'یک برداشت گفت‌وگویی را تأیید یا اصلاح کنید.'
+        : sourceTypes.size < 2
+          ? 'یک شاهد از نوع متفاوت اضافه کنید.'
+          : 'مدل را با اصلاح‌ها و شواهد مستقل دقیق‌تر کنید.',
+  };
+}
+
+function onboardingSnapshot() {
+  return {
+    generatedAt: new Date().toISOString(),
+    persistence: 'ephemeral',
+    modelMaturity: modelMaturity(),
+    assets: assetSnapshot(),
   };
 }
 
@@ -898,6 +1018,16 @@ function validText(value, min, max) {
   return typeof value === 'string' && value.trim().length >= min && value.trim().length <= max;
 }
 
+function validTextAsset(body) {
+  return (
+    typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) &&
+    validText(body.title, 3, 160) && validText(body.content, 20, 20000) &&
+    validText(body.assertionText, 10, 1000) && typeof body.occurredAt === 'string' &&
+    body?.permissions?.personalUnderstanding === true &&
+    typeof body.permissions.brandUsage === 'boolean'
+  );
+}
+
 function validStringList(value, minItems, maxItems, minLength, maxLength) {
   return Array.isArray(value) && value.length >= minItems && value.length <= maxItems &&
     value.every((item) => validText(item, minLength, maxLength));
@@ -953,6 +1083,11 @@ async function readJson(request) {
   } catch {
     return null;
   }
+}
+
+async function sha256(value) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function chooseFollowUpQuestion(text) {

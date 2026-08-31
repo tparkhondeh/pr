@@ -7,6 +7,13 @@ import {
   type RecordAuditEvent,
 } from '../account/audit-trail.js';
 import {
+  TextAssetConflictError,
+  TextAssetPermissionError,
+  TextAssetValidationError,
+  type TextAssetIntakeService,
+  type TextAssetSnapshot,
+} from '../assets/text-asset-intake.js';
+import {
   DraftBlockedError,
   DraftConflictError,
   DraftNotFoundError,
@@ -58,6 +65,7 @@ export type ApplicationDependencies = Readonly<{
   drafts?: Pick<ContentDraftService, 'snapshot' | 'create' | 'edit' | 'approve' | 'export'>;
   learning?: Pick<FeedbackLearningService, 'snapshot' | 'rejectDraft' | 'decide'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
+  assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
   resolveActor?: (request: IncomingMessage) => UserId | undefined;
   tenantId?: TenantId;
@@ -130,6 +138,16 @@ export function createRequestHandler(
 
     if (request.method === 'GET' && path === '/api/account/activity') {
       await handleAuditTrail(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/onboarding') {
+      await handleOnboardingSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/assets/text') {
+      await handleTextAssetImport(request, response, dependencies);
       return;
     }
 
@@ -389,14 +407,15 @@ async function handleAccountExport(
   if (!actorId) return;
   if (
     !dependencies.workbench || !dependencies.strategy || !dependencies.drafts ||
-    !dependencies.learning || !dependencies.conversation || !dependencies.tenantId
+    !dependencies.learning || !dependencies.conversation || !dependencies.assets ||
+    !dependencies.tenantId
   ) {
     sendJson(response, 503, { error: 'account_export_unavailable' });
     return;
   }
   const exportedAt = now(dependencies);
   try {
-    const [workbench, strategy, draft, feedback, memory, activity] = await Promise.all([
+    const [workbench, strategy, draft, feedback, memory, assets, activity] = await Promise.all([
       dependencies.workbench.snapshot(),
       dependencies.strategy.snapshot(actorId),
       dependencies.drafts.snapshot(actorId, exportedAt),
@@ -406,6 +425,7 @@ async function handleAccountExport(
         actorId,
         generatedAt: exportedAt,
       }),
+      dependencies.assets.snapshot(actorId, exportedAt),
       dependencies.auditTrail?.snapshot(actorId, exportedAt),
     ]);
     if (!activity) throw new Error('Audit trail disappeared.');
@@ -432,6 +452,7 @@ async function handleAccountExport(
           workbench,
           strategy: serializeStrategy(strategy),
           memory: serializeMemorySnapshot(memory),
+          assets: serializeTextAssetSnapshot(assets),
           draft: draft ? serializeDraft(draft) : null,
           feedback: serializeFeedback(feedback),
           activity: serializeAuditTrail(activity),
@@ -441,6 +462,193 @@ async function handleAccountExport(
   } catch (error: unknown) {
     sendAccountError(response, error);
   }
+}
+
+async function handleOnboardingSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.assets || !dependencies.conversation || !dependencies.tenantId) {
+    sendJson(response, 503, { error: 'onboarding_unavailable' });
+    return;
+  }
+  const generatedAt = now(dependencies);
+  try {
+    const [assets, memory] = await Promise.all([
+      dependencies.assets.snapshot(actorId, generatedAt),
+      dependencies.conversation.memorySnapshot({
+        tenantId: dependencies.tenantId,
+        actorId,
+        generatedAt,
+      }),
+    ]);
+    sendJson(response, 200, {
+      generatedAt: generatedAt.toISOString(),
+      persistence: assets.persistence === memory.persistence ? assets.persistence : 'mixed',
+      modelMaturity: modelMaturity(assets, memory),
+      assets: serializeTextAssetSnapshot(assets),
+    });
+  } catch (error: unknown) {
+    sendTextAssetError(response, error);
+  }
+}
+
+async function handleTextAssetImport(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.assets) {
+    sendJson(response, 503, { error: 'asset_intake_unavailable' });
+    return;
+  }
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const title = body['title'];
+    const content = body['content'];
+    const assertionText = body['assertionText'];
+    const occurredAtValue = body['occurredAt'];
+    const permissions = body['permissions'];
+    if (
+      typeof requestId !== 'string' || typeof title !== 'string' ||
+      typeof content !== 'string' || typeof assertionText !== 'string' ||
+      typeof occurredAtValue !== 'string' || !isTextAssetPermissions(permissions)
+    ) {
+      sendJson(response, 400, { error: 'invalid_text_asset' });
+      return;
+    }
+    const importedAt = now(dependencies);
+    const result = await dependencies.assets.importText({
+      actorId,
+      requestId,
+      title,
+      content,
+      assertionText,
+      occurredAt: new Date(occurredAtValue),
+      importedAt,
+      permissions,
+    });
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `asset.import:${requestId}`,
+      eventType: 'asset.text_imported',
+      resourceType: 'asset',
+      resourceId: result.record.assetId,
+      purpose: 'personal_understanding',
+      decision: 'approved',
+      metadata: {
+        requestId,
+        evidenceId: result.record.evidenceId,
+        assertionId: result.record.assertionId,
+        sourceType: result.record.sourceType,
+        brandUsage: result.record.permissions.brandUsage,
+      },
+      occurredAt: importedAt,
+    });
+    sendJson(response, result.outcome === 'applied' ? 201 : 200, {
+      outcome: result.outcome,
+      persistence: result.persistence,
+      record: serializeTextAssetRecord(result.record),
+    });
+  } catch (error: unknown) {
+    sendTextAssetError(response, error);
+  }
+}
+
+function serializeTextAssetSnapshot(snapshot: TextAssetSnapshot): Record<string, unknown> {
+  return {
+    generatedAt: snapshot.generatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    summary: snapshot.summary,
+    records: snapshot.records.map(serializeTextAssetRecord),
+  };
+}
+
+function serializeTextAssetRecord(record: TextAssetSnapshot['records'][number]): Record<string, unknown> {
+  return {
+    ...record,
+    occurredAt: record.occurredAt.toISOString(),
+    importedAt: record.importedAt.toISOString(),
+  };
+}
+
+function modelMaturity(assets: TextAssetSnapshot, memory: PersonalMemorySnapshot): Record<string, unknown> {
+  const activeMemory = memory.records.filter((record) => record.lifecycle.status === 'active');
+  const controlledMemory = memory.records.some((record) => record.lifecycle.status !== 'active');
+  const sourceTypes = new Set([
+    ...assets.records.map((record) => record.sourceType),
+    ...activeMemory.flatMap((record) => record.provenance.sourceTypes),
+  ]);
+  const components = {
+    importedEvidence: Math.min(45, assets.summary.evidenceItems * 15),
+    confirmedSelfReports: Math.min(30, activeMemory.length * 10),
+    sourceDiversity: Math.min(15, sourceTypes.size * 8),
+    exercisedDataControl: controlledMemory ? 10 : 0,
+  };
+  const percent = Math.min(100, Object.values(components).reduce((total, value) => total + value, 0));
+  const evidenceCount = assets.summary.evidenceItems + activeMemory.reduce(
+    (total, record) => total + record.provenance.evidenceCount,
+    0,
+  );
+  return {
+    percent,
+    evidenceCount,
+    sourceTypes: [...sourceTypes].sort(),
+    components,
+    nextStep: assets.summary.assets === 0
+      ? 'یک یادداشت یا متن واقعی وارد کنید.'
+      : activeMemory.length === 0
+        ? 'یک برداشت گفت‌وگویی را تأیید یا اصلاح کنید.'
+        : sourceTypes.size < 2
+          ? 'یک شاهد از نوع متفاوت اضافه کنید.'
+          : 'مدل را با اصلاح‌ها و شواهد مستقل دقیق‌تر کنید.',
+  };
+}
+
+function isTextAssetPermissions(value: unknown): value is Readonly<{
+  personalUnderstanding: true;
+  brandUsage: boolean;
+}> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record['personalUnderstanding'] === true && typeof record['brandUsage'] === 'boolean';
+}
+
+function sendTextAssetError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof TextAssetValidationError) {
+    sendJson(response, 400, {
+      error: error instanceof InvalidJsonBodyError ? error.code : 'invalid_text_asset',
+    });
+    return;
+  }
+  if (error instanceof TextAssetPermissionError) {
+    sendJson(response, 403, { error: 'asset_permission_denied' });
+    return;
+  }
+  if (error instanceof TextAssetConflictError) {
+    sendJson(response, 409, { error: 'asset_import_conflict' });
+    return;
+  }
+  if (
+    error instanceof MemoryProposalPermissionError ||
+    error instanceof ConversationValidationError
+  ) {
+    sendConversationError(response, error);
+    return;
+  }
+  sendJson(response, 500, { error: 'asset_intake_failed' });
 }
 
 function accountActor(
@@ -1298,7 +1506,8 @@ async function readJsonObject(request: IncomingMessage): Promise<Record<string, 
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
     size += buffer.length;
-    if (size > 32_768) throw new InvalidJsonBodyError('request_too_large');
+    // A 20k-character UTF-8 asset can approach 80 KiB before JSON overhead.
+    if (size > 98_304) throw new InvalidJsonBodyError('request_too_large');
     chunks.push(buffer);
   }
 
