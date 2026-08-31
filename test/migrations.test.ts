@@ -26,6 +26,10 @@ const feedbackMigrationPath = fileURLToPath(
   new URL('../db/migrations/0005_feedback_learning.sql', import.meta.url),
 );
 const feedbackSql = readFileSync(feedbackMigrationPath, 'utf8');
+const workbenchMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0006_workbench_state.sql', import.meta.url),
+);
+const workbenchSql = readFileSync(workbenchMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -106,5 +110,18 @@ describe('foundation migration', () => {
       expect(feedbackSql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
       expect(feedbackSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
     }
+  });
+
+  it('adds tenant-isolated, optimistic workbench state', () => {
+    defineMigration('0006_workbench_state', workbenchSql);
+    expect(workbenchSql).toContain('CREATE TABLE app.workbench_states');
+    expect(workbenchSql).toContain(
+      'ALTER TABLE app.workbench_states FORCE ROW LEVEL SECURITY',
+    );
+    expect(workbenchSql).toContain('CREATE POLICY workbench_states_tenant_isolation');
+    expect(workbenchSql).toContain('revision bigint NOT NULL');
+    expect(workbenchSql).toContain(
+      "status NOT IN ('approved', 'running', 'completed', 'failed')",
+    );
   });
 });

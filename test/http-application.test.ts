@@ -142,6 +142,6 @@ describe('operational endpoints', () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: 'invalid_json' });
-    expect(workbench.snapshot().workflow.status).toBe('awaiting_approval');
+    expect((await workbench.snapshot()).workflow.status).toBe('awaiting_approval');
   });
 });

@@ -14,10 +14,14 @@ import {
   evolveWorkflow,
   type WorkflowState,
 } from '../workflow/workflow.js';
+import {
+  InMemoryWorkbenchApprovalRepository,
+  type WorkbenchApprovalRepository,
+} from './approval-repository.js';
 
 export type WorkbenchRuntime = Readonly<{
   source: 'node_api' | 'preview_worker';
-  persistence: 'memory' | 'ephemeral';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
 }>;
 
 export type WorkbenchAction = Readonly<{
@@ -84,16 +88,20 @@ export class WorkbenchApprovalConflictError extends Error {
   }
 }
 
-export class InMemoryWorkbenchService {
+export class WorkbenchService {
   readonly #goal: Goal;
   readonly #rankedOptions: readonly RankedOption[];
   readonly #attentionBudget: AttentionBudget;
   readonly #profile: WorkbenchSnapshot['profile'];
   readonly #clock: () => Date;
-  #workflow: WorkflowState;
-  #approvedActionId: string | undefined;
+  readonly #awaitingWorkflow: WorkflowState;
+  readonly #approvalRepository: WorkbenchApprovalRepository;
 
-  public constructor(seed: WorkbenchSeed, clock: () => Date = () => new Date()) {
+  public constructor(
+    seed: WorkbenchSeed,
+    clock: () => Date = () => new Date(),
+    approvalRepository: WorkbenchApprovalRepository = new InMemoryWorkbenchApprovalRepository(),
+  ) {
     this.#goal = validateGoal(seed.goal);
     this.#rankedOptions = rankStrategicOptions(
       seed.goal.tenantId,
@@ -104,17 +112,18 @@ export class InMemoryWorkbenchService {
     this.#attentionBudget = seed.attentionBudget;
     this.#profile = seed.profile;
     this.#clock = clock;
-    this.#workflow = evolveWorkflow(createWorkflow('workbench_today'), {
+    this.#approvalRepository = approvalRepository;
+    this.#awaitingWorkflow = evolveWorkflow(createWorkflow('workbench_today'), {
       id: 'workbench_today:approval_requested',
       type: 'approval_requested',
     });
   }
 
-  public snapshot(): WorkbenchSnapshot {
-    const approval = this.#workflow.approval;
+  public async snapshot(): Promise<WorkbenchSnapshot> {
+    const approval = await this.#approvalRepository.find();
     return {
       generatedAt: this.#clock().toISOString(),
-      runtime: { source: 'node_api', persistence: 'memory' },
+      runtime: { source: 'node_api', persistence: this.#approvalRepository.persistence },
       profile: this.#profile,
       goal: {
         id: this.#goal.id,
@@ -125,49 +134,59 @@ export class InMemoryWorkbenchService {
       attentionBudget: this.#attentionBudget,
       actions: this.#rankedOptions.map(toWorkbenchAction),
       workflow: {
-        id: this.#workflow.id,
-        status: this.#workflow.status,
-        revision: this.#workflow.revision,
-        ...(this.#approvedActionId ? { approvedActionId: this.#approvedActionId } : {}),
+        id: this.#awaitingWorkflow.id,
+        status: approval ? 'approved' : this.#awaitingWorkflow.status,
+        revision: approval?.revision ?? this.#awaitingWorkflow.revision,
+        ...(approval ? { approvedActionId: approval.actionId } : {}),
         ...(approval ? { approvedAt: approval.approvedAt.toISOString() } : {}),
       },
     };
   }
 
-  public approve(actionId: string, actorId: UserId, occurredAt: Date): WorkbenchSnapshot {
+  public async approve(
+    actionId: string,
+    actorId: UserId,
+    occurredAt: Date,
+  ): Promise<WorkbenchSnapshot> {
     const option = this.#rankedOptions.find((candidate) => candidate.id === actionId);
     if (!option) throw new WorkbenchActionNotFoundError(actionId);
     if (!option.feasible) throw new WorkbenchApprovalConflictError('action_not_feasible');
 
-    if (this.#workflow.status === 'approved') {
-      if (this.#approvedActionId !== actionId) {
-        throw new WorkbenchApprovalConflictError('different_action_approved');
-      }
-      return this.snapshot();
-    }
-
-    this.#workflow = evolveWorkflow(this.#workflow, {
+    evolveWorkflow(this.#awaitingWorkflow, {
       id: `workbench_today:approved:${actionId}`,
       type: 'approved',
       actorId,
       occurredAt,
     });
-    this.#approvedActionId = actionId;
+    const result = await this.#approvalRepository.approve({
+      actionId,
+      actorUserId: actorId,
+      occurredAt,
+      expectedRevision: this.#awaitingWorkflow.revision,
+    });
+    if (result.outcome === 'conflict') {
+      throw new WorkbenchApprovalConflictError('different_action_approved');
+    }
     return this.snapshot();
   }
 }
 
 export function createDefaultWorkbenchService(
   clock: () => Date = () => new Date(),
-): InMemoryWorkbenchService {
-  const tenant = tenantId('tenant_primary');
-  const owner = userId('owner_primary');
+  approvalRepository?: WorkbenchApprovalRepository,
+  identity: Readonly<{ tenantId: string; ownerUserId: string }> = {
+    tenantId: 'tenant_primary',
+    ownerUserId: 'owner_primary',
+  },
+): WorkbenchService {
+  const tenant = tenantId(identity.tenantId);
+  const owner = userId(identity.ownerUserId);
   const valuesEvidence = evidenceId('evidence_values_integrity');
   const relationshipEvidence = evidenceId('evidence_relationship_depth');
   const experienceEvidence = evidenceId('evidence_ambiguity_experience');
   const energyEvidence = evidenceId('evidence_energy_today');
 
-  return new InMemoryWorkbenchService(
+  return new WorkbenchService(
     {
       goal: {
         id: 'goal_trusted_advisor',
@@ -246,6 +265,7 @@ export function createDefaultWorkbenchService(
       ],
     },
     clock,
+    approvalRepository,
   );
 }
 

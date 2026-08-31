@@ -28,7 +28,7 @@ export type WorkbenchSnapshot = Readonly<{
   generatedAt: string;
   runtime: Readonly<{
     source: 'node_api' | 'preview_worker';
-    persistence: 'memory' | 'ephemeral';
+    persistence: 'memory' | 'postgres' | 'ephemeral';
   }>;
   profile: Readonly<{
     maturityPercent: number;
@@ -108,28 +108,29 @@ async function requestWorkbench(url: string, init: RequestInit): Promise<Workben
 }
 
 function readErrorCode(payload: unknown): string {
-  if (!payload || typeof payload !== 'object') return 'unknown_error';
-  const error = Reflect.get(payload, 'error');
+  if (!isRecord(payload)) return 'unknown_error';
+  const error = payload['error'];
   return typeof error === 'string' ? error : 'unknown_error';
 }
 
 function isWorkbenchSnapshot(payload: unknown): payload is WorkbenchSnapshot {
-  if (!payload || typeof payload !== 'object') return false;
-  const actions = Reflect.get(payload, 'actions');
-  const goal = Reflect.get(payload, 'goal');
-  const workflow = Reflect.get(payload, 'workflow');
-  const runtime = Reflect.get(payload, 'runtime');
+  if (!isRecord(payload)) return false;
+  const actions = payload['actions'];
+  const goal = payload['goal'];
+  const workflow = payload['workflow'];
+  const runtime = payload['runtime'];
   return (
     Array.isArray(actions) &&
     actions.length >= 3 &&
-    goal !== null &&
-    typeof goal === 'object' &&
-    typeof Reflect.get(goal, 'title') === 'string' &&
-    workflow !== null &&
-    typeof workflow === 'object' &&
-    typeof Reflect.get(workflow, 'status') === 'string' &&
-    runtime !== null &&
-    typeof runtime === 'object' &&
-    typeof Reflect.get(runtime, 'source') === 'string'
+    isRecord(goal) &&
+    typeof goal['title'] === 'string' &&
+    isRecord(workflow) &&
+    typeof workflow['status'] === 'string' &&
+    isRecord(runtime) &&
+    typeof runtime['source'] === 'string'
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

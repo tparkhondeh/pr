@@ -3,7 +3,7 @@ import type { UserId } from '../kernel/identity.js';
 import {
   WorkbenchActionNotFoundError,
   WorkbenchApprovalConflictError,
-  type InMemoryWorkbenchService,
+  type WorkbenchService,
 } from '../workbench/workbench.js';
 
 export type ReadinessCheck = () =>
@@ -11,7 +11,7 @@ export type ReadinessCheck = () =>
   | Readonly<{ ready: boolean; reason?: string }>;
 
 export type ApplicationDependencies = Readonly<{
-  workbench?: Pick<InMemoryWorkbenchService, 'snapshot' | 'approve'>;
+  workbench?: Pick<WorkbenchService, 'snapshot' | 'approve'>;
   resolveActor?: (request: IncomingMessage) => UserId | undefined;
   clock?: () => Date;
 }>;
@@ -52,7 +52,7 @@ export function createRequestHandler(
         sendJson(response, 503, { error: 'workbench_unavailable' });
         return;
       }
-      sendJson(response, 200, dependencies.workbench.snapshot());
+      sendJson(response, 200, await dependencies.workbench.snapshot());
       return;
     }
 
@@ -88,7 +88,7 @@ async function handleApproval(
       sendJson(response, 400, { error: 'invalid_action_id' });
       return;
     }
-    const snapshot = dependencies.workbench.approve(
+    const snapshot = await dependencies.workbench.approve(
       actionId,
       actorId,
       (dependencies.clock ?? (() => new Date()))(),

@@ -9,8 +9,8 @@ import {
 const fixedTime = new Date('2026-08-31T12:00:00.000Z');
 
 describe('workbench application state', () => {
-  it('exposes ranked evidence-aware choices including deliberate no-action', () => {
-    const snapshot = createDefaultWorkbenchService(() => fixedTime).snapshot();
+  it('exposes ranked evidence-aware choices including deliberate no-action', async () => {
+    const snapshot = await createDefaultWorkbenchService(() => fixedTime).snapshot();
 
     expect(snapshot.generatedAt).toBe(fixedTime.toISOString());
     expect(snapshot.runtime).toEqual({ source: 'node_api', persistence: 'memory' });
@@ -21,9 +21,9 @@ describe('workbench application state', () => {
     expect(snapshot.actions.every((action) => action.evidenceCount > 0)).toBe(true);
   });
 
-  it('records human approval without executing the action', () => {
+  it('records human approval without executing the action', async () => {
     const service = createDefaultWorkbenchService(() => fixedTime);
-    const approved = service.approve('conversation', userId('owner_primary'), fixedTime);
+    const approved = await service.approve('conversation', userId('owner_primary'), fixedTime);
 
     expect(approved.workflow).toMatchObject({
       status: 'approved',
@@ -33,22 +33,22 @@ describe('workbench application state', () => {
     expect(approved.workflow.status).not.toBe('running');
   });
 
-  it('is idempotent for the same approval and rejects replacement approval', () => {
+  it('is idempotent for the same approval and rejects replacement approval', async () => {
     const service = createDefaultWorkbenchService(() => fixedTime);
     const actor = userId('owner_primary');
-    const first = service.approve('conversation', actor, fixedTime);
-    const repeated = service.approve('conversation', actor, fixedTime);
+    const first = await service.approve('conversation', actor, fixedTime);
+    const repeated = await service.approve('conversation', actor, fixedTime);
 
     expect(repeated.workflow.revision).toBe(first.workflow.revision);
-    expect(() => service.approve('essay', actor, fixedTime)).toThrow(
+    await expect(service.approve('essay', actor, fixedTime)).rejects.toThrow(
       WorkbenchApprovalConflictError,
     );
   });
 
-  it('rejects unknown actions', () => {
+  it('rejects unknown actions', async () => {
     const service = createDefaultWorkbenchService(() => fixedTime);
-    expect(() => service.approve('missing', userId('owner_primary'), fixedTime)).toThrow(
-      WorkbenchActionNotFoundError,
-    );
+    await expect(
+      service.approve('missing', userId('owner_primary'), fixedTime),
+    ).rejects.toThrow(WorkbenchActionNotFoundError);
   });
 });

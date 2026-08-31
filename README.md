@@ -42,5 +42,7 @@ pnpm web:dev
 Workbench فعلی حلقه تصمیم MVP را نمایش می‌دهد: Goal، سه Action شامل عدم اقدام،
 Attention Budget، Evidence، Risk و Approval انسانی. View از `GET /api/workbench`
 داده می‌گیرد و تأیید را با `POST /api/workbench/approval` ثبت می‌کند. Store فعلی
-حافظه‌ای است و با Restart پاک می‌شود؛ جایگزینی آن با PostgreSQL در Increment بعد است.
-نسخه خصوصی Sites نیز همین قرارداد را با state موقت Worker برای تست UI ارائه می‌کند.
+بدون تنظیم دیتابیس حافظه‌ای است و با Restart پاک می‌شود. با تنظیم هم‌زمان
+`DATABASE_URL`، `PR_TENANT_ID` و `PR_OWNER_USER_ID`، تأیید با Optimistic Lock در
+PostgreSQL ذخیره و در همان Transaction به Audit Log و Outbox افزوده می‌شود.
+نسخه خصوصی Sites همین قرارداد را با state موقت Worker برای تست UI ارائه می‌کند.

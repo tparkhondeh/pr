@@ -56,7 +56,7 @@ export function App() {
       setSelected((current) =>
         next.actions.some((action) => action.id === current)
           ? current
-          : (next.workflow.approvedActionId ?? next.actions[0]?.id ?? ''),
+          : (next.workflow.approvedActionId ?? next.actions[0].id),
       );
       setState('ready');
     } catch (caught: unknown) {
@@ -69,7 +69,9 @@ export function App() {
   useEffect(() => {
     const controller = new AbortController();
     void refresh(controller.signal);
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+    };
   }, [refresh]);
 
   const selectedAction = useMemo(
@@ -151,7 +153,7 @@ export function App() {
           </div>
           <div className="top-actions">
             <span className="system-state">
-              <i /> API متصل · {snapshot.runtime.persistence === 'ephemeral' ? 'نسخه نمایشی' : 'حافظه موقت'}
+              <i /> API متصل · {persistenceLabel(snapshot.runtime.persistence)}
             </span>
             <button className="avatar" type="button" aria-label="پروفایل کاربر">TP</button>
           </div>
@@ -184,7 +186,9 @@ export function App() {
                 className={selected === action.id ? 'option selected' : 'option'}
                 disabled={!action.feasible}
                 key={action.id}
-                onClick={() => setSelected(action.id)}
+                onClick={() => {
+                  setSelected(action.id);
+                }}
                 type="button"
               >
                 <span className="rank">{String(action.rank).padStart(2, '۰')}</span>
@@ -240,6 +244,12 @@ function formatMinutes(minutes: number): string {
   if (minutes % 60 === 0) return `${String(minutes / 60)} ساعت`;
   if (minutes > 60) return `${String(Math.floor(minutes / 60))} ساعت و ${String(minutes % 60)} دقیقه`;
   return `${String(minutes)} دقیقه`;
+}
+
+function persistenceLabel(persistence: WorkbenchSnapshot['runtime']['persistence']): string {
+  if (persistence === 'postgres') return 'ذخیره پایدار';
+  if (persistence === 'ephemeral') return 'نسخه نمایشی';
+  return 'حافظه موقت';
 }
 
 function formatConfidence(confidence: number | undefined): string {
