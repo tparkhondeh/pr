@@ -122,7 +122,7 @@ async function handleConversationTurn(
       sendJson(response, 400, { error: 'invalid_conversation_turn' });
       return;
     }
-    const result = dependencies.conversation.submitTurn({
+    const result = await dependencies.conversation.submitTurn({
       tenantId: dependencies.tenantId,
       actorId,
       conversationId,
@@ -174,7 +174,7 @@ async function handleMemoryConfirmation(
       sendJson(response, 400, { error: 'invalid_memory_permissions' });
       return;
     }
-    const confirmed = dependencies.conversation.confirmMemory({
+    const confirmed = await dependencies.conversation.confirmMemory({
       tenantId: dependencies.tenantId,
       actorId,
       proposalId,
@@ -189,7 +189,7 @@ async function handleMemoryConfirmation(
       },
       permissions: confirmed.permissions,
       confirmedAt: confirmed.confirmedAt.toISOString(),
-      persistence: 'memory',
+      persistence: confirmed.persistence,
     });
   } catch (error: unknown) {
     sendConversationError(response, error);

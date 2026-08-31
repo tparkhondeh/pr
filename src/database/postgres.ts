@@ -3,7 +3,7 @@ import type {
   SqlQueryResult,
   SqlTransaction,
   SqlTransactionRunner,
-} from '../workbench/approval-repository.js';
+} from './sql.js';
 
 export class PostgresRuntime implements SqlTransactionRunner {
   readonly #pool: Pool;

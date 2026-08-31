@@ -30,6 +30,10 @@ const workbenchMigrationPath = fileURLToPath(
   new URL('../db/migrations/0006_workbench_state.sql', import.meta.url),
 );
 const workbenchSql = readFileSync(workbenchMigrationPath, 'utf8');
+const conversationMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0007_conversation_memory.sql', import.meta.url),
+);
+const conversationSql = readFileSync(conversationMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -123,5 +127,22 @@ describe('foundation migration', () => {
     expect(workbenchSql).toContain(
       "status NOT IN ('approved', 'running', 'completed', 'failed')",
     );
+  });
+
+  it('adds tenant-isolated conversation and consent-first memory staging', () => {
+    defineMigration('0007_conversation_memory', conversationSql);
+    for (const table of [
+      'conversation_threads',
+      'conversation_turns',
+      'memory_proposals',
+    ]) {
+      expect(conversationSql).toContain(`CREATE TABLE app.${table}`);
+      expect(conversationSql).toContain(
+        `ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`,
+      );
+      expect(conversationSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
+    expect(conversationSql).toContain("status = 'confirmed' AND permissions IS NOT NULL");
+    expect(conversationSql).toContain('content_sha256 text NOT NULL');
   });
 });

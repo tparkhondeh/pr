@@ -2,7 +2,8 @@
 
 این مخزن برای طراحی و توسعه یک سیستم هوشمند و ماندگار مدیریت برند شخصی، اعتبار، روایت، روابط و PR ایجاد شده است.
 
-وضعیت فعلی: **Architecture & Product Discovery**. مطابق Master Context، تا عبور از Quality Gate مرحله معماری، پیاده‌سازی Feature، UI، Backend و Database آغاز نمی‌شود.
+وضعیت فعلی: **Foundation و MVP Workbench در حال توسعه**. Data/Policy Kernel، API،
+Workbench وب، Approval انسانی و ورودی مکالمه‌ای Consent-first پیاده‌سازی شده‌اند.
 
 ## اسناد فعلی
 
@@ -51,3 +52,6 @@ PostgreSQL ذخیره و در همان Transaction به Audit Log و Outbox اف
 پیشنهاد حافظه پیش‌فرض خاموش است و حتی پس از فعال‌کردن، ثبت نهایی فقط با درخواست دوم
 `POST /api/memory/proposals/:id/confirm` انجام می‌شود. خروجی اولیه همیشه
 `self_report` و `confidential` است و مجوز Brand/Public به‌طور خودکار داده نمی‌شود.
+وقتی Opt-in خاموش است، متن مکالمه در Store پایدار ثبت نمی‌شود. با تنظیم متغیرهای
+PostgreSQL، Proposal انتخاب‌شده و تأیید آن همراه Evidence، Assertion، Consent، Audit
+و Outbox در یک Transaction ذخیره می‌شوند؛ در نبود دیتابیس، Store حافظه‌ای و موقت است.

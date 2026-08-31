@@ -1,3 +1,5 @@
+import type { SqlTransaction, SqlTransactionRunner } from '../database/sql.js';
+
 export type WorkbenchApprovalRecord = Readonly<{
   workflowId: string;
   revision: number;
@@ -21,19 +23,6 @@ export interface WorkbenchApprovalRepository {
   readonly persistence: 'memory' | 'postgres';
   find(): Promise<WorkbenchApprovalRecord | null>;
   approve(command: WorkbenchApprovalCommand): Promise<WorkbenchApprovalResult>;
-}
-
-export type SqlQueryResult<Row> = Readonly<{
-  rows: readonly Row[];
-  rowCount: number;
-}>;
-
-export interface SqlTransaction {
-  query<Row>(sql: string, values?: readonly unknown[]): Promise<SqlQueryResult<Row>>;
-}
-
-export interface SqlTransactionRunner {
-  transaction<Result>(operation: (transaction: SqlTransaction) => Promise<Result>): Promise<Result>;
 }
 
 export class InMemoryWorkbenchApprovalRepository implements WorkbenchApprovalRepository {

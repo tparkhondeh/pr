@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import {
-  PostgresWorkbenchApprovalRepository,
-  type SqlQueryResult,
-  type SqlTransaction,
-  type SqlTransactionRunner,
-} from '../src/workbench/approval-repository.js';
+import type {
+  SqlQueryResult,
+  SqlTransaction,
+  SqlTransactionRunner,
+} from '../src/database/sql.js';
+import { PostgresWorkbenchApprovalRepository } from '../src/workbench/approval-repository.js';
 
 type RecordedQuery = Readonly<{ sql: string; values: readonly unknown[] }>;
 

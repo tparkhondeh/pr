@@ -86,7 +86,7 @@ export type ConfirmedMemory = Readonly<{
     publicUsage: false;
   }>;
   confirmedAt: string;
-  persistence: 'memory' | 'ephemeral';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
 }>;
 
 export class WorkbenchApiError extends Error {
@@ -239,7 +239,11 @@ function isConfirmedMemory(payload: unknown): payload is ConfirmedMemory {
     permissions['brandUsage'] === false &&
     permissions['publicUsage'] === false &&
     typeof payload['confirmedAt'] === 'string' &&
-    (payload['persistence'] === 'memory' || payload['persistence'] === 'ephemeral')
+    (
+      payload['persistence'] === 'memory' ||
+      payload['persistence'] === 'postgres' ||
+      payload['persistence'] === 'ephemeral'
+    )
   );
 }
 

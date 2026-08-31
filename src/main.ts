@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { loadEnvironment } from './config/environment.js';
 import { ConversationIntakeService } from './conversation/intake.js';
+import { PostgresConversationMemoryRepository } from './conversation/repository.js';
 import { PostgresRuntime } from './database/postgres.js';
 import { createRequestHandler } from './http/application.js';
 import { tenantId, userId } from './kernel/identity.js';
@@ -18,6 +19,12 @@ const approvalRepository = postgres && environment.database
       workflowId: 'workbench_today',
     })
   : undefined;
+const conversationRepository = postgres && environment.database
+  ? new PostgresConversationMemoryRepository(postgres, {
+      tenantId: environment.database.tenantId,
+      ownerUserId: environment.database.ownerUserId,
+    })
+  : undefined;
 const ownerUserId = environment.database?.ownerUserId ?? 'owner_primary';
 const activeTenantId = environment.database?.tenantId ?? 'tenant_primary';
 
@@ -31,7 +38,7 @@ const workbench = createDefaultWorkbenchService(
       }
     : undefined,
 );
-const conversation = new ConversationIntakeService();
+const conversation = new ConversationIntakeService(conversationRepository);
 const requestHandler = createRequestHandler(
   () => postgres?.readiness() ?? { ready: true },
   {

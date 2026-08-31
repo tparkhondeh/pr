@@ -56,7 +56,9 @@ export function App() {
   const [conversationResult, setConversationResult] = useState<ConversationTurnResult | null>(null);
   const [conversationState, setConversationState] = useState<'idle' | 'sending' | 'confirming'>('idle');
   const [memoryConfirmed, setMemoryConfirmed] = useState(false);
-  const [memoryPersistence, setMemoryPersistence] = useState<'memory' | 'ephemeral' | null>(null);
+  const [memoryPersistence, setMemoryPersistence] = useState<
+    'memory' | 'postgres' | 'ephemeral' | null
+  >(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState('loading');
@@ -277,8 +279,12 @@ export function App() {
                 ) : null}
                 {memoryConfirmed ? (
                   <em>
-                    <Check size={15} /> به‌عنوان Self-report محرمانه در حافظه موقت
-                    {memoryPersistence === 'ephemeral' ? ' نسخه نمایشی' : ' این اجرا'} ثبت شد؛
+                    <Check size={15} /> به‌عنوان Self-report محرمانه در
+                    {memoryPersistence === 'postgres'
+                      ? ' حافظه پایدار'
+                      : memoryPersistence === 'ephemeral'
+                        ? ' حافظه موقت نسخه نمایشی'
+                        : ' حافظه موقت این اجرا'} ثبت شد؛
                     استفاده برند و عمومی خاموش است.
                   </em>
                 ) : null}

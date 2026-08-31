@@ -5,6 +5,12 @@ import {
   evidenceId,
   type Assertion,
 } from '../memory/personal-memory.js';
+import {
+  ConversationRepositoryConflictError,
+  ConversationRepositoryPermissionError,
+  InMemoryConversationMemoryRepository,
+  type ConversationMemoryRepository,
+} from './repository.js';
 
 export type MemoryUsePermissions = Readonly<{
   personalUnderstanding: boolean;
@@ -36,6 +42,7 @@ export type ConfirmedMemory = Readonly<{
   assertion: Assertion;
   permissions: MemoryUsePermissions;
   confirmedAt: Date;
+  persistence: 'memory' | 'postgres';
 }>;
 
 export class ConversationValidationError extends Error {}
@@ -44,10 +51,11 @@ export class MemoryProposalPermissionError extends Error {}
 export class MemoryProposalConflictError extends Error {}
 
 export class ConversationIntakeService {
-  readonly #proposals = new Map<string, MemoryProposal>();
-  readonly #confirmed = new Map<string, ConfirmedMemory>();
+  public constructor(
+    private readonly repository: ConversationMemoryRepository = new InMemoryConversationMemoryRepository(),
+  ) {}
 
-  public submitTurn(request: Readonly<{
+  public async submitTurn(request: Readonly<{
     tenantId: TenantId;
     actorId: UserId;
     conversationId: string;
@@ -55,7 +63,7 @@ export class ConversationIntakeService {
     text: string;
     proposeMemory: boolean;
     occurredAt: Date;
-  }>): ConversationTurnResult {
+  }>): Promise<ConversationTurnResult> {
     validateSafeId(request.conversationId, 'Conversation', 64);
     validateSafeId(request.turnId, 'Turn', 48);
     const text = request.text.trim();
@@ -75,22 +83,6 @@ export class ConversationIntakeService {
     }
 
     const proposalId = `memory_${request.turnId}`;
-    const existing = this.#proposals.get(proposalId);
-    if (existing) {
-      if (
-        existing.tenantId !== request.tenantId ||
-        existing.ownerUserId !== request.actorId ||
-        existing.text !== text
-      ) {
-        throw new MemoryProposalConflictError('Turn ID is already used by another proposal.');
-      }
-      return {
-        assistantMessage: 'این برداشت فقط یک Self-report پیشنهادی است و هنوز حافظه قطعی نیست.',
-        followUpQuestion: existing.followUpQuestion,
-        memoryProposal: existing,
-      };
-    }
-
     const memoryProposal: MemoryProposal = {
       id: proposalId,
       tenantId: request.tenantId,
@@ -104,22 +96,23 @@ export class ConversationIntakeService {
       occurredAt: request.occurredAt,
       followUpQuestion,
     };
-    this.#proposals.set(memoryProposal.id, memoryProposal);
+    const persisted = await this.persistTurn(request, followUpQuestion, memoryProposal);
+    if (!persisted) throw new Error('Memory proposal was not returned by the repository.');
     return {
       assistantMessage: 'این برداشت فقط یک Self-report پیشنهادی است و هنوز حافظه قطعی نیست.',
-      followUpQuestion,
-      memoryProposal,
+      followUpQuestion: persisted.followUpQuestion,
+      memoryProposal: persisted,
     };
   }
 
-  public confirmMemory(request: Readonly<{
+  public async confirmMemory(request: Readonly<{
     tenantId: TenantId;
     actorId: UserId;
     proposalId: string;
     permissions: MemoryUsePermissions;
     confirmedAt: Date;
-  }>): ConfirmedMemory {
-    const proposal = this.#proposals.get(request.proposalId);
+  }>): Promise<ConfirmedMemory> {
+    const proposal = await this.repository.findProposal(request.tenantId, request.proposalId);
     if (!proposal || proposal.tenantId !== request.tenantId) {
       throw new MemoryProposalNotFoundError('Memory proposal was not found.');
     }
@@ -141,16 +134,32 @@ export class ConversationIntakeService {
       throw new ConversationValidationError('Memory confirmation time is invalid.');
     }
 
-    const existing = this.#confirmed.get(proposal.id);
-    if (existing) {
-      if (!samePermissions(existing.permissions, request.permissions)) {
-        throw new MemoryProposalConflictError('Confirmed permissions cannot be changed implicitly.');
+    let persistenceResult;
+    try {
+      persistenceResult = await this.repository.confirm({
+        proposal,
+        actorId: request.actorId,
+        permissions: request.permissions,
+        confirmedAt: request.confirmedAt,
+      });
+    } catch (error: unknown) {
+      if (error instanceof ConversationRepositoryPermissionError) {
+        throw new MemoryProposalPermissionError(error.message);
       }
-      return existing;
+      if (error instanceof ConversationRepositoryConflictError) {
+        throw new MemoryProposalConflictError(error.message);
+      }
+      throw error;
+    }
+    if (persistenceResult.outcome === 'not_found') {
+      throw new MemoryProposalNotFoundError('Memory proposal was not found.');
+    }
+    if (persistenceResult.outcome === 'conflict') {
+      throw new MemoryProposalConflictError('Confirmed permissions cannot be changed implicitly.');
     }
 
     const assertion = createAssertion({
-      id: assertionId(`assertion_${proposal.turnId}`),
+      id: assertionId(persistenceResult.assertionId),
       tenantId: proposal.tenantId,
       subjectRef: proposal.ownerUserId,
       predicate: 'shared_reflection',
@@ -161,22 +170,53 @@ export class ConversationIntakeService {
       confidenceRationale: 'Single user self-report; not independently corroborated.',
       evidence: [
         {
-          evidenceId: evidenceId(`evidence_${proposal.turnId}`),
+          evidenceId: evidenceId(persistenceResult.evidenceId),
           relation: 'supports',
           rationale: `Conversation ${proposal.conversationId}`,
         },
       ],
       validFrom: proposal.occurredAt,
-      createdAt: request.confirmedAt,
+      createdAt: persistenceResult.confirmedAt,
       createdBy: request.actorId,
     });
     const confirmed: ConfirmedMemory = {
       assertion,
-      permissions: request.permissions,
-      confirmedAt: request.confirmedAt,
+      permissions: persistenceResult.permissions,
+      confirmedAt: persistenceResult.confirmedAt,
+      persistence: this.repository.persistence,
     };
-    this.#confirmed.set(proposal.id, confirmed);
     return confirmed;
+  }
+
+  private async persistTurn(
+    request: Readonly<{
+      tenantId: TenantId;
+      actorId: UserId;
+      conversationId: string;
+      turnId: string;
+      text: string;
+      proposeMemory: boolean;
+      occurredAt: Date;
+    }>,
+    followUpQuestion: string,
+    proposal?: MemoryProposal,
+  ): Promise<MemoryProposal | undefined> {
+    try {
+      return await this.repository.saveTurn({
+        ...request,
+        text: request.text.trim(),
+        followUpQuestion,
+        ...(proposal ? { proposal } : {}),
+      });
+    } catch (error: unknown) {
+      if (error instanceof ConversationRepositoryPermissionError) {
+        throw new MemoryProposalPermissionError(error.message);
+      }
+      if (error instanceof ConversationRepositoryConflictError) {
+        throw new MemoryProposalConflictError(error.message);
+      }
+      throw error;
+    }
   }
 }
 
@@ -199,15 +239,4 @@ function validateSafeId(value: string, label: string, maximumLength: number): vo
       `${label} ID must be 3-${String(maximumLength)} safe characters.`,
     );
   }
-}
-
-function samePermissions(
-  left: MemoryUsePermissions,
-  right: MemoryUsePermissions,
-): boolean {
-  return (
-    left.personalUnderstanding === right.personalUnderstanding &&
-    left.brandUsage === right.brandUsage &&
-    left.publicUsage === right.publicUsage
-  );
 }
