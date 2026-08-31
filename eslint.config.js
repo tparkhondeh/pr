@@ -8,6 +8,7 @@ export default tseslint.config(
       'coverage/**',
       'eslint.config.js',
       'apps/web/public/server/index.js',
+      'deploy/cpanel/ecosystem.config.cjs',
     ],
   },
   eslint.configs.recommended,

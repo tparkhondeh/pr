@@ -20,6 +20,11 @@ Workbench وب، Approval انسانی و ورودی مکالمه‌ای Consent
 - Server source path: `/home/wealthos/apps/pr`
 - cPanel document root: `/home/wealthos/pr.wealthos.ir`
 
+پیکربندی Preview محافظت‌شده cPanel در [deploy/cpanel](deploy/cpanel) نگه‌داری می‌شود.
+دامنه واقعی تا زمان جایگزینی Single-owner bootstrap با Session معتبر، فقط پشت Basic
+Auth قابل استقرار است. Node API با PM2 روی Loopback اجرا و مسیرهای API از Document
+Root به آن Proxy می‌شوند؛ حذف این Gate برای تست عمومی مجاز نیست.
+
 اطلاعات حساس، کلیدها و Secretها نباید وارد Git شوند.
 
 ## اجرای Foundation در لوکال
