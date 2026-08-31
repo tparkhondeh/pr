@@ -435,6 +435,27 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
     this.assertContext(command.tenantId, command.actorId);
     return await this.runner.transaction(async (transaction) => {
       await setTenantContext(transaction, this.context.tenantId);
+      const thread = await transaction.query<Readonly<{ id: string; external_ref: string }>>(
+        `INSERT INTO app.conversation_threads (
+           tenant_id, owner_user_id, external_ref, updated_at
+         ) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (tenant_id, owner_user_id, external_ref)
+         DO UPDATE SET updated_at = GREATEST(
+           app.conversation_threads.updated_at,
+           EXCLUDED.updated_at
+         )
+         RETURNING id, external_ref`,
+        [
+          this.context.tenantId,
+          this.context.ownerUserId,
+          command.conversationId,
+          command.occurredAt,
+        ],
+      );
+      const storedThread = thread.rows[0];
+      if (!storedThread || storedThread.external_ref !== command.conversationId) {
+        throw new ConversationRepositoryConflictError('Conversation thread was not persisted.');
+      }
       const turn = await transaction.query<Readonly<{
         conversation_ref: string;
         user_text: string;
@@ -443,39 +464,31 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
         content_sha256: string;
         orchestration_matches: boolean;
       }>>(
-        `WITH thread AS (
-           INSERT INTO app.conversation_threads (
-             tenant_id, owner_user_id, external_ref, updated_at
-           ) VALUES ($1, $2, $3, $7)
-           ON CONFLICT (tenant_id, owner_user_id, external_ref)
-           DO UPDATE SET updated_at = GREATEST(
-             app.conversation_threads.updated_at,
-             EXCLUDED.updated_at
-           )
-           RETURNING id, external_ref
-         ), inserted AS (
+        `WITH inserted AS (
            INSERT INTO app.conversation_turns (
              tenant_id, thread_id, actor_user_id, client_ref, user_text,
              assistant_question, propose_memory, content_sha256, occurred_at,
              orchestration_snapshot
            )
-           SELECT $1, id, $2, $4, $5, $6, $8, $9, $7, $10::jsonb FROM thread
+           VALUES ($1, $11, $2, $4, $5, $6, $8, $9, $7, $10::jsonb)
            ON CONFLICT (tenant_id, actor_user_id, client_ref) DO NOTHING
-           RETURNING id
-         ), selected AS (
-           SELECT id FROM inserted
-           UNION ALL
-           SELECT id FROM app.conversation_turns
-            WHERE tenant_id = $1 AND actor_user_id = $2 AND client_ref = $4
-           LIMIT 1
+           RETURNING user_text, assistant_question, propose_memory,
+             content_sha256, orchestration_snapshot
          )
+         SELECT $3::text AS conversation_ref, inserted.user_text,
+                inserted.assistant_question, inserted.propose_memory,
+                inserted.content_sha256,
+                inserted.orchestration_snapshot = $10::jsonb AS orchestration_matches
+           FROM inserted
+         UNION ALL
          SELECT thread.external_ref AS conversation_ref, turn.user_text,
-                turn.assistant_question, turn.propose_memory,
-                turn.content_sha256,
+                turn.assistant_question, turn.propose_memory, turn.content_sha256,
                 turn.orchestration_snapshot = $10::jsonb AS orchestration_matches
-           FROM selected
-           JOIN app.conversation_turns turn ON turn.id = selected.id AND turn.tenant_id = $1
-           JOIN thread ON thread.id = turn.thread_id`,
+           FROM app.conversation_turns turn
+           JOIN app.conversation_threads thread
+             ON thread.tenant_id = turn.tenant_id AND thread.id = turn.thread_id
+          WHERE turn.tenant_id = $1 AND turn.actor_user_id = $2 AND turn.client_ref = $4
+         LIMIT 1`,
         [
           this.context.tenantId,
           this.context.ownerUserId,
@@ -487,6 +500,7 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
           command.proposeMemory,
           textSha256(command.text),
           JSON.stringify(command.orchestration),
+          storedThread.id,
         ],
       );
       const storedTurn = turn.rows[0];

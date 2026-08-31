@@ -96,6 +96,13 @@ describe('Postgres conversation memory repository', () => {
       { rows: [], rowCount: 1 },
       {
         rows: [{
+          id: '66666666-6666-4666-8666-666666666666',
+          external_ref: proposal.conversationId,
+        }],
+        rowCount: 1,
+      },
+      {
+        rows: [{
           conversation_ref: proposal.conversationId,
           user_text: proposal.text,
           assistant_question: proposal.followUpQuestion,
@@ -129,10 +136,10 @@ describe('Postgres conversation memory repository', () => {
     expect(persisted).toMatchObject({ id: proposal.id, text: proposal.text });
     expect(runner.transactions).toBe(1);
     expect(transaction.queries[0]?.sql).toContain("set_config('app.tenant_id'");
-    expect(transaction.queries[1]?.sql).toContain('app.conversation_turns');
-    expect(transaction.queries[1]?.sql).toContain('orchestration_snapshot = $10::jsonb');
-    expect(transaction.queries[1]?.sql).toContain('JOIN thread ON thread.id = turn.thread_id');
-    expect(transaction.queries[2]?.sql).toContain('app.memory_proposals');
+    expect(transaction.queries[1]?.sql).toContain('app.conversation_threads');
+    expect(transaction.queries[2]?.sql).toContain('app.conversation_turns');
+    expect(transaction.queries[2]?.sql).toContain('orchestration_snapshot = $10::jsonb');
+    expect(transaction.queries[3]?.sql).toContain('app.memory_proposals');
   });
 
   it('confirms evidence, assertion, consent, audit and outbox in one transaction', async () => {
