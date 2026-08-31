@@ -46,6 +46,7 @@ jobs:
           --health-retries 10
     env:
       PR_TEST_ADMIN_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/pr_test
+      PR_TEST_APP_DATABASE_URL: postgresql://pr_app_test:pr_app_test_password@127.0.0.1:5432/pr_test
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

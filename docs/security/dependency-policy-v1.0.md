@@ -18,6 +18,8 @@
 7. Script install ناشناخته یا bypass کردن minimum-release/security policy مجاز نیست.
 8. Secret، credential و داده شخصی در fixture، package config یا log dependency ثبت
    نمی‌شود.
+9. `DATABASE_URL` Runtime هرگز نباید superuser، owner عملیاتی یا دارای
+   `BYPASSRLS` باشد؛ migration credential جداست و وارد PM2/runtime نمی‌شود.
 
 ## Enforcement
 

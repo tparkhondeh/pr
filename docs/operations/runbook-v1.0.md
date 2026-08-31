@@ -11,6 +11,9 @@ RLS و logical dump/restore را در یک دیتابیس تازه drill می‌
 
 - `GET /health`: فقط زنده‌بودن Process؛ وابستگی‌ها را بررسی نمی‌کند.
 - `GET /ready`: آمادگی دریافت Traffic؛ در خطای DB، migration، policy store یا dependency حیاتی باید `503` بدهد.
+- Runtime DB principal باید non-superuser، بدون `BYPASSRLS` و با `row_security=on`
+  باشد؛ migration journal نیز باید دقیقاً روی آخرین نسخه Schema باشد. در غیر این صورت
+  `/ready` با `database_role_unsafe` یا `database_schema_outdated` برابر `503` می‌شود.
 
 Load balancer فقط باید `/ready` را مبنای Routing قرار دهد.
 

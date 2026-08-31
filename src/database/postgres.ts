@@ -5,6 +5,18 @@ import type {
   SqlTransactionRunner,
 } from './sql.js';
 
+export const latestSchemaMigration = '0014_text_asset_rights';
+
+export type DatabasePrincipal = Readonly<{
+  superuser: boolean;
+  bypassRls: boolean;
+  rowSecurity: string;
+}>;
+
+export function isSafeDatabasePrincipal(principal: DatabasePrincipal): boolean {
+  return !principal.superuser && !principal.bypassRls && principal.rowSecurity === 'on';
+}
+
 export class PostgresRuntime implements SqlTransactionRunner {
   readonly #pool: Pool;
 
@@ -40,7 +52,37 @@ export class PostgresRuntime implements SqlTransactionRunner {
 
   public async readiness(): Promise<Readonly<{ ready: boolean; reason?: string }>> {
     try {
-      await this.#pool.query('SELECT 1');
+      const principalResult = await this.#pool.query<Readonly<{
+        superuser: boolean;
+        bypass_rls: boolean;
+        row_security: string;
+      }>>(`
+        SELECT role.rolsuper AS superuser,
+               role.rolbypassrls AS bypass_rls,
+               current_setting('row_security') AS row_security
+          FROM pg_roles role
+         WHERE role.rolname = current_user
+      `);
+      const principal = principalResult.rows[0];
+      if (!principal || !isSafeDatabasePrincipal({
+        superuser: principal.superuser,
+        bypassRls: principal.bypass_rls,
+        rowSecurity: principal.row_security,
+      })) {
+        return { ready: false, reason: 'database_role_unsafe' };
+      }
+      const journalResult = await this.#pool.query<Readonly<{ present: boolean }>>(
+        "SELECT to_regclass('public.pr_schema_migrations') IS NOT NULL AS present",
+      );
+      if (!journalResult.rows[0]?.present) {
+        return { ready: false, reason: 'database_schema_outdated' };
+      }
+      const schemaResult = await this.#pool.query<Readonly<{ latest: string | null }>>(
+        'SELECT max(id) AS latest FROM public.pr_schema_migrations',
+      );
+      if (schemaResult.rows[0]?.latest !== latestSchemaMigration) {
+        return { ready: false, reason: 'database_schema_outdated' };
+      }
       return { ready: true };
     } catch {
       return { ready: false, reason: 'database_unavailable' };

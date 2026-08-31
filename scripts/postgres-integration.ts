@@ -6,12 +6,14 @@ import {
   type MigrationConnection,
 } from '../src/database/migration-runner.js';
 import type { SqlQueryResult } from '../src/database/sql.js';
+import { PostgresRuntime } from '../src/database/postgres.js';
 import { defineMigration } from '../src/kernel/migrations.js';
 
 const tenantA = '11111111-1111-4111-8111-111111111111';
 const tenantB = '22222222-2222-4222-8222-222222222222';
 const userA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const userB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const applicationRolePassword = 'pr_app_test_password';
 
 class PgMigrationConnection implements MigrationConnection {
   public constructor(private readonly client: Client) {}
@@ -46,6 +48,7 @@ async function main(): Promise<void> {
     await seedIsolationFixtures(client);
     await verifyTenantPolicies(client);
     await verifyRuntimeIsolation(client);
+    await verifyRuntimeReadiness(connectionString);
     process.stdout.write(
       `PostgreSQL integration passed (${String(migrations.length)} migrations, RLS enforced).\n`,
     );
@@ -57,14 +60,39 @@ async function main(): Promise<void> {
 async function createApplicationRole(client: Client): Promise<void> {
   await client.query(`
     DO $$ BEGIN
-      CREATE ROLE pr_app_test NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+      CREATE ROLE pr_app_test LOGIN PASSWORD '${applicationRolePassword}'
+        NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
     EXCEPTION WHEN duplicate_object THEN NULL;
     END $$
   `);
+  await client.query(`ALTER ROLE pr_app_test LOGIN PASSWORD '${applicationRolePassword}'
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS`);
   await client.query('GRANT USAGE ON SCHEMA app TO pr_app_test');
   await client.query('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app TO pr_app_test');
   await client.query('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO pr_app_test');
   await client.query('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA app TO pr_app_test');
+  await client.query('GRANT SELECT ON public.pr_schema_migrations TO pr_app_test');
+}
+
+async function verifyRuntimeReadiness(adminConnectionString: string): Promise<void> {
+  const adminRuntime = new PostgresRuntime(adminConnectionString);
+  try {
+    const unsafe = await adminRuntime.readiness();
+    if (unsafe.ready || unsafe.reason !== 'database_role_unsafe') {
+      throw new Error('Runtime did not reject a superuser database principal.');
+    }
+  } finally {
+    await adminRuntime.close();
+  }
+
+  const applicationConnectionString = requiredEnvironment('PR_TEST_APP_DATABASE_URL');
+  const applicationRuntime = new PostgresRuntime(applicationConnectionString);
+  try {
+    const safe = await applicationRuntime.readiness();
+    if (!safe.ready) throw new Error(`Safe application role was not ready: ${safe.reason ?? 'unknown'}`);
+  } finally {
+    await applicationRuntime.close();
+  }
 }
 
 async function seedIsolationFixtures(client: Client): Promise<void> {

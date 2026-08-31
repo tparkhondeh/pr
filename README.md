@@ -74,6 +74,10 @@ dump/restore را در دیتابیس تازه verify می‌کند. این dril
 Production نیست، اما قابلیت اعمال و بازیابی Schema را قبل از Provision سرور اثبات
 می‌کند.
 
+Runtime اتصال دیتابیس را فقط زمانی ready اعلام می‌کند که principal آن superuser یا
+دارای `BYPASSRLS` نباشد، `row_security=on` باشد و migration journal به آخرین نسخه
+Schema رسیده باشد. credential مهاجرت باید جدا از `DATABASE_URL` Runtime نگه‌داری شود.
+
 نمای «شروع و منابع» مسیر Cold Start محدود MVP را ارائه می‌کند. مالک از
 `POST /api/assets/text` عنوان، متن، تاریخ و برداشت پیشنهادی خود را همراه رضایت صریح
 وارد می‌کند. متن همیشه `confidential` است، مجوز عمومی نمی‌گیرد و در PostgreSQL،
