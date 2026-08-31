@@ -57,6 +57,16 @@ describe('personal memory assertion lifecycle', () => {
     );
   });
 
+  it('never uses a soft-deleted assertion after deletion', () => {
+    const deleted = assertion({ id: assertionId('assertion_deleted') });
+    const deletedAt = new Date('2026-02-01T00:00:00Z');
+    expect(isAssertionUsable(deleted, new Date('2026-01-15T00:00:00Z'))).toBe(true);
+    expect(isAssertionUsable(
+      { ...deleted, deletedAt, deletionReason: 'User requested deletion.' },
+      deletedAt,
+    )).toBe(false);
+  });
+
   it('preserves history when an assertion is superseded', () => {
     const previous = assertion();
     const replacement = assertion({

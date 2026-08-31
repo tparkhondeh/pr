@@ -71,6 +71,19 @@ const proposalRow = {
   subject_user_id: ownerValue,
 };
 
+const rightProposalRow = {
+  proposal_id: '55555555-5555-4555-8555-555555555555',
+  subject_user_id: ownerValue,
+  status: 'confirmed',
+  root_assertion_id: '44444444-4444-4444-8444-444444444444',
+  active_assertion_id: '44444444-4444-4444-8444-444444444444',
+  active_valid_from: occurredAt.toISOString(),
+  confirmed_at: occurredAt.toISOString(),
+  deleted_at: null,
+  contested_at: null,
+  contest_reason: null,
+};
+
 describe('Postgres conversation memory repository', () => {
   it('persists an idempotent turn and proposal under tenant RLS context', async () => {
     const transaction = new RecordingTransaction([
@@ -124,6 +137,7 @@ describe('Postgres conversation memory repository', () => {
           evidence_id: null,
           assertion_id: null,
           confirmed_at: null,
+          deleted_at: null,
         }],
         rowCount: 1,
       },
@@ -163,7 +177,10 @@ describe('Postgres conversation memory repository', () => {
     expect(transaction.queries[3]?.sql).toContain('app.assertions');
     expect(transaction.queries[4]?.sql).toContain('app.assertion_evidence');
     expect(transaction.queries[5]?.sql).toContain('app.consent_grants');
-    expect(transaction.queries[5]?.values[3]).toEqual([
+    expect(transaction.queries[5]?.values[3]).toBe(
+      '44444444-4444-4444-8444-444444444444',
+    );
+    expect(transaction.queries[5]?.values[4]).toEqual([
       'personal_understanding',
       'personal_understanding',
     ]);
@@ -188,6 +205,7 @@ describe('Postgres conversation memory repository', () => {
           evidence_id: '33333333-3333-4333-8333-333333333333',
           assertion_id: '44444444-4444-4444-8444-444444444444',
           confirmed_at: confirmedAt,
+          deleted_at: null,
         }],
         rowCount: 1,
       },
@@ -206,6 +224,148 @@ describe('Postgres conversation memory repository', () => {
 
     expect(result.outcome).toBe('already_confirmed');
     expect(transaction.queries).toHaveLength(2);
+  });
+
+  it('corrects memory, moves scoped consent and records one rights request', async () => {
+    const rightAt = new Date('2026-08-31T13:20:00.000Z');
+    const transaction = new RecordingTransaction([
+      { rows: [], rowCount: 1 },
+      { rows: [rightProposalRow], rowCount: 1 },
+      { rows: [], rowCount: 0 },
+      { rows: [{ id: '66666666-6666-4666-8666-666666666666' }], rowCount: 1 },
+      { rows: [{ id: '77777777-7777-4777-8777-777777777777' }], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 2 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+    ]);
+    const repository = new PostgresConversationMemoryRepository(
+      new RecordingRunner(transaction),
+      { tenantId: tenantValue, ownerUserId: ownerValue },
+    );
+
+    const result = await repository.applyRight({
+      tenantId: tenant,
+      actorId: owner,
+      proposalId: proposal.id,
+      requestId: 'right_repo_correct',
+      operation: {
+        kind: 'correct',
+        reason: 'عبارت پیشین بیش از حد مطلق بود.',
+        correctedText: 'در موقعیت‌های کم‌ریسک معمولاً سریع تصمیم می‌گیرم.',
+      },
+      occurredAt: rightAt,
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'applied',
+      operation: 'correct',
+      activeAssertionId: '77777777-7777-4777-8777-777777777777',
+      permissionsRevoked: false,
+    });
+    expect(transaction.queries).toHaveLength(12);
+    expect(transaction.queries[3]?.sql).toContain('app.evidence_items');
+    expect(transaction.queries[4]?.sql).toContain('supersedes_id');
+    expect(transaction.queries[7]?.sql).toContain('WITH revoked AS');
+    expect(transaction.queries[9]?.sql).toContain('app.memory_rights_requests');
+    expect(transaction.queries[10]?.sql).toContain('app.audit_events');
+    expect(transaction.queries[11]?.sql).toContain('app.outbox_events');
+  });
+
+  it('soft-deletes an assertion lineage, evidence and scoped consent', async () => {
+    const rightAt = new Date('2026-08-31T13:21:00.000Z');
+    const transaction = new RecordingTransaction([
+      { rows: [], rowCount: 1 },
+      { rows: [rightProposalRow], rowCount: 1 },
+      { rows: [], rowCount: 0 },
+      {
+        rows: [
+          { id: '44444444-4444-4444-8444-444444444444' },
+          { id: '77777777-7777-4777-8777-777777777777' },
+        ],
+        rowCount: 2,
+      },
+      { rows: [], rowCount: 2 },
+      { rows: [], rowCount: 2 },
+      { rows: [], rowCount: 2 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+    ]);
+    const repository = new PostgresConversationMemoryRepository(
+      new RecordingRunner(transaction),
+      { tenantId: tenantValue, ownerUserId: ownerValue },
+    );
+
+    const result = await repository.applyRight({
+      tenantId: tenant,
+      actorId: owner,
+      proposalId: proposal.id,
+      requestId: 'right_repo_delete',
+      operation: { kind: 'delete', reason: 'درخواست حذف کامل حافظه.' },
+      occurredAt: rightAt,
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'applied',
+      operation: 'delete',
+      permissionsRevoked: true,
+    });
+    expect(transaction.queries).toHaveLength(11);
+    expect(transaction.queries[3]?.sql).toContain('WITH RECURSIVE lineage');
+    expect(transaction.queries[4]?.sql).toContain('deletion_reason');
+    expect(transaction.queries[5]?.sql).toContain('app.evidence_items');
+    expect(transaction.queries[6]?.sql).toContain('app.consent_grants');
+    expect(transaction.queries[7]?.sql).toContain('app.memory_proposals');
+  });
+
+  it('returns the stored result for an idempotent rights retry', async () => {
+    const rightAt = new Date('2026-08-31T13:22:00.000Z');
+    const operation = { kind: 'revoke' as const, reason: 'لغو مجوز استفاده.' };
+    const transaction = new RecordingTransaction([
+      { rows: [], rowCount: 1 },
+      { rows: [rightProposalRow], rowCount: 1 },
+      {
+        rows: [{
+          proposal_id: rightProposalRow.proposal_id,
+          operation: 'revoke',
+          request_sha256: createHash('sha256').update(JSON.stringify({
+            proposalId: proposal.id,
+            operation,
+          })).digest('hex'),
+          result: {
+            operation: 'revoke',
+            proposalId: proposal.id,
+            requestId: 'right_repo_retry',
+            activeAssertionId: rightProposalRow.active_assertion_id,
+            permissionsRevoked: true,
+            occurredAt: rightAt.toISOString(),
+          },
+          requested_at: rightAt.toISOString(),
+        }],
+        rowCount: 1,
+      },
+    ]);
+    const repository = new PostgresConversationMemoryRepository(
+      new RecordingRunner(transaction),
+      { tenantId: tenantValue, ownerUserId: ownerValue },
+    );
+
+    const result = await repository.applyRight({
+      tenantId: tenant,
+      actorId: owner,
+      proposalId: proposal.id,
+      requestId: 'right_repo_retry',
+      operation,
+      occurredAt: new Date('2026-08-31T13:30:00.000Z'),
+    });
+
+    expect(result).toMatchObject({ outcome: 'already_applied', operation: 'revoke' });
+    expect(transaction.queries).toHaveLength(3);
   });
 
   it('rejects cross-tenant or cross-owner access before opening a transaction', async () => {
@@ -227,6 +387,14 @@ describe('Postgres conversation memory repository', () => {
         followUpQuestion: proposal.followUpQuestion,
       }),
     ).rejects.toThrow(ConversationRepositoryPermissionError);
+    await expect(repository.applyRight({
+      tenantId: tenant,
+      actorId: userId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
+      proposalId: proposal.id,
+      requestId: 'right_cross_owner',
+      operation: { kind: 'revoke', reason: 'Cross-owner request must fail.' },
+      occurredAt,
+    })).rejects.toThrow(ConversationRepositoryPermissionError);
     expect(runner.transactions).toBe(0);
   });
 });

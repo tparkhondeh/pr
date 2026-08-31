@@ -3,6 +3,7 @@ import { tenantId, userId } from '../src/kernel/identity.js';
 import {
   ConversationIntakeService,
   MemoryProposalConflictError,
+  MemoryProposalNotFoundError,
   MemoryProposalPermissionError,
 } from '../src/conversation/intake.js';
 import { InMemoryConversationMemoryRepository } from '../src/conversation/repository.js';
@@ -148,5 +149,145 @@ describe('continuous conversation intake', () => {
     await expect(
       service.submitTurn({ ...request, text: 'متن متفاوت با همان شناسه.' }),
     ).rejects.toThrow(MemoryProposalConflictError);
+  });
+
+  it('corrects confirmed memory without rewriting its history', async () => {
+    const service = new ConversationIntakeService();
+    const proposal = (await service.submitTurn({
+      tenantId: tenant,
+      actorId: owner,
+      conversationId: 'conversation_rights',
+      turnId: 'turn_rights_correct',
+      text: 'من همیشه تصمیم‌ها را سریع می‌گیرم.',
+      proposeMemory: true,
+      occurredAt,
+    })).memoryProposal;
+    if (!proposal) throw new Error('Expected memory proposal.');
+    await service.confirmMemory({
+      tenantId: tenant,
+      actorId: owner,
+      proposalId: proposal.id,
+      permissions: {
+        personalUnderstanding: true,
+        brandUsage: false,
+        publicUsage: false,
+      },
+      confirmedAt: occurredAt,
+    });
+
+    const request = {
+      tenantId: tenant,
+      actorId: owner,
+      proposalId: proposal.id,
+      requestId: 'right_correct_one',
+      operation: {
+        kind: 'correct' as const,
+        reason: 'عبارت قبلی بیش از حد مطلق بود.',
+        correctedText: 'در شرایط کم‌ریسک معمولاً سریع تصمیم می‌گیرم.',
+      },
+      occurredAt: new Date('2026-08-31T13:10:00.000Z'),
+    };
+    const corrected = await service.applyMemoryRight(request);
+    const repeated = await service.applyMemoryRight(request);
+
+    expect(corrected).toMatchObject({ outcome: 'applied', operation: 'correct' });
+    expect(corrected.activeAssertionId).not.toBeUndefined();
+    expect(repeated).toMatchObject({
+      outcome: 'already_applied',
+      activeAssertionId: corrected.activeAssertionId,
+    });
+  });
+
+  it.each(['contest', 'revoke', 'delete'] as const)(
+    'applies the %s right only after explicit confirmation',
+    async (kind) => {
+      const service = new ConversationIntakeService();
+      const proposal = (await service.submitTurn({
+        tenantId: tenant,
+        actorId: owner,
+        conversationId: `conversation_${kind}`,
+        turnId: `turn_right_${kind}`,
+        text: 'این برداشت باید تحت کنترل مستقیم من باشد.',
+        proposeMemory: true,
+        occurredAt,
+      })).memoryProposal;
+      if (!proposal) throw new Error('Expected memory proposal.');
+      await service.confirmMemory({
+        tenantId: tenant,
+        actorId: owner,
+        proposalId: proposal.id,
+        permissions: {
+          personalUnderstanding: true,
+          brandUsage: false,
+          publicUsage: false,
+        },
+        confirmedAt: occurredAt,
+      });
+
+      const result = await service.applyMemoryRight({
+        tenantId: tenant,
+        actorId: owner,
+        proposalId: proposal.id,
+        requestId: `right_${kind}_one`,
+        operation: { kind, reason: 'درخواست صریح کاربر برای کنترل حافظه.' },
+        occurredAt: new Date('2026-08-31T13:11:00.000Z'),
+      });
+
+      expect(result.operation).toBe(kind);
+      expect(result.permissionsRevoked).toBe(kind === 'revoke' || kind === 'delete');
+      if (kind === 'delete') {
+        await expect(service.confirmMemory({
+          tenantId: tenant,
+          actorId: owner,
+          proposalId: proposal.id,
+          permissions: {
+            personalUnderstanding: true,
+            brandUsage: false,
+            publicUsage: false,
+          },
+          confirmedAt: new Date('2026-08-31T13:12:00.000Z'),
+        })).rejects.toThrow(MemoryProposalNotFoundError);
+      }
+    },
+  );
+
+  it('rejects a reused right request ID with different meaning', async () => {
+    const service = new ConversationIntakeService();
+    const proposal = (await service.submitTurn({
+      tenantId: tenant,
+      actorId: owner,
+      conversationId: 'conversation_right_conflict',
+      turnId: 'turn_right_conflict',
+      text: 'یک برداشت قابل کنترل.',
+      proposeMemory: true,
+      occurredAt,
+    })).memoryProposal;
+    if (!proposal) throw new Error('Expected memory proposal.');
+    await service.confirmMemory({
+      tenantId: tenant,
+      actorId: owner,
+      proposalId: proposal.id,
+      permissions: {
+        personalUnderstanding: true,
+        brandUsage: false,
+        publicUsage: false,
+      },
+      confirmedAt: occurredAt,
+    });
+    const common = {
+      tenantId: tenant,
+      actorId: owner,
+      proposalId: proposal.id,
+      requestId: 'right_conflicting',
+      occurredAt: new Date('2026-08-31T13:12:00.000Z'),
+    };
+    await service.applyMemoryRight({
+      ...common,
+      operation: { kind: 'contest', reason: 'این برداشت دقیق نیست.' },
+    });
+    await expect(service.applyMemoryRight({
+      ...common,
+      operation: { kind: 'revoke', reason: 'مجوز استفاده را لغو می‌کنم.' },
+    })).rejects.toThrow(MemoryProposalConflictError);
   });
 });

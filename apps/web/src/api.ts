@@ -89,6 +89,19 @@ export type ConfirmedMemory = Readonly<{
   persistence: 'memory' | 'postgres' | 'ephemeral';
 }>;
 
+export type MemoryRightKind = 'correct' | 'contest' | 'delete' | 'revoke';
+
+export type AppliedMemoryRight = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  operation: MemoryRightKind;
+  proposalId: string;
+  requestId: string;
+  activeAssertionId?: string;
+  permissionsRevoked: boolean;
+  occurredAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+}>;
+
 export class WorkbenchApiError extends Error {
   public constructor(
     public readonly status: number,
@@ -155,6 +168,32 @@ export async function confirmMemoryProposal(proposalId: string): Promise<Confirm
     },
   );
   if (!isConfirmedMemory(payload)) {
+    throw new WorkbenchApiError(200, 'invalid_response');
+  }
+  return payload;
+}
+
+export async function applyMemoryRight(
+  proposalId: string,
+  input: Readonly<{
+    requestId: string;
+    operation: MemoryRightKind;
+    reason: string;
+    correctedText?: string;
+  }>,
+): Promise<AppliedMemoryRight> {
+  const payload = await requestJson(
+    `/api/memory/proposals/${encodeURIComponent(proposalId)}/rights`,
+    {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!isAppliedMemoryRight(payload)) {
     throw new WorkbenchApiError(200, 'invalid_response');
   }
   return payload;
@@ -239,6 +278,28 @@ function isConfirmedMemory(payload: unknown): payload is ConfirmedMemory {
     permissions['brandUsage'] === false &&
     permissions['publicUsage'] === false &&
     typeof payload['confirmedAt'] === 'string' &&
+    (
+      payload['persistence'] === 'memory' ||
+      payload['persistence'] === 'postgres' ||
+      payload['persistence'] === 'ephemeral'
+    )
+  );
+}
+
+function isAppliedMemoryRight(payload: unknown): payload is AppliedMemoryRight {
+  if (!isRecord(payload)) return false;
+  return (
+    (payload['outcome'] === 'applied' || payload['outcome'] === 'already_applied') &&
+    (
+      payload['operation'] === 'correct' ||
+      payload['operation'] === 'contest' ||
+      payload['operation'] === 'delete' ||
+      payload['operation'] === 'revoke'
+    ) &&
+    typeof payload['proposalId'] === 'string' &&
+    typeof payload['requestId'] === 'string' &&
+    typeof payload['permissionsRevoked'] === 'boolean' &&
+    typeof payload['occurredAt'] === 'string' &&
     (
       payload['persistence'] === 'memory' ||
       payload['persistence'] === 'postgres' ||

@@ -29,6 +29,31 @@ export type MemoryConfirmationPersistenceResult =
     }>
   | Readonly<{ outcome: 'not_found' }>;
 
+export type MemoryRightOperation =
+  | Readonly<{ kind: 'correct'; reason: string; correctedText: string }>
+  | Readonly<{ kind: 'contest' | 'delete' | 'revoke'; reason: string }>;
+
+export type MemoryRightCommand = Readonly<{
+  tenantId: TenantId;
+  actorId: UserId;
+  proposalId: string;
+  requestId: string;
+  operation: MemoryRightOperation;
+  occurredAt: Date;
+}>;
+
+export type MemoryRightPersistenceResult =
+  | Readonly<{
+      outcome: 'applied' | 'already_applied';
+      operation: MemoryRightOperation['kind'];
+      proposalId: string;
+      requestId: string;
+      activeAssertionId?: string;
+      permissionsRevoked: boolean;
+      occurredAt: Date;
+    }>
+  | Readonly<{ outcome: 'not_found' }>;
+
 export interface ConversationMemoryRepository {
   readonly persistence: 'memory' | 'postgres';
   saveTurn(command: ConversationTurnPersistenceCommand): Promise<MemoryProposal | undefined>;
@@ -39,6 +64,7 @@ export interface ConversationMemoryRepository {
     permissions: MemoryUsePermissions;
     confirmedAt: Date;
   }>): Promise<MemoryConfirmationPersistenceResult>;
+  applyRight(command: MemoryRightCommand): Promise<MemoryRightPersistenceResult>;
 }
 
 type StoredConfirmation = Exclude<
@@ -51,6 +77,14 @@ export class InMemoryConversationMemoryRepository implements ConversationMemoryR
   readonly #turnFingerprints = new Map<string, string>();
   readonly #proposals = new Map<string, MemoryProposal>();
   readonly #confirmed = new Map<string, StoredConfirmation>();
+  readonly #rightRequests = new Map<
+    string,
+    Readonly<{ fingerprint: string; result: Exclude<MemoryRightPersistenceResult, { outcome: 'not_found' }> }>
+  >();
+  readonly #rightStates = new Map<
+    string,
+    Readonly<{ contestedReason?: string; deleted: boolean; revoked: boolean }>
+  >();
 
   public saveTurn(
     command: ConversationTurnPersistenceCommand,
@@ -87,6 +121,9 @@ export class InMemoryConversationMemoryRepository implements ConversationMemoryR
     permissions: MemoryUsePermissions;
     confirmedAt: Date;
   }>): Promise<MemoryConfirmationPersistenceResult> {
+    if (this.#rightStates.get(request.proposal.id)?.deleted) {
+      return Promise.resolve({ outcome: 'not_found' });
+    }
     const existing = this.#confirmed.get(request.proposal.id);
     if (existing) {
       return Promise.resolve(
@@ -104,6 +141,97 @@ export class InMemoryConversationMemoryRepository implements ConversationMemoryR
     };
     this.#confirmed.set(request.proposal.id, confirmed);
     return Promise.resolve(confirmed);
+  }
+
+  public applyRight(command: MemoryRightCommand): Promise<MemoryRightPersistenceResult> {
+    const requestKey = `${command.tenantId}:${command.actorId}:${command.requestId}`;
+    const fingerprint = rightFingerprint(command);
+    const existingRequest = this.#rightRequests.get(requestKey);
+    if (existingRequest) {
+      if (existingRequest.fingerprint !== fingerprint) {
+        return Promise.reject(
+          new ConversationRepositoryConflictError('Memory right request ID has conflicting content.'),
+        );
+      }
+      return Promise.resolve({ ...existingRequest.result, outcome: 'already_applied' });
+    }
+
+    const proposal = this.#proposals.get(command.proposalId);
+    const confirmation = this.#confirmed.get(command.proposalId);
+    if (
+      !proposal ||
+      !confirmation ||
+      proposal.tenantId !== command.tenantId ||
+      proposal.ownerUserId !== command.actorId
+    ) {
+      return Promise.resolve({ outcome: 'not_found' });
+    }
+    if (
+      command.occurredAt < confirmation.confirmedAt ||
+      (
+        command.operation.kind === 'correct' &&
+        command.occurredAt.getTime() === confirmation.confirmedAt.getTime()
+      )
+    ) {
+      return Promise.reject(
+        new ConversationRepositoryConflictError('Memory right must follow confirmation.'),
+      );
+    }
+
+    const state = this.#rightStates.get(command.proposalId) ?? {
+      deleted: false,
+      revoked: false,
+    };
+    if (
+      state.deleted &&
+      command.operation.kind !== 'delete' &&
+      command.operation.kind !== 'revoke'
+    ) {
+      return Promise.reject(new ConversationRepositoryConflictError('Memory is deleted.'));
+    }
+
+    let activeAssertionId = confirmation.assertionId;
+    let permissionsRevoked = false;
+    let nextState = state;
+    let outcome: 'applied' | 'already_applied' = 'applied';
+    if (command.operation.kind === 'correct') {
+      activeAssertionId = `assertion_${command.requestId}`;
+      this.#confirmed.set(command.proposalId, {
+        ...confirmation,
+        assertionId: activeAssertionId,
+        confirmedAt: command.occurredAt,
+      });
+      nextState = { deleted: state.deleted, revoked: state.revoked };
+    } else if (command.operation.kind === 'contest') {
+      if (state.contestedReason && state.contestedReason !== command.operation.reason) {
+        return Promise.reject(
+          new ConversationRepositoryConflictError('Memory is already contested for another reason.'),
+        );
+      }
+      if (state.contestedReason) outcome = 'already_applied';
+      nextState = { ...state, contestedReason: command.operation.reason };
+    } else if (command.operation.kind === 'revoke') {
+      permissionsRevoked = true;
+      if (state.revoked) outcome = 'already_applied';
+      nextState = { ...state, revoked: true };
+    } else {
+      permissionsRevoked = true;
+      if (state.deleted) outcome = 'already_applied';
+      nextState = { ...state, deleted: true, revoked: true };
+    }
+    this.#rightStates.set(command.proposalId, nextState);
+
+    const result = {
+      outcome,
+      operation: command.operation.kind,
+      proposalId: command.proposalId,
+      requestId: command.requestId,
+      activeAssertionId,
+      permissionsRevoked,
+      occurredAt: command.occurredAt,
+    };
+    this.#rightRequests.set(requestKey, { fingerprint, result });
+    return Promise.resolve(result);
   }
 }
 
@@ -128,9 +256,31 @@ type ConfirmationRow = ProposalRow & Readonly<{
   evidence_id: string | null;
   assertion_id: string | null;
   confirmed_at: Date | string | null;
+  deleted_at: Date | string | null;
 }>;
 
 type IdRow = Readonly<{ id: string }>;
+
+type RightProposalRow = Readonly<{
+  proposal_id: string;
+  subject_user_id: string;
+  status: 'proposed' | 'confirmed' | 'rejected' | 'expired';
+  root_assertion_id: string | null;
+  active_assertion_id: string | null;
+  active_valid_from: Date | string | null;
+  confirmed_at: Date | string | null;
+  deleted_at: Date | string | null;
+  contested_at: Date | string | null;
+  contest_reason: string | null;
+}>;
+
+type RightRequestRow = Readonly<{
+  proposal_id: string;
+  operation: MemoryRightOperation['kind'];
+  request_sha256: string;
+  result: unknown;
+  requested_at: Date | string;
+}>;
 
 export class PostgresConversationMemoryRepository implements ConversationMemoryRepository {
   public readonly persistence = 'postgres' as const;
@@ -281,12 +431,13 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
     return this.runner.transaction(async (transaction) => {
       await setTenantContext(transaction, this.context.tenantId);
       const locked = await transaction.query<ConfirmationRow>(
-        `${proposalSelectSql('proposal.status, proposal.permissions, proposal.evidence_id, proposal.assertion_id, proposal.confirmed_at,')}
+        `${proposalSelectSql('proposal.status, proposal.permissions, proposal.evidence_id, proposal.assertion_id, proposal.confirmed_at, proposal.deleted_at,')}
          FOR UPDATE OF proposal`,
         [this.context.tenantId, request.proposal.id],
       );
       const row = locked.rows[0];
       if (!row) return { outcome: 'not_found' };
+      if (row.deleted_at) return { outcome: 'not_found' };
       if (row.status === 'confirmed') return existingConfirmation(row, request.permissions);
       if (row.status !== 'proposed') return { outcome: 'not_found' };
 
@@ -339,12 +490,18 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
           request.confirmedAt,
         ],
       );
-      await insertConsentGrants(transaction, this.context, request.permissions, request.confirmedAt);
+      await insertConsentGrants(
+        transaction,
+        this.context,
+        request.permissions,
+        request.confirmedAt,
+        assertionId,
+      );
       const permissionsJson = JSON.stringify(request.permissions);
       await transaction.query(
         `UPDATE app.memory_proposals
             SET status = 'confirmed', permissions = $3::jsonb, evidence_id = $4,
-                assertion_id = $5, confirmed_at = $6
+                assertion_id = $5, active_assertion_id = $5, confirmed_at = $6
           WHERE tenant_id = $1 AND external_ref = $2 AND status = 'proposed'`,
         [
           this.context.tenantId,
@@ -391,6 +548,154 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
     });
   }
 
+  public async applyRight(
+    command: MemoryRightCommand,
+  ): Promise<MemoryRightPersistenceResult> {
+    this.assertContext(command.tenantId, command.actorId);
+    return await this.runner.transaction(async (transaction) => {
+      await setTenantContext(transaction, this.context.tenantId);
+      const proposalResult = await transaction.query<RightProposalRow>(
+        `SELECT proposal.id AS proposal_id, proposal.subject_user_id, proposal.status,
+                proposal.assertion_id AS root_assertion_id,
+                proposal.active_assertion_id, proposal.confirmed_at, proposal.deleted_at,
+                active.valid_from AS active_valid_from,
+                active.contested_at, active.contest_reason
+           FROM app.memory_proposals proposal
+           JOIN app.assertions active
+             ON active.tenant_id = proposal.tenant_id
+            AND active.id = proposal.active_assertion_id
+          WHERE proposal.tenant_id = $1 AND proposal.external_ref = $2
+            AND proposal.subject_user_id = $3
+          FOR UPDATE OF proposal, active`,
+        [this.context.tenantId, command.proposalId, this.context.ownerUserId],
+      );
+      const proposal = proposalResult.rows[0];
+      if (
+        !proposal ||
+        proposal.status !== 'confirmed' ||
+        !proposal.root_assertion_id ||
+        !proposal.active_assertion_id ||
+        !proposal.confirmed_at
+      ) {
+        return { outcome: 'not_found' };
+      }
+      const confirmedAt = toDate(proposal.confirmed_at, 'Memory confirmation');
+      const activeValidFrom = proposal.active_valid_from
+        ? toDate(proposal.active_valid_from, 'Active assertion validity')
+        : confirmedAt;
+      if (
+        command.occurredAt < confirmedAt ||
+        (
+          command.operation.kind === 'correct' &&
+          command.occurredAt <= activeValidFrom
+        )
+      ) {
+        throw new ConversationRepositoryConflictError(
+          'Memory right must follow confirmation.',
+        );
+      }
+
+      const requestHash = rightFingerprint(command);
+      const existingRequest = await transaction.query<RightRequestRow>(
+        `SELECT proposal_id, operation, request_sha256, result, requested_at
+           FROM app.memory_rights_requests
+          WHERE tenant_id = $1 AND subject_user_id = $2 AND client_ref = $3`,
+        [this.context.tenantId, this.context.ownerUserId, command.requestId],
+      );
+      const existing = existingRequest.rows[0];
+      if (existing) {
+        if (
+          existing.proposal_id !== proposal.proposal_id ||
+          existing.operation !== command.operation.kind ||
+          existing.request_sha256 !== requestHash
+        ) {
+          throw new ConversationRepositoryConflictError(
+            'Memory right request ID has conflicting content.',
+          );
+        }
+        return storedRightResult(existing, command);
+      }
+
+      if (
+        proposal.deleted_at &&
+        command.operation.kind !== 'delete' &&
+        command.operation.kind !== 'revoke'
+      ) {
+        throw new ConversationRepositoryConflictError('Memory is deleted.');
+      }
+
+      const applied = await applyPostgresMemoryRight(
+        transaction,
+        this.context,
+        proposal,
+        command,
+      );
+      const storedResult = JSON.stringify({
+        operation: applied.operation,
+        proposalId: applied.proposalId,
+        requestId: applied.requestId,
+        ...(applied.activeAssertionId
+          ? { activeAssertionId: applied.activeAssertionId }
+          : {}),
+        permissionsRevoked: applied.permissionsRevoked,
+        occurredAt: applied.occurredAt.toISOString(),
+      });
+      await transaction.query(
+        `INSERT INTO app.memory_rights_requests (
+           tenant_id, subject_user_id, proposal_id, client_ref, operation,
+           request_sha256, result, requested_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+        [
+          this.context.tenantId,
+          this.context.ownerUserId,
+          proposal.proposal_id,
+          command.requestId,
+          command.operation.kind,
+          requestHash,
+          storedResult,
+          command.occurredAt,
+        ],
+      );
+      const eventType = `memory.${command.operation.kind}`;
+      const metadata = JSON.stringify({
+        proposalId: command.proposalId,
+        requestId: command.requestId,
+        operation: command.operation.kind,
+        reasonSha256: textSha256(command.operation.reason),
+        permissionsRevoked: applied.permissionsRevoked,
+      });
+      await transaction.query(
+        `INSERT INTO app.audit_events (
+           tenant_id, actor_user_id, event_type, resource_type, resource_id,
+           purpose, decision, metadata, occurred_at
+         ) VALUES ($1, $2, $3, 'memory_proposal', $4,
+           'personal_understanding', $5, $6::jsonb, $7)`,
+        [
+          this.context.tenantId,
+          this.context.ownerUserId,
+          eventType,
+          command.proposalId,
+          applied.outcome === 'applied' ? 'applied' : 'no_change',
+          metadata,
+          command.occurredAt,
+        ],
+      );
+      await transaction.query(
+        `INSERT INTO app.outbox_events (
+           tenant_id, aggregate_type, aggregate_id, event_type, payload, available_at
+         ) VALUES ($1, 'memory_proposal', $2, $3, $4::jsonb, $5)`,
+        [
+          this.context.tenantId,
+          command.proposalId,
+          eventType,
+          metadata,
+          command.occurredAt,
+        ],
+      );
+      return applied;
+    });
+  }
+
   private assertContext(tenant: TenantId, actor: UserId): void {
     if (tenant !== this.context.tenantId || actor !== this.context.ownerUserId) {
       throw new ConversationRepositoryPermissionError('Conversation repository context mismatch.');
@@ -405,6 +710,7 @@ async function insertConsentGrants(
   context: Readonly<{ tenantId: string; ownerUserId: string }>,
   permissions: MemoryUsePermissions,
   grantedAt: Date,
+  resourceId: string,
 ): Promise<void> {
   const grants: Array<readonly [string, string]> = [
     ['personal_understanding', 'read'],
@@ -423,20 +729,259 @@ async function insertConsentGrants(
   await transaction.query(
     `INSERT INTO app.consent_grants (
        tenant_id, subject_user_id, granted_by, purpose, operation, data_class,
-       audience, channel, policy_version, granted_at
+       audience, channel, policy_version, granted_at, resource_type, resource_id
      )
      SELECT $1, $2, $2, grant_row.purpose::app.consent_purpose,
             grant_row.operation::app.consent_operation, 'confidential',
-            'system', 'internal', 'memory-consent-v1', $3
-       FROM unnest($4::text[], $5::text[]) AS grant_row(purpose, operation)`,
+            'system', 'internal', 'memory-consent-v1', $3, 'assertion', $4
+       FROM unnest($5::text[], $6::text[]) AS grant_row(purpose, operation)`,
     [
       context.tenantId,
       context.ownerUserId,
       grantedAt,
+      resourceId,
       grants.map(([purpose]) => purpose),
       grants.map(([, operation]) => operation),
     ],
   );
+}
+
+async function applyPostgresMemoryRight(
+  transaction: SqlTransaction,
+  context: Readonly<{ tenantId: string; ownerUserId: string }>,
+  proposal: RightProposalRow,
+  command: MemoryRightCommand,
+): Promise<Exclude<MemoryRightPersistenceResult, { outcome: 'not_found' }>> {
+  let outcome: 'applied' | 'already_applied' = 'applied';
+  let activeAssertionId = proposal.active_assertion_id as string;
+  let permissionsRevoked = false;
+
+  if (command.operation.kind === 'correct') {
+    const evidence = await transaction.query<IdRow>(
+      `INSERT INTO app.evidence_items (
+         tenant_id, source_type, source_locator, content, data_class,
+         integrity_sha256, occurred_at, observed_at
+       ) VALUES ($1, 'user_correction', $2, $3::jsonb, 'confidential', $4, $5, $5)
+       RETURNING id`,
+      [
+        context.tenantId,
+        `${command.proposalId}/${command.requestId}`,
+        JSON.stringify({
+          correctedText: command.operation.correctedText,
+          reason: command.operation.reason,
+        }),
+        textSha256(command.operation.correctedText),
+        command.occurredAt,
+      ],
+    );
+    const evidenceId = requiredId(evidence.rows[0], 'Correction evidence');
+    const replacement = await transaction.query<IdRow>(
+      `INSERT INTO app.assertions (
+         tenant_id, subject_ref, predicate, value, epistemic_type, data_class,
+         confidence, confidence_rationale, valid_from, supersedes_id,
+         created_at, created_by
+       ) VALUES ($1, $2, 'shared_reflection', $3::jsonb, 'self_report',
+         'confidential', 0.75, 'Direct user correction of a prior self-report.',
+         $4, $5, $4, $2)
+       RETURNING id`,
+      [
+        context.tenantId,
+        context.ownerUserId,
+        JSON.stringify(command.operation.correctedText),
+        command.occurredAt,
+        proposal.active_assertion_id,
+      ],
+    );
+    activeAssertionId = requiredId(replacement.rows[0], 'Corrected assertion');
+    await transaction.query(
+      `INSERT INTO app.assertion_evidence (
+         tenant_id, assertion_id, evidence_id, relation, rationale, created_at
+       ) VALUES ($1, $2, $3, 'supports', $4, $5)`,
+      [
+        context.tenantId,
+        activeAssertionId,
+        evidenceId,
+        command.operation.reason,
+        command.occurredAt,
+      ],
+    );
+    await transaction.query(
+      `UPDATE app.assertions
+          SET valid_to = $3
+        WHERE tenant_id = $1 AND id = $2 AND valid_to IS NULL`,
+      [context.tenantId, proposal.active_assertion_id, command.occurredAt],
+    );
+    await transaction.query(
+      `WITH revoked AS (
+         UPDATE app.consent_grants
+            SET revoked_at = $4, revocation_reason = 'Superseded by user correction.'
+          WHERE tenant_id = $1 AND subject_user_id = $2
+            AND resource_type = 'assertion' AND resource_id = $3
+            AND revoked_at IS NULL
+          RETURNING purpose, operation, data_class, audience, channel, policy_version
+       )
+       INSERT INTO app.consent_grants (
+         tenant_id, subject_user_id, granted_by, purpose, operation, data_class,
+         audience, channel, policy_version, granted_at, resource_type, resource_id
+       )
+       SELECT $1, $2, $2, purpose, operation, data_class, audience, channel,
+              policy_version, $4, 'assertion', $5
+         FROM revoked`,
+      [
+        context.tenantId,
+        context.ownerUserId,
+        proposal.active_assertion_id,
+        command.occurredAt,
+        activeAssertionId,
+      ],
+    );
+    await transaction.query(
+      `UPDATE app.memory_proposals
+          SET active_assertion_id = $3
+        WHERE tenant_id = $1 AND id = $2`,
+      [context.tenantId, proposal.proposal_id, activeAssertionId],
+    );
+  } else if (command.operation.kind === 'contest') {
+    if (proposal.contested_at) {
+      if (proposal.contest_reason !== command.operation.reason) {
+        throw new ConversationRepositoryConflictError(
+          'Memory is already contested for another reason.',
+        );
+      }
+      outcome = 'already_applied';
+    } else {
+      await transaction.query(
+        `UPDATE app.assertions
+            SET contested_at = $3, contest_reason = $4
+          WHERE tenant_id = $1 AND id = $2 AND contested_at IS NULL
+            AND deleted_at IS NULL`,
+        [
+          context.tenantId,
+          proposal.active_assertion_id,
+          command.occurredAt,
+          command.operation.reason,
+        ],
+      );
+    }
+  } else if (command.operation.kind === 'revoke') {
+    permissionsRevoked = true;
+    const revoked = await transaction.query(
+      `UPDATE app.consent_grants
+          SET revoked_at = $4, revocation_reason = $5
+        WHERE tenant_id = $1 AND subject_user_id = $2
+          AND resource_type = 'assertion' AND resource_id = $3
+          AND revoked_at IS NULL`,
+      [
+        context.tenantId,
+        context.ownerUserId,
+        proposal.active_assertion_id,
+        command.occurredAt,
+        command.operation.reason,
+      ],
+    );
+    if (revoked.rowCount === 0) outcome = 'already_applied';
+  } else {
+    permissionsRevoked = true;
+    if (proposal.deleted_at) {
+      outcome = 'already_applied';
+    } else {
+      const lineage = await transaction.query<IdRow>(
+        `WITH RECURSIVE lineage AS (
+           SELECT id FROM app.assertions
+            WHERE tenant_id = $1 AND id = $2
+           UNION
+           SELECT child.id
+             FROM app.assertions child
+             JOIN lineage parent ON child.supersedes_id = parent.id
+            WHERE child.tenant_id = $1
+         )
+         SELECT id FROM lineage`,
+        [context.tenantId, proposal.root_assertion_id],
+      );
+      const assertionIds = lineage.rows.map((row) => row.id);
+      if (assertionIds.length === 0) throw new Error('Memory assertion lineage is missing.');
+      await transaction.query(
+        `UPDATE app.assertions
+            SET deleted_at = $3, deletion_reason = $4
+          WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND deleted_at IS NULL`,
+        [
+          context.tenantId,
+          assertionIds,
+          command.occurredAt,
+          command.operation.reason,
+        ],
+      );
+      await transaction.query(
+        `UPDATE app.evidence_items evidence
+            SET deleted_at = $3
+           FROM app.assertion_evidence link
+          WHERE link.tenant_id = $1 AND link.assertion_id = ANY($2::uuid[])
+            AND evidence.tenant_id = link.tenant_id AND evidence.id = link.evidence_id
+            AND evidence.deleted_at IS NULL`,
+        [context.tenantId, assertionIds, command.occurredAt],
+      );
+      await transaction.query(
+        `UPDATE app.consent_grants
+            SET revoked_at = $3, revocation_reason = $4
+          WHERE tenant_id = $1 AND resource_type = 'assertion'
+            AND resource_id = ANY($2::text[]) AND revoked_at IS NULL`,
+        [
+          context.tenantId,
+          assertionIds,
+          command.occurredAt,
+          command.operation.reason,
+        ],
+      );
+      await transaction.query(
+        `UPDATE app.memory_proposals
+            SET deleted_at = $3, deletion_reason = $4
+          WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`,
+        [
+          context.tenantId,
+          proposal.proposal_id,
+          command.occurredAt,
+          command.operation.reason,
+        ],
+      );
+    }
+  }
+
+  return {
+    outcome,
+    operation: command.operation.kind,
+    proposalId: command.proposalId,
+    requestId: command.requestId,
+    activeAssertionId,
+    permissionsRevoked,
+    occurredAt: command.occurredAt,
+  };
+}
+
+function storedRightResult(
+  row: RightRequestRow,
+  command: MemoryRightCommand,
+): Exclude<MemoryRightPersistenceResult, { outcome: 'not_found' }> {
+  if (!row.result || typeof row.result !== 'object' || Array.isArray(row.result)) {
+    throw new Error('Stored memory right result is invalid.');
+  }
+  const result = row.result as Record<string, unknown>;
+  const activeAssertionId = result['activeAssertionId'];
+  const permissionsRevoked = result['permissionsRevoked'];
+  if (
+    (activeAssertionId !== undefined && typeof activeAssertionId !== 'string') ||
+    typeof permissionsRevoked !== 'boolean'
+  ) {
+    throw new Error('Stored memory right result is invalid.');
+  }
+  return {
+    outcome: 'already_applied',
+    operation: command.operation.kind,
+    proposalId: command.proposalId,
+    requestId: command.requestId,
+    ...(typeof activeAssertionId === 'string' ? { activeAssertionId } : {}),
+    permissionsRevoked,
+    occurredAt: toDate(row.requested_at, 'Memory right request'),
+  };
 }
 
 function proposalSelectSql(extraColumns = ''): string {
@@ -532,6 +1077,15 @@ function turnFingerprint(command: ConversationTurnPersistenceCommand): string {
       text: command.text,
       proposeMemory: command.proposeMemory,
       followUpQuestion: command.followUpQuestion,
+    }),
+  );
+}
+
+function rightFingerprint(command: MemoryRightCommand): string {
+  return textSha256(
+    JSON.stringify({
+      proposalId: command.proposalId,
+      operation: command.operation,
     }),
   );
 }

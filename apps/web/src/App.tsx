@@ -19,11 +19,14 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   WorkbenchApiError,
+  applyMemoryRight,
   approveWorkbenchAction,
   confirmMemoryProposal,
   loadWorkbench,
   submitConversationTurn,
+  type AppliedMemoryRight,
   type ConversationTurnResult,
+  type MemoryRightKind,
   type WorkbenchAction,
   type WorkbenchSnapshot,
 } from './api';
@@ -54,11 +57,18 @@ export function App() {
   const [conversationText, setConversationText] = useState('');
   const [proposeMemory, setProposeMemory] = useState(false);
   const [conversationResult, setConversationResult] = useState<ConversationTurnResult | null>(null);
-  const [conversationState, setConversationState] = useState<'idle' | 'sending' | 'confirming'>('idle');
+  const [conversationState, setConversationState] = useState<
+    'idle' | 'sending' | 'confirming' | 'applying_right'
+  >('idle');
   const [memoryConfirmed, setMemoryConfirmed] = useState(false);
   const [memoryPersistence, setMemoryPersistence] = useState<
     'memory' | 'postgres' | 'ephemeral' | null
   >(null);
+  const [memoryRightKind, setMemoryRightKind] = useState<MemoryRightKind>('contest');
+  const [memoryRightReason, setMemoryRightReason] = useState('');
+  const [correctedMemoryText, setCorrectedMemoryText] = useState('');
+  const [memoryRightRequestId, setMemoryRightRequestId] = useState<string | null>(null);
+  const [memoryRightResult, setMemoryRightResult] = useState<AppliedMemoryRight | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState('loading');
@@ -115,6 +125,7 @@ export function App() {
     setConversationState('sending');
     setError(null);
     setMemoryConfirmed(false);
+    setMemoryRightResult(null);
     try {
       const result = await submitConversationTurn({
         conversationId,
@@ -123,6 +134,7 @@ export function App() {
         proposeMemory,
       });
       setConversationResult(result);
+      setCorrectedMemoryText(text);
       setConversationState('idle');
     } catch (caught: unknown) {
       setError(errorMessage(caught));
@@ -139,6 +151,38 @@ export function App() {
       const confirmed = await confirmMemoryProposal(proposalId);
       setMemoryPersistence(confirmed.persistence);
       setMemoryConfirmed(true);
+      setConversationState('idle');
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setConversationState('idle');
+    }
+  };
+
+  const exerciseMemoryRight = async () => {
+    const proposalId = conversationResult?.memoryProposal?.id;
+    const reason = memoryRightReason.trim();
+    const correctedText = correctedMemoryText.trim();
+    if (
+      !proposalId ||
+      conversationState !== 'idle' ||
+      reason.length < 3 ||
+      (memoryRightKind === 'correct' && correctedText.length < 3)
+    ) {
+      return;
+    }
+    const requestId = memoryRightRequestId ?? `right_${crypto.randomUUID()}`;
+    setMemoryRightRequestId(requestId);
+    setConversationState('applying_right');
+    setError(null);
+    try {
+      const result = await applyMemoryRight(proposalId, {
+        requestId,
+        operation: memoryRightKind,
+        reason,
+        ...(memoryRightKind === 'correct' ? { correctedText } : {}),
+      });
+      setMemoryRightResult(result);
+      setMemoryRightRequestId(null);
       setConversationState('idle');
     } catch (caught: unknown) {
       setError(errorMessage(caught));
@@ -243,6 +287,7 @@ export function App() {
                     setConversationText(event.target.value);
                     setConversationResult(null);
                     setMemoryConfirmed(false);
+                    setMemoryRightResult(null);
                   }}
                   placeholder="مثلاً: امروز در جلسه اتفاقی افتاد که ذهنم را درگیر کرد…"
                   rows={3}
@@ -278,15 +323,78 @@ export function App() {
                   </button>
                 ) : null}
                 {memoryConfirmed ? (
-                  <em>
-                    <Check size={15} /> به‌عنوان Self-report محرمانه در
-                    {memoryPersistence === 'postgres'
-                      ? ' حافظه پایدار'
-                      : memoryPersistence === 'ephemeral'
-                        ? ' حافظه موقت نسخه نمایشی'
-                        : ' حافظه موقت این اجرا'} ثبت شد؛
-                    استفاده برند و عمومی خاموش است.
-                  </em>
+                  <>
+                    <em>
+                      <Check size={15} /> به‌عنوان Self-report محرمانه در
+                      {memoryPersistence === 'postgres'
+                        ? ' حافظه پایدار'
+                        : memoryPersistence === 'ephemeral'
+                          ? ' حافظه موقت نسخه نمایشی'
+                          : ' حافظه موقت این اجرا'} ثبت شد؛
+                      استفاده برند و عمومی خاموش است.
+                    </em>
+                    <div className="memory-rights">
+                      <strong>کنترل این حافظه همیشه با شماست</strong>
+                      <div className="memory-right-fields">
+                        <label>
+                          اقدام
+                          <select
+                            onChange={(event) => {
+                              setMemoryRightKind(event.target.value as MemoryRightKind);
+                              setMemoryRightRequestId(null);
+                              setMemoryRightResult(null);
+                            }}
+                            value={memoryRightKind}
+                          >
+                            <option value="contest">اعتراض و توقف استفاده</option>
+                            <option value="correct">اصلاح با حفظ تاریخچه</option>
+                            <option value="revoke">لغو مجوز استفاده</option>
+                            <option value="delete">حذف حافظه و مشتقات</option>
+                          </select>
+                        </label>
+                        {memoryRightKind === 'correct' ? (
+                          <label>
+                            متن اصلاح‌شده
+                            <textarea
+                              maxLength={5000}
+                              onChange={(event) => {
+                                setCorrectedMemoryText(event.target.value);
+                                setMemoryRightRequestId(null);
+                              }}
+                              rows={2}
+                              value={correctedMemoryText}
+                            />
+                          </label>
+                        ) : null}
+                        <label>
+                          دلیل این درخواست
+                          <input
+                            maxLength={500}
+                            onChange={(event) => {
+                              setMemoryRightReason(event.target.value);
+                              setMemoryRightRequestId(null);
+                            }}
+                            placeholder="برای Audit خصوصی و قابل‌ردیابی"
+                            value={memoryRightReason}
+                          />
+                        </label>
+                      </div>
+                      <button
+                        disabled={conversationState !== 'idle'}
+                        onClick={() => void exerciseMemoryRight()}
+                        type="button"
+                      >
+                        {conversationState === 'applying_right'
+                          ? 'در حال اعمال امن…'
+                          : memoryRightActionLabel(memoryRightKind)}
+                      </button>
+                      {memoryRightResult ? (
+                        <span className="memory-right-result">
+                          <ShieldCheck size={15} /> {memoryRightResultLabel(memoryRightResult)}
+                        </span>
+                      ) : null}
+                    </div>
+                  </>
                 ) : null}
               </div>
             ) : null}
@@ -410,7 +518,22 @@ function errorMessage(error: unknown): string {
     memory_permission_denied: 'مجوز لازم برای ثبت این حافظه داده نشده است.',
     memory_proposal_conflict: 'این پیشنهاد حافظه قبلاً با وضعیت دیگری ثبت شده است.',
     memory_proposal_not_found: 'پیشنهاد حافظه دیگر در دسترس نیست.',
+    invalid_memory_right: 'نوع درخواست، دلیل یا متن اصلاح حافظه معتبر نیست.',
     invalid_response: 'پاسخ API با قرارداد Workbench هم‌خوان نیست.',
   };
   return messages[error.code] ?? 'در پردازش درخواست خطایی رخ داد.';
+}
+
+function memoryRightActionLabel(kind: MemoryRightKind): string {
+  if (kind === 'correct') return 'ثبت اصلاح و حفظ نسخه قبلی';
+  if (kind === 'contest') return 'ثبت اعتراض و توقف استفاده';
+  if (kind === 'revoke') return 'لغو مجوز استفاده';
+  return 'حذف حافظه و لغو مجوزها';
+}
+
+function memoryRightResultLabel(result: AppliedMemoryRight): string {
+  if (result.operation === 'correct') return 'اصلاح ثبت شد و تاریخچه قبلی حفظ شد.';
+  if (result.operation === 'contest') return 'اعتراض ثبت شد؛ این برداشت قابل استفاده نیست.';
+  if (result.operation === 'revoke') return 'مجوزهای استفاده از این حافظه لغو شدند.';
+  return 'حافظه و مشتقات آن حذف نرم شدند و مجوزها لغو شدند.';
 }

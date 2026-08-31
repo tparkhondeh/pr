@@ -1,5 +1,6 @@
 let approval = null;
 const memoryProposals = new Map();
+const memoryRightRequests = new Map();
 
 const actions = [
   {
@@ -139,9 +140,10 @@ export default {
         return json({ error: 'memory_permission_denied' }, 403);
       }
       proposal.confirmedAt ??= new Date().toISOString();
+      proposal.activeAssertionId ??= `assertion_${proposal.id.slice('memory_'.length)}`;
       return json({
         assertion: {
-          id: `assertion_${proposal.id.slice('memory_'.length)}`,
+          id: proposal.activeAssertionId,
           epistemicType: 'self_report',
           dataClass: 'confidential',
         },
@@ -149,6 +151,73 @@ export default {
         confirmedAt: proposal.confirmedAt,
         persistence: 'ephemeral',
       });
+    }
+
+    const memoryRight = url.pathname.match(
+      /^\/api\/memory\/proposals\/([a-zA-Z0-9][a-zA-Z0-9_-]{2,63})\/rights$/,
+    );
+    if (request.method === 'POST' && memoryRight?.[1]) {
+      const proposal = memoryProposals.get(memoryRight[1]);
+      if (!proposal?.confirmedAt) return json({ error: 'memory_proposal_not_found' }, 404);
+      const body = await readJson(request);
+      if (!body) return json({ error: 'invalid_json' }, 400);
+      if (
+        typeof body.requestId !== 'string' ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) ||
+        !['correct', 'contest', 'delete', 'revoke'].includes(body.operation) ||
+        typeof body.reason !== 'string' ||
+        body.reason.trim().length < 3 ||
+        (body.operation === 'correct' && (
+          typeof body.correctedText !== 'string' || body.correctedText.trim().length < 3
+        ))
+      ) {
+        return json({ error: 'invalid_memory_right' }, 400);
+      }
+      const fingerprint = JSON.stringify({
+        proposalId: proposal.id,
+        operation: body.operation,
+        reason: body.reason.trim(),
+        ...(body.operation === 'correct'
+          ? { correctedText: body.correctedText.trim() }
+          : {}),
+      });
+      const existing = memoryRightRequests.get(body.requestId);
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) {
+          return json({ error: 'memory_proposal_conflict' }, 409);
+        }
+        return json({ ...existing.result, outcome: 'already_applied' });
+      }
+      if (proposal.deleted && body.operation !== 'delete' && body.operation !== 'revoke') {
+        return json({ error: 'memory_proposal_conflict' }, 409);
+      }
+      if (body.operation === 'correct') {
+        proposal.text = body.correctedText.trim();
+        proposal.activeAssertionId = `assertion_${body.requestId}`;
+        proposal.contestedReason = undefined;
+      } else if (body.operation === 'contest') {
+        if (proposal.contestedReason && proposal.contestedReason !== body.reason.trim()) {
+          return json({ error: 'memory_proposal_conflict' }, 409);
+        }
+        proposal.contestedReason = body.reason.trim();
+      } else if (body.operation === 'revoke') {
+        proposal.permissionsRevoked = true;
+      } else {
+        proposal.deleted = true;
+        proposal.permissionsRevoked = true;
+      }
+      const result = {
+        outcome: 'applied',
+        operation: body.operation,
+        proposalId: proposal.id,
+        requestId: body.requestId,
+        activeAssertionId: proposal.activeAssertionId,
+        permissionsRevoked: body.operation === 'revoke' || body.operation === 'delete',
+        occurredAt: new Date().toISOString(),
+        persistence: 'ephemeral',
+      };
+      memoryRightRequests.set(body.requestId, { fingerprint, result });
+      return json(result);
     }
 
     return env.ASSETS.fetch(request);

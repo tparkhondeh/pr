@@ -41,11 +41,18 @@ export type Assertion = Readonly<{
   contestedAt?: Date;
   contestReason?: string;
   supersededById?: AssertionId;
+  deletedAt?: Date;
+  deletionReason?: string;
 }>;
 
 export type NewAssertion = Omit<
   Assertion,
-  'evidence' | 'contestedAt' | 'contestReason' | 'supersededById'
+  | 'evidence'
+  | 'contestedAt'
+  | 'contestReason'
+  | 'supersededById'
+  | 'deletedAt'
+  | 'deletionReason'
 > &
   Readonly<{ evidence: readonly EvidenceRelation[] }>;
 
@@ -116,6 +123,7 @@ export function supersedeAssertion(
 }
 
 export function isAssertionUsable(assertion: Assertion, at: Date): boolean {
+  if (assertion.deletedAt && assertion.deletedAt <= at) return false;
   if (assertion.contestedAt && assertion.contestedAt <= at) return false;
   if (assertion.validFrom && assertion.validFrom > at) return false;
   if (assertion.validTo && assertion.validTo <= at) return false;

@@ -229,4 +229,76 @@ describe('operational endpoints', () => {
       },
     });
   });
+
+  it('routes an idempotent user right over confirmed memory', async () => {
+    const fixedTime = new Date('2026-08-31T14:00:00.000Z');
+    const conversation = new ConversationIntakeService();
+    const dependencies: ApplicationDependencies = {
+      conversation,
+      tenantId: tenantId('tenant_primary'),
+      resolveActor: () => userId('owner_primary'),
+      clock: () => fixedTime,
+    };
+    const proposalResponse = await request(
+      '/api/conversations/turns',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: 'conversation_right_http',
+          turnId: 'turn_right_http',
+          text: 'این برداشت باید قابل لغو باشد.',
+          proposeMemory: true,
+        }),
+      },
+      dependencies,
+    );
+    const proposal = await proposalResponse.json() as { memoryProposal: { id: string } };
+    await request(
+      `/api/memory/proposals/${proposal.memoryProposal.id}/confirm`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          permissions: {
+            personalUnderstanding: true,
+            brandUsage: false,
+            publicUsage: false,
+          },
+        }),
+      },
+      dependencies,
+    );
+    const body = JSON.stringify({
+      requestId: 'right_http_revoke',
+      operation: 'revoke',
+      reason: 'کاربر مجوز استفاده را صریحاً لغو کرد.',
+    });
+    const first = await request(
+      `/api/memory/proposals/${proposal.memoryProposal.id}/rights`,
+      () => ({ ready: true }),
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body },
+      dependencies,
+    );
+    const repeated = await request(
+      `/api/memory/proposals/${proposal.memoryProposal.id}/rights`,
+      () => ({ ready: true }),
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body },
+      dependencies,
+    );
+
+    expect(first.status).toBe(200);
+    await expect(first.json()).resolves.toMatchObject({
+      outcome: 'applied',
+      operation: 'revoke',
+      permissionsRevoked: true,
+      persistence: 'memory',
+    });
+    await expect(repeated.json()).resolves.toMatchObject({
+      outcome: 'already_applied',
+      operation: 'revoke',
+    });
+  });
 });

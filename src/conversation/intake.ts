@@ -10,6 +10,7 @@ import {
   ConversationRepositoryPermissionError,
   InMemoryConversationMemoryRepository,
   type ConversationMemoryRepository,
+  type MemoryRightOperation,
 } from './repository.js';
 
 export type MemoryUsePermissions = Readonly<{
@@ -42,6 +43,17 @@ export type ConfirmedMemory = Readonly<{
   assertion: Assertion;
   permissions: MemoryUsePermissions;
   confirmedAt: Date;
+  persistence: 'memory' | 'postgres';
+}>;
+
+export type AppliedMemoryRight = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  operation: MemoryRightOperation['kind'];
+  proposalId: string;
+  requestId: string;
+  activeAssertionId?: string;
+  permissionsRevoked: boolean;
+  occurredAt: Date;
   persistence: 'memory' | 'postgres';
 }>;
 
@@ -186,6 +198,62 @@ export class ConversationIntakeService {
       persistence: this.repository.persistence,
     };
     return confirmed;
+  }
+
+  public async applyMemoryRight(request: Readonly<{
+    tenantId: TenantId;
+    actorId: UserId;
+    proposalId: string;
+    requestId: string;
+    operation: MemoryRightOperation;
+    occurredAt: Date;
+  }>): Promise<AppliedMemoryRight> {
+    validateSafeId(request.proposalId, 'Memory proposal', 64);
+    validateSafeId(request.requestId, 'Memory right request', 64);
+    const reason = request.operation.reason.trim();
+    if (reason.length < 3 || reason.length > 500) {
+      throw new ConversationValidationError('Memory right reason must be 3-500 characters.');
+    }
+    const operation = request.operation.kind === 'correct'
+      ? {
+          kind: 'correct' as const,
+          reason,
+          correctedText: request.operation.correctedText.trim(),
+        }
+      : { kind: request.operation.kind, reason };
+    if (
+      operation.kind === 'correct' &&
+      (operation.correctedText.length < 3 || operation.correctedText.length > 5_000)
+    ) {
+      throw new ConversationValidationError('Corrected memory must be 3-5000 characters.');
+    }
+    if (Number.isNaN(request.occurredAt.getTime())) {
+      throw new ConversationValidationError('Memory right time is invalid.');
+    }
+
+    try {
+      const result = await this.repository.applyRight({
+        tenantId: request.tenantId,
+        actorId: request.actorId,
+        proposalId: request.proposalId,
+        requestId: request.requestId,
+        operation,
+        occurredAt: request.occurredAt,
+      });
+      if (result.outcome === 'not_found') {
+        throw new MemoryProposalNotFoundError('Confirmed memory was not found.');
+      }
+      return { ...result, persistence: this.repository.persistence };
+    } catch (error: unknown) {
+      if (error instanceof MemoryProposalNotFoundError) throw error;
+      if (error instanceof ConversationRepositoryPermissionError) {
+        throw new MemoryProposalPermissionError(error.message);
+      }
+      if (error instanceof ConversationRepositoryConflictError) {
+        throw new MemoryProposalConflictError(error.message);
+      }
+      throw error;
+    }
   }
 
   private async persistTurn(

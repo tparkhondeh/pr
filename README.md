@@ -55,3 +55,9 @@ PostgreSQL ذخیره و در همان Transaction به Audit Log و Outbox اف
 وقتی Opt-in خاموش است، متن مکالمه در Store پایدار ثبت نمی‌شود. با تنظیم متغیرهای
 PostgreSQL، Proposal انتخاب‌شده و تأیید آن همراه Evidence، Assertion، Consent، Audit
 و Outbox در یک Transaction ذخیره می‌شوند؛ در نبود دیتابیس، Store حافظه‌ای و موقت است.
+
+پس از تأیید نیز کاربر از مسیر
+`POST /api/memory/proposals/:id/rights` می‌تواند حافظه را اصلاح، Contest، حذف یا
+مجوز استفاده را لغو کند. هر درخواست شناسه idempotency مستقل دارد. اصلاح، نسخه قبلی
+را حفظ و Assertion جدید می‌سازد؛ حذف، Assertion/Evidence را soft-delete و Consentهای
+وابسته را revoke می‌کند و تمام عملیات در Audit/Outbox قابل‌ردیابی‌اند.

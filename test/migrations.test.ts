@@ -34,6 +34,10 @@ const conversationMigrationPath = fileURLToPath(
   new URL('../db/migrations/0007_conversation_memory.sql', import.meta.url),
 );
 const conversationSql = readFileSync(conversationMigrationPath, 'utf8');
+const memoryRightsMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0008_memory_rights.sql', import.meta.url),
+);
+const memoryRightsSql = readFileSync(memoryRightsMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -144,5 +148,26 @@ describe('foundation migration', () => {
     }
     expect(conversationSql).toContain("status = 'confirmed' AND permissions IS NOT NULL");
     expect(conversationSql).toContain('content_sha256 text NOT NULL');
+  });
+
+  it('adds auditable, idempotent and tenant-isolated memory rights', () => {
+    defineMigration('0008_memory_rights', memoryRightsSql);
+    expect(memoryRightsSql).toContain('CREATE TABLE app.memory_rights_requests');
+    expect(memoryRightsSql).toContain(
+      'ALTER TABLE app.memory_rights_requests FORCE ROW LEVEL SECURITY',
+    );
+    expect(memoryRightsSql).toContain(
+      'CREATE POLICY memory_rights_requests_tenant_isolation',
+    );
+    expect(memoryRightsSql).toContain("operation IN ('correct', 'contest', 'delete', 'revoke')");
+    expect(memoryRightsSql).toContain('UNIQUE (tenant_id, subject_user_id, client_ref)');
+    expect(memoryRightsSql).toContain('active_assertion_id uuid');
+    expect(memoryRightsSql).toContain('deleted_at timestamptz');
+    expect(memoryRightsSql).toContain('resource_type text');
+    expect(memoryRightsSql).toContain('revoked_legacy_memory_consent');
+    expect(memoryRightsSql).toContain("'consent.scope_migrated'");
+    expect(memoryRightsSql.indexOf('SET active_assertion_id = assertion_id')).toBeLessThan(
+      memoryRightsSql.indexOf('memory_proposals_confirmed_active_assertion'),
+    );
   });
 });

@@ -21,7 +21,10 @@ export type ApplicationDependencies = Readonly<{
   workbench?: Pick<WorkbenchService, 'snapshot' | 'approve'>;
   resolveActor?: (request: IncomingMessage) => UserId | undefined;
   tenantId?: TenantId;
-  conversation?: Pick<ConversationIntakeService, 'submitTurn' | 'confirmMemory'>;
+  conversation?: Pick<
+    ConversationIntakeService,
+    'submitTurn' | 'confirmMemory' | 'applyMemoryRight'
+  >;
   clock?: () => Date;
 }>;
 
@@ -88,8 +91,84 @@ export function createRequestHandler(
       return;
     }
 
+    const memoryRight = path.match(
+      /^\/api\/memory\/proposals\/([a-zA-Z0-9][a-zA-Z0-9_-]{2,63})\/rights$/u,
+    );
+    if (request.method === 'POST' && memoryRight?.[1]) {
+      await handleMemoryRight(request, response, dependencies, memoryRight[1]);
+      return;
+    }
+
     sendJson(response, 404, { error: 'not_found' });
   };
+}
+
+async function handleMemoryRight(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+  proposalId: string,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.conversation || !dependencies.tenantId) {
+    sendJson(response, 503, { error: 'conversation_unavailable' });
+    return;
+  }
+
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const operation = body['operation'];
+    const reason = body['reason'];
+    const correctedText = body['correctedText'];
+    if (
+      typeof requestId !== 'string' ||
+      !isMemoryRightKind(operation) ||
+      typeof reason !== 'string' ||
+      (operation === 'correct' && typeof correctedText !== 'string')
+    ) {
+      sendJson(response, 400, { error: 'invalid_memory_right' });
+      return;
+    }
+    const applied = await dependencies.conversation.applyMemoryRight({
+      tenantId: dependencies.tenantId,
+      actorId,
+      proposalId,
+      requestId,
+      operation: operation === 'correct'
+        ? {
+            kind: operation,
+            reason,
+            correctedText: typeof correctedText === 'string' ? correctedText : '',
+          }
+        : { kind: operation, reason },
+      occurredAt: (dependencies.clock ?? (() => new Date()))(),
+    });
+    sendJson(response, 200, {
+      outcome: applied.outcome,
+      operation: applied.operation,
+      proposalId: applied.proposalId,
+      requestId: applied.requestId,
+      ...(applied.activeAssertionId
+        ? { activeAssertionId: applied.activeAssertionId }
+        : {}),
+      permissionsRevoked: applied.permissionsRevoked,
+      occurredAt: applied.occurredAt.toISOString(),
+      persistence: applied.persistence,
+    });
+  } catch (error: unknown) {
+    sendConversationError(response, error);
+  }
+}
+
+function isMemoryRightKind(
+  value: unknown,
+): value is 'correct' | 'contest' | 'delete' | 'revoke' {
+  return value === 'correct' || value === 'contest' || value === 'delete' || value === 'revoke';
 }
 
 async function handleConversationTurn(
