@@ -44,5 +44,8 @@ Backup بدون restore drill، backup تأییدشده محسوب نمی‌شو
 - فقط Commit سبز و Push‌شده به `main` قابل Deploy است.
 - release باید exact commit SHA داشته باشد.
 - Deploy اتمیک و rollback به release قبلی باشد.
+- بعد از هر Deploy یا Rollback، listener باید فقط روی loopback باشد؛ درخواست مستقیم
+  به IP عمومی و پورت Node باید fail، درخواست loopback باید `200` و دامنه بدون Basic
+  Auth باید `401` شود. عبور نکردن هرکدام trigger فوری rollback است.
 - schema change از الگوی expand/migrate/contract پیروی کند.
 - Smoke test دامنه: TLS، status، `/health`، `/ready` و نسخه release.

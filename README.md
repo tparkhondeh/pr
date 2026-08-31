@@ -14,6 +14,8 @@ Asset/Evidence و مرکز حقوق داده پیاده‌سازی شده‌ان
 - [ADRهای Draft مرحله Foundation](docs/decisions/foundation-adrs-draft-v1.0.md)
 - [Data & Policy Kernel](docs/architecture/data-kernel-v1.0.md)
 - [Operations Runbook](docs/operations/runbook-v1.0.md)
+- [Threat Model و Data Flow](docs/security/threat-model-v1.0.md)
+- [Dependency Policy](docs/security/dependency-policy-v1.0.md)
 
 ## محیط‌ها
 
