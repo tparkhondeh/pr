@@ -54,6 +54,32 @@ export type MemoryRightPersistenceResult =
     }>
   | Readonly<{ outcome: 'not_found' }>;
 
+export type PersonalMemoryRecord = Readonly<{
+  proposalId: string;
+  assertionId: string;
+  text: string | null;
+  epistemicType: 'self_report';
+  dataClass: 'confidential';
+  confidence: number;
+  confidenceRationale: string;
+  provenance: Readonly<{
+    evidenceCount: number;
+    sourceTypes: readonly string[];
+  }>;
+  consent: MemoryUsePermissions;
+  lifecycle: Readonly<{
+    status: 'active' | 'contested' | 'consent_revoked' | 'deleted';
+    revisionCount: number;
+    confirmedAt: Date;
+    updatedAt: Date;
+    contestedAt?: Date;
+    contestReason?: string;
+    revokedAt?: Date;
+    deletedAt?: Date;
+    deletionReason?: string;
+  }>;
+}>;
+
 export interface ConversationMemoryRepository {
   readonly persistence: 'memory' | 'postgres';
   saveTurn(command: ConversationTurnPersistenceCommand): Promise<MemoryProposal | undefined>;
@@ -65,12 +91,39 @@ export interface ConversationMemoryRepository {
     confirmedAt: Date;
   }>): Promise<MemoryConfirmationPersistenceResult>;
   applyRight(command: MemoryRightCommand): Promise<MemoryRightPersistenceResult>;
+  listMemory(tenant: TenantId, actor: UserId): Promise<readonly PersonalMemoryRecord[]>;
 }
 
 type StoredConfirmation = Exclude<
   MemoryConfirmationPersistenceResult,
   Readonly<{ outcome: 'conflict' }> | Readonly<{ outcome: 'not_found' }>
 >;
+
+type InMemoryRightState = Readonly<{
+  currentText: string | null;
+  revisionCount: number;
+  currentValidFrom: Date | null;
+  contestedReason: string | null;
+  contestedAt: Date | null;
+  deleted: boolean;
+  deletedAt: Date | null;
+  deletionReason: string | null;
+  revoked: boolean;
+  revokedAt: Date | null;
+}>;
+
+const emptyRightState: InMemoryRightState = {
+  currentText: null,
+  revisionCount: 1,
+  currentValidFrom: null,
+  contestedReason: null,
+  contestedAt: null,
+  deleted: false,
+  deletedAt: null,
+  deletionReason: null,
+  revoked: false,
+  revokedAt: null,
+};
 
 export class InMemoryConversationMemoryRepository implements ConversationMemoryRepository {
   public readonly persistence = 'memory' as const;
@@ -81,10 +134,7 @@ export class InMemoryConversationMemoryRepository implements ConversationMemoryR
     string,
     Readonly<{ fingerprint: string; result: Exclude<MemoryRightPersistenceResult, { outcome: 'not_found' }> }>
   >();
-  readonly #rightStates = new Map<
-    string,
-    Readonly<{ contestedReason?: string; deleted: boolean; revoked: boolean }>
-  >();
+  readonly #rightStates = new Map<string, InMemoryRightState>();
 
   public saveTurn(
     command: ConversationTurnPersistenceCommand,
@@ -166,22 +216,17 @@ export class InMemoryConversationMemoryRepository implements ConversationMemoryR
     ) {
       return Promise.resolve({ outcome: 'not_found' });
     }
+    const state = this.#rightStates.get(command.proposalId) ?? emptyRightState;
+    const activeValidFrom = state.currentValidFrom ?? confirmation.confirmedAt;
     if (
       command.occurredAt < confirmation.confirmedAt ||
-      (
-        command.operation.kind === 'correct' &&
-        command.occurredAt.getTime() === confirmation.confirmedAt.getTime()
-      )
+      (command.operation.kind === 'correct' && command.occurredAt <= activeValidFrom)
     ) {
       return Promise.reject(
         new ConversationRepositoryConflictError('Memory right must follow confirmation.'),
       );
     }
 
-    const state = this.#rightStates.get(command.proposalId) ?? {
-      deleted: false,
-      revoked: false,
-    };
     if (
       state.deleted &&
       command.operation.kind !== 'delete' &&
@@ -199,9 +244,15 @@ export class InMemoryConversationMemoryRepository implements ConversationMemoryR
       this.#confirmed.set(command.proposalId, {
         ...confirmation,
         assertionId: activeAssertionId,
-        confirmedAt: command.occurredAt,
       });
-      nextState = { deleted: state.deleted, revoked: state.revoked };
+      nextState = {
+        ...state,
+        currentText: command.operation.correctedText,
+        revisionCount: state.revisionCount + 1,
+        currentValidFrom: command.occurredAt,
+        contestedReason: null,
+        contestedAt: null,
+      };
     } else if (command.operation.kind === 'contest') {
       if (state.contestedReason && state.contestedReason !== command.operation.reason) {
         return Promise.reject(
@@ -209,15 +260,26 @@ export class InMemoryConversationMemoryRepository implements ConversationMemoryR
         );
       }
       if (state.contestedReason) outcome = 'already_applied';
-      nextState = { ...state, contestedReason: command.operation.reason };
+      nextState = {
+        ...state,
+        contestedReason: command.operation.reason,
+        contestedAt: command.occurredAt,
+      };
     } else if (command.operation.kind === 'revoke') {
       permissionsRevoked = true;
       if (state.revoked) outcome = 'already_applied';
-      nextState = { ...state, revoked: true };
+      nextState = { ...state, revoked: true, revokedAt: command.occurredAt };
     } else {
       permissionsRevoked = true;
       if (state.deleted) outcome = 'already_applied';
-      nextState = { ...state, deleted: true, revoked: true };
+      nextState = {
+        ...state,
+        deleted: true,
+        deletedAt: command.occurredAt,
+        deletionReason: command.operation.reason,
+        revoked: true,
+        revokedAt: command.occurredAt,
+      };
     }
     this.#rightStates.set(command.proposalId, nextState);
 
@@ -232,6 +294,54 @@ export class InMemoryConversationMemoryRepository implements ConversationMemoryR
     };
     this.#rightRequests.set(requestKey, { fingerprint, result });
     return Promise.resolve(result);
+  }
+
+  public listMemory(
+    tenant: TenantId,
+    actor: UserId,
+  ): Promise<readonly PersonalMemoryRecord[]> {
+    const records: PersonalMemoryRecord[] = [];
+    for (const [proposalId, confirmation] of this.#confirmed) {
+      const proposal = this.#proposals.get(proposalId);
+      if (!proposal || proposal.tenantId !== tenant || proposal.ownerUserId !== actor) continue;
+      const state = this.#rightStates.get(proposalId) ?? emptyRightState;
+      const status = memoryStatus(state);
+      const updatedAt = state.deletedAt ?? state.contestedAt ?? state.revokedAt
+        ?? state.currentValidFrom ?? confirmation.confirmedAt;
+      records.push({
+        proposalId,
+        assertionId: confirmation.assertionId,
+        text: state.deleted ? null : (state.currentText ?? proposal.text),
+        epistemicType: 'self_report',
+        dataClass: 'confidential',
+        confidence: state.revisionCount > 1 ? 0.75 : 0.5,
+        confidenceRationale: state.revisionCount > 1
+          ? 'Direct user correction of a prior self-report.'
+          : 'Single user self-report; not independently corroborated.',
+        provenance: {
+          evidenceCount: state.deleted ? 0 : 1,
+          sourceTypes: state.deleted
+            ? []
+            : [state.revisionCount > 1 ? 'user_correction' : 'conversation_turn'],
+        },
+        consent: state.revoked
+          ? { personalUnderstanding: false, brandUsage: false, publicUsage: false }
+          : confirmation.permissions,
+        lifecycle: {
+          status,
+          revisionCount: state.revisionCount,
+          confirmedAt: confirmation.confirmedAt,
+          updatedAt,
+          ...(state.contestedAt ? { contestedAt: state.contestedAt } : {}),
+          ...(state.contestedReason ? { contestReason: state.contestedReason } : {}),
+          ...(state.revokedAt ? { revokedAt: state.revokedAt } : {}),
+          ...(state.deletedAt ? { deletedAt: state.deletedAt } : {}),
+          ...(state.deletionReason ? { deletionReason: state.deletionReason } : {}),
+        },
+      });
+    }
+    records.sort((left, right) => right.lifecycle.updatedAt.getTime() - left.lifecycle.updatedAt.getTime());
+    return Promise.resolve(records);
   }
 }
 
@@ -280,6 +390,29 @@ type RightRequestRow = Readonly<{
   request_sha256: string;
   result: unknown;
   requested_at: Date | string;
+}>;
+
+type PersonalMemoryRow = Readonly<{
+  proposal_ref: string;
+  assertion_id: string;
+  assertion_value: unknown;
+  epistemic_type: 'self_report';
+  data_class: 'confidential';
+  confidence: string | number;
+  confidence_rationale: string;
+  evidence_count: string | number;
+  source_types: unknown;
+  personal_understanding: boolean;
+  brand_usage: boolean;
+  public_usage: boolean;
+  revision_count: string | number;
+  confirmed_at: Date | string;
+  updated_at: Date | string;
+  contested_at: Date | string | null;
+  contest_reason: string | null;
+  revoked_at: Date | string | null;
+  deleted_at: Date | string | null;
+  deletion_reason: string | null;
 }>;
 
 export class PostgresConversationMemoryRepository implements ConversationMemoryRepository {
@@ -696,6 +829,89 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
     });
   }
 
+  public async listMemory(
+    tenant: TenantId,
+    actor: UserId,
+  ): Promise<readonly PersonalMemoryRecord[]> {
+    this.assertContext(tenant, actor);
+    return await this.runner.transaction(async (transaction) => {
+      await setTenantContext(transaction, this.context.tenantId);
+      const result = await transaction.query<PersonalMemoryRow>(
+        `SELECT proposal.external_ref AS proposal_ref,
+                active.id AS assertion_id, active.value AS assertion_value,
+                active.epistemic_type, active.data_class, active.confidence,
+                active.confidence_rationale,
+                COALESCE(provenance.evidence_count, 0) AS evidence_count,
+                COALESCE(provenance.source_types, '[]'::jsonb) AS source_types,
+                COALESCE(consent.personal_understanding, false) AS personal_understanding,
+                COALESCE(consent.brand_usage, false) AS brand_usage,
+                COALESCE(consent.public_usage, false) AS public_usage,
+                COALESCE(history.revision_count, 1) AS revision_count,
+                proposal.confirmed_at,
+                GREATEST(
+                  proposal.confirmed_at,
+                  active.created_at,
+                  active.contested_at,
+                  proposal.deleted_at,
+                  consent.revoked_at
+                ) AS updated_at,
+                active.contested_at, active.contest_reason,
+                consent.revoked_at, proposal.deleted_at, proposal.deletion_reason
+           FROM app.memory_proposals proposal
+           JOIN app.assertions active
+             ON active.tenant_id = proposal.tenant_id
+            AND active.id = proposal.active_assertion_id
+           LEFT JOIN LATERAL (
+             SELECT count(DISTINCT link.evidence_id)::integer AS evidence_count,
+                    jsonb_agg(DISTINCT evidence.source_type)
+                      FILTER (WHERE evidence.source_type IS NOT NULL) AS source_types
+               FROM app.assertion_evidence link
+               JOIN app.evidence_items evidence
+                 ON evidence.tenant_id = link.tenant_id
+                AND evidence.id = link.evidence_id
+              WHERE link.tenant_id = proposal.tenant_id
+                AND link.assertion_id = active.id
+                AND evidence.deleted_at IS NULL
+           ) provenance ON true
+           LEFT JOIN LATERAL (
+             SELECT
+               count(DISTINCT operation) FILTER (
+                 WHERE purpose = 'personal_understanding' AND revoked_at IS NULL
+               ) >= 2 AS personal_understanding,
+               count(DISTINCT operation) FILTER (
+                 WHERE purpose = 'brand_usage' AND revoked_at IS NULL
+               ) >= 3 AS brand_usage,
+               count(DISTINCT operation) FILTER (
+                 WHERE purpose = 'public_drafting' AND revoked_at IS NULL
+               ) >= 3 AS public_usage,
+               max(revoked_at) AS revoked_at
+             FROM app.consent_grants grant_row
+            WHERE grant_row.tenant_id = proposal.tenant_id
+              AND grant_row.subject_user_id = proposal.subject_user_id
+              AND grant_row.resource_type = 'assertion'
+              AND grant_row.resource_id = active.id::text
+           ) consent ON true
+           LEFT JOIN LATERAL (
+             WITH RECURSIVE lineage(id) AS (
+               SELECT proposal.assertion_id
+               UNION
+               SELECT child.id
+                 FROM app.assertions child
+                 JOIN lineage parent ON child.supersedes_id = parent.id
+                WHERE child.tenant_id = proposal.tenant_id
+             )
+             SELECT count(*)::integer AS revision_count FROM lineage
+           ) history ON true
+          WHERE proposal.tenant_id = $1
+            AND proposal.subject_user_id = $2
+            AND proposal.status = 'confirmed'
+          ORDER BY updated_at DESC, proposal.external_ref`,
+        [this.context.tenantId, this.context.ownerUserId],
+      );
+      return result.rows.map(toPersonalMemoryRecord);
+    });
+  }
+
   private assertContext(tenant: TenantId, actor: UserId): void {
     if (tenant !== this.context.tenantId || actor !== this.context.ownerUserId) {
       throw new ConversationRepositoryPermissionError('Conversation repository context mismatch.');
@@ -1016,6 +1232,73 @@ function toProposal(row: ProposalRow): MemoryProposal {
   };
 }
 
+function toPersonalMemoryRecord(row: PersonalMemoryRow): PersonalMemoryRecord {
+  const deletedAt = row.deleted_at
+    ? toDate(row.deleted_at, 'Memory deletion')
+    : undefined;
+  const contestedAt = row.contested_at
+    ? toDate(row.contested_at, 'Memory contest')
+    : undefined;
+  const revokedAt = row.revoked_at
+    ? toDate(row.revoked_at, 'Memory consent revocation')
+    : undefined;
+  const confidence = numericValue(row.confidence, 'Memory confidence');
+  const evidenceCount = numericValue(row.evidence_count, 'Evidence count');
+  const revisionCount = numericValue(row.revision_count, 'Revision count');
+  if (!deletedAt && typeof row.assertion_value !== 'string') {
+    throw new Error('Active memory value is invalid.');
+  }
+  const status: PersonalMemoryRecord['lifecycle']['status'] = deletedAt
+    ? 'deleted'
+    : contestedAt
+      ? 'contested'
+      : row.personal_understanding
+        ? 'active'
+        : 'consent_revoked';
+  return {
+    proposalId: row.proposal_ref,
+    assertionId: row.assertion_id,
+    text: deletedAt ? null : row.assertion_value as string,
+    epistemicType: row.epistemic_type,
+    dataClass: row.data_class,
+    confidence,
+    confidenceRationale: row.confidence_rationale,
+    provenance: {
+      evidenceCount,
+      sourceTypes: stringArray(row.source_types, 'Evidence source types'),
+    },
+    consent: {
+      personalUnderstanding: row.personal_understanding,
+      brandUsage: row.brand_usage,
+      publicUsage: row.public_usage,
+    },
+    lifecycle: {
+      status,
+      revisionCount,
+      confirmedAt: toDate(row.confirmed_at, 'Memory confirmation'),
+      updatedAt: toDate(row.updated_at, 'Memory update'),
+      ...(contestedAt ? { contestedAt } : {}),
+      ...(row.contest_reason ? { contestReason: row.contest_reason } : {}),
+      ...(revokedAt ? { revokedAt } : {}),
+      ...(deletedAt ? { deletedAt } : {}),
+      ...(row.deletion_reason ? { deletionReason: row.deletion_reason } : {}),
+    },
+  };
+}
+
+function numericValue(value: string | number, label: string): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) throw new Error(`${label} is invalid.`);
+  return numeric;
+}
+
+function stringArray(value: unknown, label: string): readonly string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    throw new Error(`${label} are invalid.`);
+  }
+  return value as string[];
+}
+
 function existingConfirmation(
   row: ConfirmationRow,
   requestedPermissions: MemoryUsePermissions,
@@ -1088,6 +1371,15 @@ function rightFingerprint(command: MemoryRightCommand): string {
       operation: command.operation,
     }),
   );
+}
+
+function memoryStatus(
+  state: InMemoryRightState,
+): PersonalMemoryRecord['lifecycle']['status'] {
+  if (state.deleted) return 'deleted';
+  if (state.contestedAt) return 'contested';
+  if (state.revoked) return 'consent_revoked';
+  return 'active';
 }
 
 function sameProposal(left: MemoryProposal, right: MemoryProposal): boolean {

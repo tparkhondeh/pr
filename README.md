@@ -61,3 +61,8 @@ PostgreSQL، Proposal انتخاب‌شده و تأیید آن همراه Eviden
 مجوز استفاده را لغو کند. هر درخواست شناسه idempotency مستقل دارد. اصلاح، نسخه قبلی
 را حفظ و Assertion جدید می‌سازد؛ حذف، Assertion/Evidence را soft-delete و Consentهای
 وابسته را revoke می‌کند و تمام عملیات در Audit/Outbox قابل‌ردیابی‌اند.
+
+نمای «حافظه من» از `GET /api/memory` تغذیه می‌شود و برای هر Assertion فعال، متن
+جاری، Epistemic Type، Data Class، Confidence، Provenance، تعداد Revision و Consent
+فعال را نشان می‌دهد. رکوردهای Contest/Revoke/Delete پنهان نمی‌شوند، اما محتوای
+رکورد حذف‌شده و Evidence حذف‌شده هرگز در Snapshot API بازگردانده نمی‌شود.

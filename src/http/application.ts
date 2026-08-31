@@ -23,7 +23,7 @@ export type ApplicationDependencies = Readonly<{
   tenantId?: TenantId;
   conversation?: Pick<
     ConversationIntakeService,
-    'submitTurn' | 'confirmMemory' | 'applyMemoryRight'
+    'submitTurn' | 'confirmMemory' | 'applyMemoryRight' | 'memorySnapshot'
   >;
   clock?: () => Date;
 }>;
@@ -78,6 +78,11 @@ export function createRequestHandler(
       return;
     }
 
+    if (request.method === 'GET' && path === '/api/memory') {
+      await handleMemorySnapshot(request, response, dependencies);
+      return;
+    }
+
     const proposalConfirmation = path.match(
       /^\/api\/memory\/proposals\/([a-zA-Z0-9][a-zA-Z0-9_-]{2,63})\/confirm$/u,
     );
@@ -101,6 +106,68 @@ export function createRequestHandler(
 
     sendJson(response, 404, { error: 'not_found' });
   };
+}
+
+async function handleMemorySnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.conversation || !dependencies.tenantId) {
+    sendJson(response, 503, { error: 'conversation_unavailable' });
+    return;
+  }
+  try {
+    const snapshot = await dependencies.conversation.memorySnapshot({
+      tenantId: dependencies.tenantId,
+      actorId,
+      generatedAt: (dependencies.clock ?? (() => new Date()))(),
+    });
+    sendJson(response, 200, {
+      generatedAt: snapshot.generatedAt.toISOString(),
+      persistence: snapshot.persistence,
+      summary: snapshot.summary,
+      records: snapshot.records.map((record) => ({
+        proposalId: record.proposalId,
+        assertionId: record.assertionId,
+        text: record.text,
+        epistemicType: record.epistemicType,
+        dataClass: record.dataClass,
+        confidence: record.confidence,
+        confidenceRationale: record.confidenceRationale,
+        provenance: record.provenance,
+        consent: record.consent,
+        lifecycle: {
+          status: record.lifecycle.status,
+          revisionCount: record.lifecycle.revisionCount,
+          confirmedAt: record.lifecycle.confirmedAt.toISOString(),
+          updatedAt: record.lifecycle.updatedAt.toISOString(),
+          ...(record.lifecycle.contestedAt
+            ? { contestedAt: record.lifecycle.contestedAt.toISOString() }
+            : {}),
+          ...(record.lifecycle.contestReason
+            ? { contestReason: record.lifecycle.contestReason }
+            : {}),
+          ...(record.lifecycle.revokedAt
+            ? { revokedAt: record.lifecycle.revokedAt.toISOString() }
+            : {}),
+          ...(record.lifecycle.deletedAt
+            ? { deletedAt: record.lifecycle.deletedAt.toISOString() }
+            : {}),
+          ...(record.lifecycle.deletionReason
+            ? { deletionReason: record.lifecycle.deletionReason }
+            : {}),
+        },
+      })),
+    });
+  } catch (error: unknown) {
+    sendConversationError(response, error);
+  }
 }
 
 async function handleMemoryRight(

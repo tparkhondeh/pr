@@ -11,6 +11,7 @@ import {
   InMemoryConversationMemoryRepository,
   type ConversationMemoryRepository,
   type MemoryRightOperation,
+  type PersonalMemoryRecord,
 } from './repository.js';
 
 export type MemoryUsePermissions = Readonly<{
@@ -55,6 +56,18 @@ export type AppliedMemoryRight = Readonly<{
   permissionsRevoked: boolean;
   occurredAt: Date;
   persistence: 'memory' | 'postgres';
+}>;
+
+export type PersonalMemorySnapshot = Readonly<{
+  generatedAt: Date;
+  persistence: 'memory' | 'postgres';
+  summary: Readonly<{
+    total: number;
+    active: number;
+    attentionRequired: number;
+    deleted: number;
+  }>;
+  records: readonly PersonalMemoryRecord[];
 }>;
 
 export class ConversationValidationError extends Error {}
@@ -251,6 +264,39 @@ export class ConversationIntakeService {
       }
       if (error instanceof ConversationRepositoryConflictError) {
         throw new MemoryProposalConflictError(error.message);
+      }
+      throw error;
+    }
+  }
+
+  public async memorySnapshot(request: Readonly<{
+    tenantId: TenantId;
+    actorId: UserId;
+    generatedAt: Date;
+  }>): Promise<PersonalMemorySnapshot> {
+    if (Number.isNaN(request.generatedAt.getTime())) {
+      throw new ConversationValidationError('Memory snapshot time is invalid.');
+    }
+    try {
+      const records = await this.repository.listMemory(request.tenantId, request.actorId);
+      return {
+        generatedAt: request.generatedAt,
+        persistence: this.repository.persistence,
+        summary: {
+          total: records.length,
+          active: records.filter((record) => record.lifecycle.status === 'active').length,
+          attentionRequired: records.filter(
+            (record) =>
+              record.lifecycle.status === 'contested' ||
+              record.lifecycle.status === 'consent_revoked',
+          ).length,
+          deleted: records.filter((record) => record.lifecycle.status === 'deleted').length,
+        },
+        records,
+      };
+    } catch (error: unknown) {
+      if (error instanceof ConversationRepositoryPermissionError) {
+        throw new MemoryProposalPermissionError(error.message);
       }
       throw error;
     }

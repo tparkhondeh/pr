@@ -290,4 +290,94 @@ describe('continuous conversation intake', () => {
       operation: { kind: 'revoke', reason: 'مجوز استفاده را لغو می‌کنم.' },
     })).rejects.toThrow(MemoryProposalConflictError);
   });
+
+  it('builds a redacted personal-memory snapshot with provenance and consent status', async () => {
+    const service = new ConversationIntakeService();
+    const createConfirmed = async (suffix: string, text: string) => {
+      const proposal = (await service.submitTurn({
+        tenantId: tenant,
+        actorId: owner,
+        conversationId: `conversation_snapshot_${suffix}`,
+        turnId: `turn_snapshot_${suffix}`,
+        text,
+        proposeMemory: true,
+        occurredAt,
+      })).memoryProposal;
+      if (!proposal) throw new Error('Expected memory proposal.');
+      await service.confirmMemory({
+        tenantId: tenant,
+        actorId: owner,
+        proposalId: proposal.id,
+        permissions: {
+          personalUnderstanding: true,
+          brandUsage: false,
+          publicUsage: false,
+        },
+        confirmedAt: occurredAt,
+      });
+      return proposal;
+    };
+    await createConfirmed('active', 'این حافظه فعال باقی می‌ماند.');
+    const corrected = await createConfirmed('corrected', 'این متن نیاز به اصلاح دارد.');
+    await service.applyMemoryRight({
+      tenantId: tenant,
+      actorId: owner,
+      proposalId: corrected.id,
+      requestId: 'right_snapshot_correct',
+      operation: {
+        kind: 'correct',
+        reason: 'نسخه دقیق‌تر جایگزین شود.',
+        correctedText: 'این نسخه اصلاح‌شده و دقیق‌تر است.',
+      },
+      occurredAt: new Date('2026-08-31T13:20:00.000Z'),
+    });
+    await service.applyMemoryRight({
+      tenantId: tenant,
+      actorId: owner,
+      proposalId: corrected.id,
+      requestId: 'right_snapshot_contest',
+      operation: { kind: 'contest', reason: 'این برداشت هنوز نیاز به بررسی دارد.' },
+      occurredAt: new Date('2026-08-31T13:21:00.000Z'),
+    });
+    const revoked = await createConfirmed('revoked', 'این حافظه باید بدون مجوز بماند.');
+    await service.applyMemoryRight({
+      tenantId: tenant,
+      actorId: owner,
+      proposalId: revoked.id,
+      requestId: 'right_snapshot_revoke',
+      operation: { kind: 'revoke', reason: 'مجوز استفاده لغو شد.' },
+      occurredAt: new Date('2026-08-31T13:22:00.000Z'),
+    });
+    const deleted = await createConfirmed('deleted', 'این متن پس از حذف نباید برگردد.');
+    await service.applyMemoryRight({
+      tenantId: tenant,
+      actorId: owner,
+      proposalId: deleted.id,
+      requestId: 'right_snapshot_delete',
+      operation: { kind: 'delete', reason: 'درخواست حذف صریح کاربر.' },
+      occurredAt: new Date('2026-08-31T13:23:00.000Z'),
+    });
+
+    const snapshot = await service.memorySnapshot({
+      tenantId: tenant,
+      actorId: owner,
+      generatedAt: new Date('2026-08-31T13:24:00.000Z'),
+    });
+
+    expect(snapshot.summary).toEqual({ total: 4, active: 1, attentionRequired: 2, deleted: 1 });
+    expect(snapshot.records.find((record) => record.proposalId === corrected.id)).toMatchObject({
+      text: 'این نسخه اصلاح‌شده و دقیق‌تر است.',
+      provenance: { sourceTypes: ['user_correction'] },
+      lifecycle: { status: 'contested', revisionCount: 2 },
+    });
+    expect(snapshot.records.find((record) => record.proposalId === revoked.id)).toMatchObject({
+      consent: { personalUnderstanding: false, brandUsage: false, publicUsage: false },
+      lifecycle: { status: 'consent_revoked' },
+    });
+    expect(snapshot.records.find((record) => record.proposalId === deleted.id)).toMatchObject({
+      text: null,
+      provenance: { evidenceCount: 0, sourceTypes: [] },
+      lifecycle: { status: 'deleted' },
+    });
+  });
 });

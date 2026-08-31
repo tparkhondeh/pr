@@ -368,6 +368,76 @@ describe('Postgres conversation memory repository', () => {
     expect(transaction.queries).toHaveLength(3);
   });
 
+  it('lists current memory with provenance and redacts deleted content', async () => {
+    const deletedAt = new Date('2026-08-31T13:40:00.000Z');
+    const baseRow = {
+      proposal_ref: proposal.id,
+      assertion_id: '44444444-4444-4444-8444-444444444444',
+      assertion_value: proposal.text,
+      epistemic_type: 'self_report',
+      data_class: 'confidential',
+      confidence: '0.500',
+      confidence_rationale: 'Single user self-report; not independently corroborated.',
+      evidence_count: 1,
+      source_types: ['conversation_turn'],
+      personal_understanding: true,
+      brand_usage: false,
+      public_usage: false,
+      revision_count: 1,
+      confirmed_at: occurredAt.toISOString(),
+      updated_at: occurredAt.toISOString(),
+      contested_at: null,
+      contest_reason: null,
+      revoked_at: null,
+      deleted_at: null,
+      deletion_reason: null,
+    } as const;
+    const transaction = new RecordingTransaction([
+      { rows: [], rowCount: 1 },
+      {
+        rows: [
+          baseRow,
+          {
+            ...baseRow,
+            proposal_ref: 'memory_deleted_repo',
+            assertion_id: '88888888-8888-4888-8888-888888888888',
+            assertion_value: 'This content must be redacted.',
+            personal_understanding: false,
+            evidence_count: 0,
+            source_types: [],
+            updated_at: deletedAt.toISOString(),
+            revoked_at: deletedAt.toISOString(),
+            deleted_at: deletedAt.toISOString(),
+            deletion_reason: 'User requested deletion.',
+          },
+        ],
+        rowCount: 2,
+      },
+    ]);
+    const repository = new PostgresConversationMemoryRepository(
+      new RecordingRunner(transaction),
+      { tenantId: tenantValue, ownerUserId: ownerValue },
+    );
+
+    const records = await repository.listMemory(tenant, owner);
+
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({
+      text: proposal.text,
+      provenance: { evidenceCount: 1, sourceTypes: ['conversation_turn'] },
+      consent: { personalUnderstanding: true, brandUsage: false, publicUsage: false },
+      lifecycle: { status: 'active', revisionCount: 1 },
+    });
+    expect(records[1]).toMatchObject({
+      text: null,
+      lifecycle: { status: 'deleted', deletionReason: 'User requested deletion.' },
+    });
+    expect(transaction.queries).toHaveLength(2);
+    expect(transaction.queries[1]?.sql).toContain('LEFT JOIN LATERAL');
+    expect(transaction.queries[1]?.sql).toContain('WITH RECURSIVE lineage');
+    expect(transaction.queries[1]?.sql).toContain("resource_type = 'assertion'");
+  });
+
   it('rejects cross-tenant or cross-owner access before opening a transaction', async () => {
     const runner = new RecordingRunner(new RecordingTransaction([]));
     const repository = new PostgresConversationMemoryRepository(runner, {
@@ -395,6 +465,10 @@ describe('Postgres conversation memory repository', () => {
       operation: { kind: 'revoke', reason: 'Cross-owner request must fail.' },
       occurredAt,
     })).rejects.toThrow(ConversationRepositoryPermissionError);
+    await expect(repository.listMemory(
+      tenant,
+      userId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),
+    )).rejects.toThrow(ConversationRepositoryPermissionError);
     expect(runner.transactions).toBe(0);
   });
 });

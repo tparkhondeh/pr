@@ -102,6 +102,48 @@ export type AppliedMemoryRight = Readonly<{
   persistence: 'memory' | 'postgres' | 'ephemeral';
 }>;
 
+export type PersonalMemoryRecord = Readonly<{
+  proposalId: string;
+  assertionId: string;
+  text: string | null;
+  epistemicType: 'self_report';
+  dataClass: 'confidential';
+  confidence: number;
+  confidenceRationale: string;
+  provenance: Readonly<{
+    evidenceCount: number;
+    sourceTypes: readonly string[];
+  }>;
+  consent: Readonly<{
+    personalUnderstanding: boolean;
+    brandUsage: boolean;
+    publicUsage: boolean;
+  }>;
+  lifecycle: Readonly<{
+    status: 'active' | 'contested' | 'consent_revoked' | 'deleted';
+    revisionCount: number;
+    confirmedAt: string;
+    updatedAt: string;
+    contestedAt?: string;
+    contestReason?: string;
+    revokedAt?: string;
+    deletedAt?: string;
+    deletionReason?: string;
+  }>;
+}>;
+
+export type PersonalMemorySnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  summary: Readonly<{
+    total: number;
+    active: number;
+    attentionRequired: number;
+    deleted: number;
+  }>;
+  records: readonly PersonalMemoryRecord[];
+}>;
+
 export class WorkbenchApiError extends Error {
   public constructor(
     public readonly status: number,
@@ -116,6 +158,17 @@ export async function loadWorkbench(signal?: AbortSignal): Promise<WorkbenchSnap
     headers: { accept: 'application/json' },
     ...(signal ? { signal } : {}),
   });
+}
+
+export async function loadPersonalMemory(signal?: AbortSignal): Promise<PersonalMemorySnapshot> {
+  const payload = await requestJson('/api/memory', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isPersonalMemorySnapshot(payload)) {
+    throw new WorkbenchApiError(200, 'invalid_response');
+  }
+  return payload;
 }
 
 export async function approveWorkbenchAction(actionId: string): Promise<WorkbenchSnapshot> {
@@ -305,6 +358,47 @@ function isAppliedMemoryRight(payload: unknown): payload is AppliedMemoryRight {
       payload['persistence'] === 'postgres' ||
       payload['persistence'] === 'ephemeral'
     )
+  );
+}
+
+function isPersonalMemorySnapshot(payload: unknown): payload is PersonalMemorySnapshot {
+  if (!isRecord(payload) || !Array.isArray(payload['records']) || !isRecord(payload['summary'])) {
+    return false;
+  }
+  return (
+    typeof payload['generatedAt'] === 'string' &&
+    (
+      payload['persistence'] === 'memory' ||
+      payload['persistence'] === 'postgres' ||
+      payload['persistence'] === 'ephemeral'
+    ) &&
+    typeof payload['summary']['total'] === 'number' &&
+    payload['records'].every(isPersonalMemoryRecord)
+  );
+}
+
+function isPersonalMemoryRecord(value: unknown): value is PersonalMemoryRecord {
+  if (!isRecord(value) || !isRecord(value['provenance']) || !isRecord(value['consent']) || !isRecord(value['lifecycle'])) {
+    return false;
+  }
+  return (
+    typeof value['proposalId'] === 'string' &&
+    typeof value['assertionId'] === 'string' &&
+    (typeof value['text'] === 'string' || value['text'] === null) &&
+    value['epistemicType'] === 'self_report' &&
+    value['dataClass'] === 'confidential' &&
+    typeof value['confidence'] === 'number' &&
+    typeof value['provenance']['evidenceCount'] === 'number' &&
+    Array.isArray(value['provenance']['sourceTypes']) &&
+    typeof value['consent']['personalUnderstanding'] === 'boolean' &&
+    (
+      value['lifecycle']['status'] === 'active' ||
+      value['lifecycle']['status'] === 'contested' ||
+      value['lifecycle']['status'] === 'consent_revoked' ||
+      value['lifecycle']['status'] === 'deleted'
+    ) &&
+    typeof value['lifecycle']['revisionCount'] === 'number' &&
+    typeof value['lifecycle']['updatedAt'] === 'string'
   );
 }
 

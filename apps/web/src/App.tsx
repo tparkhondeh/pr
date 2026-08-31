@@ -7,7 +7,9 @@ import {
   Clock3,
   FileCheck2,
   Fingerprint,
+  History,
   Lightbulb,
+  LockKeyhole,
   LoaderCircle,
   MessageCircleMore,
   Network,
@@ -22,11 +24,14 @@ import {
   applyMemoryRight,
   approveWorkbenchAction,
   confirmMemoryProposal,
+  loadPersonalMemory,
   loadWorkbench,
   submitConversationTurn,
   type AppliedMemoryRight,
   type ConversationTurnResult,
   type MemoryRightKind,
+  type PersonalMemoryRecord,
+  type PersonalMemorySnapshot,
   type WorkbenchAction,
   type WorkbenchSnapshot,
 } from './api';
@@ -49,6 +54,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
+  const [activeView, setActiveView] = useState<'today' | 'memory'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +75,9 @@ export function App() {
   const [correctedMemoryText, setCorrectedMemoryText] = useState('');
   const [memoryRightRequestId, setMemoryRightRequestId] = useState<string | null>(null);
   const [memoryRightResult, setMemoryRightResult] = useState<AppliedMemoryRight | null>(null);
+  const [memorySnapshot, setMemorySnapshot] = useState<PersonalMemorySnapshot | null>(null);
+  const [memoryViewState, setMemoryViewState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [memoryViewError, setMemoryViewError] = useState<string | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState('loading');
@@ -86,6 +95,20 @@ export function App() {
       if (signal?.aborted) return;
       setError(errorMessage(caught));
       setState('error');
+    }
+  }, []);
+
+  const refreshMemory = useCallback(async (signal?: AbortSignal) => {
+    setMemoryViewState('loading');
+    setMemoryViewError(null);
+    try {
+      const next = await loadPersonalMemory(signal);
+      setMemorySnapshot(next);
+      setMemoryViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setMemoryViewError(errorMessage(caught));
+      setMemoryViewState('error');
     }
   }, []);
 
@@ -208,8 +231,8 @@ export function App() {
   }
 
   const nav = [
-    { label: 'امروز', icon: CircleGauge, active: true },
-    { label: 'حافظه من', icon: Fingerprint },
+    { label: 'امروز', icon: CircleGauge, view: 'today' as const },
+    { label: 'حافظه من', icon: Fingerprint, view: 'memory' as const },
     { label: 'استراتژی', icon: Lightbulb },
     { label: 'روابط', icon: Network },
     {
@@ -224,8 +247,17 @@ export function App() {
       <aside className="rail">
         <div className="brand-mark"><span>PR</span><i /></div>
         <nav aria-label="ناوبری اصلی">
-          {nav.map(({ label, icon: Icon, active, badge }) => (
-            <button className={active ? 'nav-item active' : 'nav-item'} key={label} type="button">
+          {nav.map(({ label, icon: Icon, view, badge }) => (
+            <button
+              className={view === activeView ? 'nav-item active' : 'nav-item'}
+              key={label}
+              onClick={() => {
+                if (!view) return;
+                setActiveView(view);
+                if (view === 'memory') void refreshMemory();
+              }}
+              type="button"
+            >
               <Icon size={19} strokeWidth={1.7} />
               <span>{label}</span>
               {badge ? <b>{badge}</b> : null}
@@ -243,7 +275,7 @@ export function App() {
         <header className="topbar">
           <div>
             <span className="date">{formatDate(snapshot.generatedAt)}</span>
-            <h1>حرکت بعدی، نه پست بعدی.</h1>
+            <h1>{activeView === 'memory' ? 'حافظه‌ای که شما کنترل می‌کنید.' : 'حرکت بعدی، نه پست بعدی.'}</h1>
           </div>
           <div className="top-actions">
             <span className="system-state">
@@ -255,6 +287,15 @@ export function App() {
 
         {error ? <div className="inline-error" role="alert"><TriangleAlert size={16} />{error}</div> : null}
 
+        {activeView === 'memory' ? (
+          <PersonalMemoryPanel
+            error={memoryViewError}
+            onRefresh={() => refreshMemory()}
+            snapshot={memorySnapshot}
+            state={memoryViewState}
+          />
+        ) : (
+          <>
         <section className="conversation" aria-label="گفت‌وگوی روز">
           <div className="assistant-sign"><Sparkles size={18} /></div>
           <div>
@@ -464,9 +505,239 @@ export function App() {
             </div>
           </aside>
         </div>
+          </>
+        )}
       </main>
     </div>
   );
+}
+
+function PersonalMemoryPanel({
+  error,
+  onRefresh,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onRefresh: () => Promise<void>;
+  snapshot: PersonalMemorySnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'error';
+}>) {
+  if (state === 'loading' && !snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <LoaderCircle className="spin" size={24} />
+        <h2>در حال بازیابی مدل شخصی…</h2>
+        <p>فقط داده‌های مجاز همین مالک خوانده می‌شوند.</p>
+      </section>
+    );
+  }
+  if ((state === 'error' || state === 'idle') && !snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <TriangleAlert size={25} />
+        <h2>حافظه شخصی در دسترس نیست</h2>
+        <p>{error ?? 'برای دریافت حافظه دوباره تلاش کنید.'}</p>
+        <button onClick={() => void onRefresh()} type="button">
+          <RefreshCw size={16} /> تلاش دوباره
+        </button>
+      </section>
+    );
+  }
+  if (!snapshot) return null;
+
+  return (
+    <section className="memory-view" aria-label="حافظه شخصی">
+      <header className="memory-view-head">
+        <div>
+          <p className="overline">مدل شخصی قابل‌اصلاح</p>
+          <h2>آنچه سیستم درباره شما نگه می‌دارد</h2>
+          <p>هر مورد با منشأ، سطح اطمینان، مجوز و وضعیت چرخه عمر نمایش داده می‌شود.</p>
+        </div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button">
+          <RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی
+        </button>
+      </header>
+
+      <div className="memory-summary">
+        <div><span>کل حافظه‌ها</span><strong>{snapshot.summary.total}</strong></div>
+        <div><span>فعال و مجاز</span><strong>{snapshot.summary.active}</strong></div>
+        <div><span>نیازمند توجه</span><strong>{snapshot.summary.attentionRequired}</strong></div>
+        <div><span>حذف‌شده</span><strong>{snapshot.summary.deleted}</strong></div>
+      </div>
+
+      {snapshot.records.length === 0 ? (
+        <div className="memory-empty">
+          <Fingerprint size={28} />
+          <h3>هنوز حافظه‌ای تأیید نشده است</h3>
+          <p>در گفت‌وگوی امروز، Opt-in پیشنهاد حافظه را روشن و سپس ثبت را جداگانه تأیید کنید.</p>
+        </div>
+      ) : (
+        <div className="memory-list">
+          {snapshot.records.map((record) => (
+            <article className={`memory-card ${record.lifecycle.status}`} key={record.proposalId}>
+              <div className="memory-card-main">
+                <div className="memory-card-topline">
+                  <span className="memory-status">{memoryStatusLabel(record.lifecycle.status)}</span>
+                  <span>Self-report · محرمانه</span>
+                  <span>{formatDate(record.lifecycle.updatedAt)}</span>
+                </div>
+                <h3>{record.text ?? 'محتوای این حافظه حذف و از پاسخ API خارج شده است.'}</h3>
+                <p>{record.confidenceRationale}</p>
+                {record.lifecycle.contestReason ? (
+                  <blockquote>دلیل اعتراض: {record.lifecycle.contestReason}</blockquote>
+                ) : null}
+                {record.lifecycle.deletionReason ? (
+                  <blockquote>دلیل حذف: {record.lifecycle.deletionReason}</blockquote>
+                ) : null}
+              </div>
+              <div className="memory-card-meta">
+                <span><b>{Math.round(record.confidence * 100)}٪</b> اطمینان</span>
+                <span><BookOpenText size={14} /> {record.provenance.evidenceCount} شاهد</span>
+                <span><History size={14} /> {record.lifecycle.revisionCount} نسخه</span>
+                <span><Fingerprint size={14} /> {record.provenance.sourceTypes.map(sourceTypeLabel).join('، ') || 'حذف‌شده'}</span>
+                <span className={record.consent.personalUnderstanding ? 'consent-on' : 'consent-off'}>
+                  <LockKeyhole size={14} />
+                  {record.consent.personalUnderstanding ? 'شناخت داخلی مجاز' : 'مجوز استفاده لغو شده'}
+                </span>
+                <span className={record.consent.brandUsage || record.consent.publicUsage ? 'consent-on' : 'consent-off'}>
+                  Brand: {record.consent.brandUsage ? 'روشن' : 'خاموش'} · Public: {record.consent.publicUsage ? 'روشن' : 'خاموش'}
+                </span>
+              </div>
+              {record.lifecycle.status !== 'deleted' ? (
+                <MemoryRecordControls record={record} onApplied={onRefresh} />
+              ) : null}
+            </article>
+          ))}
+        </div>
+      )}
+      <small className="memory-footnote">
+        نسخه خصوصی Sites موقت است؛ در محیط واقعی این Snapshot از PostgreSQL و RLS خوانده می‌شود.
+      </small>
+    </section>
+  );
+}
+
+function MemoryRecordControls({
+  onApplied,
+  record,
+}: Readonly<{
+  onApplied: () => Promise<void>;
+  record: PersonalMemoryRecord;
+}>) {
+  const [kind, setKind] = useState<MemoryRightKind>('contest');
+  const [reason, setReason] = useState('');
+  const [correctedText, setCorrectedText] = useState(record.text ?? '');
+  const [requestId, setRequestId] = useState<string | null>(null);
+  const [state, setState] = useState<'idle' | 'submitting'>('idle');
+  const [result, setResult] = useState<AppliedMemoryRight | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const apply = async () => {
+    const trimmedReason = reason.trim();
+    const trimmedCorrection = correctedText.trim();
+    if (
+      state !== 'idle' ||
+      trimmedReason.length < 3 ||
+      (kind === 'correct' && trimmedCorrection.length < 3)
+    ) return;
+    const stableRequestId = requestId ?? `right_${crypto.randomUUID()}`;
+    setRequestId(stableRequestId);
+    setState('submitting');
+    setError(null);
+    try {
+      const applied = await applyMemoryRight(record.proposalId, {
+        requestId: stableRequestId,
+        operation: kind,
+        reason: trimmedReason,
+        ...(kind === 'correct' ? { correctedText: trimmedCorrection } : {}),
+      });
+      setResult(applied);
+      setRequestId(null);
+      setState('idle');
+      await onApplied();
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setState('idle');
+    }
+  };
+
+  const resetRequest = () => {
+    setRequestId(null);
+    setResult(null);
+  };
+
+  return (
+    <details className="memory-card-controls">
+      <summary>اصلاح یا محدودکردن این حافظه</summary>
+      <div className="memory-control-grid">
+        <label>
+          اقدام
+          <select
+            onChange={(event) => {
+              setKind(event.target.value as MemoryRightKind);
+              resetRequest();
+            }}
+            value={kind}
+          >
+            <option value="contest">اعتراض و توقف استفاده</option>
+            <option value="correct">اصلاح با حفظ تاریخچه</option>
+            <option value="revoke">لغو مجوز استفاده</option>
+            <option value="delete">حذف حافظه و مشتقات</option>
+          </select>
+        </label>
+        {kind === 'correct' ? (
+          <label className="memory-control-wide">
+            متن اصلاح‌شده
+            <textarea
+              maxLength={5000}
+              onChange={(event) => {
+                setCorrectedText(event.target.value);
+                resetRequest();
+              }}
+              rows={2}
+              value={correctedText}
+            />
+          </label>
+        ) : null}
+        <label>
+          دلیل
+          <input
+            maxLength={500}
+            onChange={(event) => {
+              setReason(event.target.value);
+              resetRequest();
+            }}
+            placeholder="برای Audit خصوصی"
+            value={reason}
+          />
+        </label>
+      </div>
+      <button
+        className={kind === 'delete' ? 'danger' : undefined}
+        disabled={state === 'submitting'}
+        onClick={() => void apply()}
+        type="button"
+      >
+        {state === 'submitting' ? 'در حال اعمال…' : memoryRightActionLabel(kind)}
+      </button>
+      {result ? <span className="memory-control-success">{memoryRightResultLabel(result)}</span> : null}
+      {error ? <span className="memory-control-error">{error}</span> : null}
+    </details>
+  );
+}
+
+function memoryStatusLabel(status: PersonalMemoryRecord['lifecycle']['status']): string {
+  if (status === 'active') return 'فعال';
+  if (status === 'contested') return 'مورد اعتراض';
+  if (status === 'consent_revoked') return 'مجوز لغوشده';
+  return 'حذف‌شده';
+}
+
+function sourceTypeLabel(source: string): string {
+  if (source === 'conversation_turn') return 'گفت‌وگو';
+  if (source === 'user_correction') return 'اصلاح مستقیم';
+  return source;
 }
 
 function formatMinutes(minutes: number): string {

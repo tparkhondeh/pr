@@ -301,4 +301,77 @@ describe('operational endpoints', () => {
       operation: 'revoke',
     });
   });
+
+  it('serves an owner-scoped memory snapshot and redacts deleted text', async () => {
+    let now = new Date('2026-08-31T15:00:00.000Z');
+    const conversation = new ConversationIntakeService();
+    const dependencies: ApplicationDependencies = {
+      conversation,
+      tenantId: tenantId('tenant_primary'),
+      resolveActor: () => userId('owner_primary'),
+      clock: () => now,
+    };
+    const proposalResponse = await request(
+      '/api/conversations/turns',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: 'conversation_memory_snapshot',
+          turnId: 'turn_memory_snapshot',
+          text: 'این متن پس از حذف نباید از API برگردد.',
+          proposeMemory: true,
+        }),
+      },
+      dependencies,
+    );
+    const proposal = await proposalResponse.json() as { memoryProposal: { id: string } };
+    await request(
+      `/api/memory/proposals/${proposal.memoryProposal.id}/confirm`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          permissions: {
+            personalUnderstanding: true,
+            brandUsage: false,
+            publicUsage: false,
+          },
+        }),
+      },
+      dependencies,
+    );
+    now = new Date('2026-08-31T15:01:00.000Z');
+    await request(
+      `/api/memory/proposals/${proposal.memoryProposal.id}/rights`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'right_http_snapshot_delete',
+          operation: 'delete',
+          reason: 'درخواست صریح حذف از نمای حافظه.',
+        }),
+      },
+      dependencies,
+    );
+    const response = await request('/api/memory', () => ({ ready: true }), undefined, dependencies);
+    const payload = await response.json() as {
+      summary: { deleted: number };
+      records: Array<Record<string, unknown>>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.summary.deleted).toBe(1);
+    expect(payload.records[0]).toMatchObject({
+      proposalId: proposal.memoryProposal.id,
+      text: null,
+      lifecycle: { status: 'deleted' },
+    });
+    expect(JSON.stringify(payload)).not.toContain('tenant_primary');
+    expect(JSON.stringify(payload)).not.toContain('این متن پس از حذف');
+  });
 });

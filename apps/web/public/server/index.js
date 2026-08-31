@@ -67,6 +67,27 @@ export default {
       return json(snapshot());
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/memory') {
+      const records = [...memoryProposals.values()]
+        .filter((proposal) => proposal.confirmedAt)
+        .map((proposal) => memoryRecord(proposal))
+        .sort((left, right) => right.lifecycle.updatedAt.localeCompare(left.lifecycle.updatedAt));
+      return json({
+        generatedAt: new Date().toISOString(),
+        persistence: 'ephemeral',
+        summary: {
+          total: records.length,
+          active: records.filter((record) => record.lifecycle.status === 'active').length,
+          attentionRequired: records.filter((record) => (
+            record.lifecycle.status === 'contested' ||
+            record.lifecycle.status === 'consent_revoked'
+          )).length,
+          deleted: records.filter((record) => record.lifecycle.status === 'deleted').length,
+        },
+        records,
+      });
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/workbench/approval') {
       let body;
       try {
@@ -141,6 +162,9 @@ export default {
       }
       proposal.confirmedAt ??= new Date().toISOString();
       proposal.activeAssertionId ??= `assertion_${proposal.id.slice('memory_'.length)}`;
+      proposal.revisionCount ??= 1;
+      proposal.updatedAt ??= proposal.confirmedAt;
+      proposal.permissions ??= permissions;
       return json({
         assertion: {
           id: proposal.activeAssertionId,
@@ -195,17 +219,25 @@ export default {
         proposal.text = body.correctedText.trim();
         proposal.activeAssertionId = `assertion_${body.requestId}`;
         proposal.contestedReason = undefined;
+        proposal.contestedAt = undefined;
+        proposal.revisionCount = (proposal.revisionCount ?? 1) + 1;
       } else if (body.operation === 'contest') {
         if (proposal.contestedReason && proposal.contestedReason !== body.reason.trim()) {
           return json({ error: 'memory_proposal_conflict' }, 409);
         }
         proposal.contestedReason = body.reason.trim();
+        proposal.contestedAt = new Date().toISOString();
       } else if (body.operation === 'revoke') {
         proposal.permissionsRevoked = true;
+        proposal.revokedAt = new Date().toISOString();
       } else {
         proposal.deleted = true;
+        proposal.deletedAt = new Date().toISOString();
+        proposal.deletionReason = body.reason.trim();
         proposal.permissionsRevoked = true;
+        proposal.revokedAt = proposal.deletedAt;
       }
+      proposal.updatedAt = new Date().toISOString();
       const result = {
         outcome: 'applied',
         operation: body.operation,
@@ -244,6 +276,47 @@ function snapshot() {
       ...(approval
         ? { approvedActionId: approval.actionId, approvedAt: approval.approvedAt }
         : {}),
+    },
+  };
+}
+
+function memoryRecord(proposal) {
+  const status = proposal.deleted
+    ? 'deleted'
+    : proposal.contestedAt
+      ? 'contested'
+      : proposal.permissionsRevoked
+        ? 'consent_revoked'
+        : 'active';
+  return {
+    proposalId: proposal.id,
+    assertionId: proposal.activeAssertionId,
+    text: proposal.deleted ? null : proposal.text,
+    epistemicType: 'self_report',
+    dataClass: 'confidential',
+    confidence: proposal.revisionCount > 1 ? 0.75 : 0.5,
+    confidenceRationale: proposal.revisionCount > 1
+      ? 'Direct user correction of a prior self-report.'
+      : 'Single user self-report; not independently corroborated.',
+    provenance: {
+      evidenceCount: proposal.deleted ? 0 : 1,
+      sourceTypes: proposal.deleted
+        ? []
+        : [proposal.revisionCount > 1 ? 'user_correction' : 'conversation_turn'],
+    },
+    consent: proposal.permissionsRevoked
+      ? { personalUnderstanding: false, brandUsage: false, publicUsage: false }
+      : proposal.permissions,
+    lifecycle: {
+      status,
+      revisionCount: proposal.revisionCount,
+      confirmedAt: proposal.confirmedAt,
+      updatedAt: proposal.updatedAt,
+      ...(proposal.contestedAt ? { contestedAt: proposal.contestedAt } : {}),
+      ...(proposal.contestedReason ? { contestReason: proposal.contestedReason } : {}),
+      ...(proposal.revokedAt ? { revokedAt: proposal.revokedAt } : {}),
+      ...(proposal.deletedAt ? { deletedAt: proposal.deletedAt } : {}),
+      ...(proposal.deletionReason ? { deletionReason: proposal.deletionReason } : {}),
     },
   };
 }
