@@ -78,6 +78,20 @@ describe('operational endpoints', () => {
     });
   });
 
+  it('reports the effective persistence and durability mode', async () => {
+    const response = await request('/ready', () => ({
+      ready: true,
+      persistence: 'memory',
+      durability: 'ephemeral',
+    }));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: 'ready',
+      persistence: 'memory',
+      durability: 'ephemeral',
+    });
+  });
+
   it('serves the live workbench snapshot from application state', async () => {
     const workbench = createDefaultWorkbenchService(
       () => new Date('2026-08-31T12:00:00.000Z'),

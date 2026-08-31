@@ -57,6 +57,12 @@ Seedشده به کاربر ارائه نمی‌شود. View از `GET /api/workb
 PostgreSQL ذخیره و در همان Transaction به Audit Log و Outbox افزوده می‌شود.
 نسخه خصوصی Sites همین قرارداد را با state موقت Worker برای تست UI ارائه می‌کند.
 
+اجرای `NODE_ENV=production` بدون PostgreSQL به‌صورت پیش‌فرض متوقف می‌شود. فقط Preview
+خصوصی و disposable می‌تواند با opt-in صریح `PR_ALLOW_EPHEMERAL_PRODUCTION=true`
+بالا بیاید؛ endpoint `GET /ready` نیز حالت مؤثر `persistence` و `durability` را اعلام
+می‌کند تا حافظه موقت با ذخیره پایدار اشتباه گرفته نشود. با اتصال PostgreSQL، این
+Override باید حذف شود.
+
 نمای «شروع و منابع» مسیر Cold Start محدود MVP را ارائه می‌کند. مالک از
 `POST /api/assets/text` عنوان، متن، تاریخ و برداشت پیشنهادی خود را همراه رضایت صریح
 وارد می‌کند. متن همیشه `confidential` است، مجوز عمومی نمی‌گیرد و در PostgreSQL،

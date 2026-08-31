@@ -134,7 +134,11 @@ const drafts = new ContentDraftService(
   assets,
 );
 const requestHandler = createRequestHandler(
-  () => postgres?.readiness() ?? { ready: true },
+  async () => ({
+    ...(postgres ? await postgres.readiness() : { ready: true }),
+    persistence: environment.runtime.persistence,
+    durability: environment.runtime.durability,
+  }),
   {
     workbench,
     strategy,
@@ -167,7 +171,9 @@ const server = createServer((request, response) => {
 
 server.listen(environment.port, () => {
   process.stdout.write(
-    `PR foundation listening on :${String(environment.port)}\n`,
+    `PR foundation listening on :${String(environment.port)} ` +
+      `persistence=${environment.runtime.persistence} ` +
+      `durability=${environment.runtime.durability}\n`,
   );
 });
 

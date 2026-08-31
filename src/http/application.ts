@@ -60,8 +60,15 @@ import {
 import { calculateOwnerEvidenceContext } from '../workbench/evidence-context.js';
 
 export type ReadinessCheck = () =>
-  | Promise<Readonly<{ ready: boolean; reason?: string }>>
-  | Readonly<{ ready: boolean; reason?: string }>;
+  | Promise<ReadinessStatus>
+  | ReadinessStatus;
+
+export type ReadinessStatus = Readonly<{
+  ready: boolean;
+  reason?: string;
+  persistence?: 'memory' | 'postgres';
+  durability?: 'ephemeral' | 'persistent';
+}>;
 
 export type ApplicationDependencies = Readonly<{
   workbench?: Pick<WorkbenchService, 'snapshot' | 'approve'>;
@@ -104,6 +111,8 @@ export function createRequestHandler(
         sendJson(response, readiness.ready ? 200 : 503, {
           status: readiness.ready ? 'ready' : 'not_ready',
           ...(readiness.reason ? { reason: readiness.reason } : {}),
+          ...(readiness.persistence ? { persistence: readiness.persistence } : {}),
+          ...(readiness.durability ? { durability: readiness.durability } : {}),
         });
       } catch {
         sendJson(response, 503, {

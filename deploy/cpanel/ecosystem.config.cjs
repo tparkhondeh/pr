@@ -14,6 +14,8 @@ module.exports = {
         LOG_LEVEL: 'info',
         PORT: 31056,
         PR_STATIC_ROOT: '/home/wealthos/apps/pr/apps/web/dist',
+        // Private owner preview only. Remove this override when PostgreSQL is provisioned.
+        PR_ALLOW_EPHEMERAL_PRODUCTION: 'true',
       },
     },
   ],

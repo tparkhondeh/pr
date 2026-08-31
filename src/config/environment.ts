@@ -3,6 +3,11 @@ export type Environment = Readonly<{
   port: number;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   staticRoot?: string;
+  runtime: Readonly<{
+    persistence: 'memory' | 'postgres';
+    durability: 'ephemeral' | 'persistent';
+    ephemeralProductionOverride: boolean;
+  }>;
   database?: Readonly<{
     connectionString: string;
     tenantId: string;
@@ -30,6 +35,10 @@ export function loadEnvironment(
   const logLevel = input['LOG_LEVEL'] ?? 'info';
   const port = Number(input['PORT'] ?? '3000');
   const staticRoot = input['PR_STATIC_ROOT']?.trim();
+  const allowEphemeralProduction = parseBoolean(
+    input['PR_ALLOW_EPHEMERAL_PRODUCTION'],
+    'PR_ALLOW_EPHEMERAL_PRODUCTION',
+  );
 
   if (!allowedNodeEnvs.has(nodeEnv as Environment['nodeEnv'])) {
     throw new Error(`Invalid NODE_ENV: ${nodeEnv}`);
@@ -44,14 +53,42 @@ export function loadEnvironment(
   }
 
   const database = loadDatabaseEnvironment(input);
+  if (nodeEnv === 'production' && !database && !allowEphemeralProduction) {
+    throw new Error(
+      'Production requires PostgreSQL. Set DATABASE_URL, PR_TENANT_ID and PR_OWNER_USER_ID, ' +
+      'or explicitly set PR_ALLOW_EPHEMERAL_PRODUCTION=true for a private, disposable preview.',
+    );
+  }
+  if (database && allowEphemeralProduction) {
+    throw new Error(
+      'PR_ALLOW_EPHEMERAL_PRODUCTION must be removed when PostgreSQL is configured.',
+    );
+  }
 
   return {
     nodeEnv: nodeEnv as Environment['nodeEnv'],
     logLevel: logLevel as Environment['logLevel'],
     port,
+    runtime: database
+      ? {
+          persistence: 'postgres',
+          durability: 'persistent',
+          ephemeralProductionOverride: false,
+        }
+      : {
+          persistence: 'memory',
+          durability: 'ephemeral',
+          ephemeralProductionOverride: nodeEnv === 'production',
+        },
     ...(staticRoot ? { staticRoot } : {}),
     ...(database ? { database } : {}),
   };
+}
+
+function parseBoolean(value: string | undefined, name: string): boolean {
+  if (value === undefined || value.trim() === '' || value === 'false') return false;
+  if (value === 'true') return true;
+  throw new Error(`${name} must be true or false.`);
 }
 
 function loadDatabaseEnvironment(
