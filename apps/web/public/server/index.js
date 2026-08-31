@@ -32,7 +32,7 @@ const auditEvents = new Map();
 const assetRequests = new Map();
 const textAssets = new Map();
 
-const actions = [
+const groundedActions = [
   {
     id: 'conversation',
     kind: 'private_conversation',
@@ -461,8 +461,15 @@ export default {
       } catch {
         return json({ error: 'invalid_json' }, 400);
       }
-      const action = actions.find((candidate) => candidate.id === body?.actionId);
+      const context = ownerEvidenceContext();
+      const action = workbenchActions(context).find((candidate) => candidate.id === body?.actionId);
       if (!action) return json({ error: 'action_not_found' }, 404);
+      if (action.interaction !== 'approve') {
+        return json({ error: 'action_not_approvable' }, 409);
+      }
+      if (context.strategy.evidenceIds.length === 0 && action.id !== 'wait') {
+        return json({ error: 'insufficient_evidence' }, 409);
+      }
       if (approval && approval.actionId !== action.id) {
         return json({ error: 'different_action_approved' }, 409);
       }
@@ -648,14 +655,17 @@ export default {
 };
 
 function snapshot() {
-  const maturity = modelMaturity();
+  const context = ownerEvidenceContext();
+  const effectiveApproval = context.strategy.evidenceIds.length > 0 || approval?.actionId === 'wait'
+    ? approval
+    : null;
   return {
     generatedAt: new Date().toISOString(),
     runtime: { source: 'preview_worker', persistence: 'ephemeral' },
     profile: {
-      maturityPercent: maturity.percent,
-      evidenceCount: maturity.evidenceCount,
-      openContradictions: memorySnapshot().records.filter((record) => record.lifecycle.status === 'contested').length,
+      maturityPercent: context.maturity.percent,
+      evidenceCount: context.maturity.evidenceCount,
+      openContradictions: context.openContradictions,
     },
     goal: {
       id: strategy.goalId,
@@ -665,13 +675,19 @@ function snapshot() {
       successMetrics: strategy.goal.successMetrics,
     },
     attentionBudget: { availableMinutes: 150, maximumEnergyCost: 3 },
-    actions: actions.map((action) => ({ ...action, rationale: contextualRationale(action) })),
+    evidence: {
+      state: context.strategy.evidenceIds.length > 0 ? 'grounded' : 'insufficient',
+      strategyEvidenceCount: context.strategy.evidenceIds.length,
+      withheldEvidenceCount: context.strategy.withheldEvidenceCount,
+      sourceTypes: context.strategy.sourceTypes,
+    },
+    actions: workbenchActions(context),
     workflow: {
       id: 'workbench_today',
-      status: approval ? 'approved' : 'awaiting_approval',
-      revision: approval ? 2 : 1,
-      ...(approval
-        ? { approvedActionId: approval.actionId, approvedAt: approval.approvedAt }
+      status: effectiveApproval ? 'approved' : 'awaiting_approval',
+      revision: effectiveApproval ? 2 : 1,
+      ...(effectiveApproval
+        ? { approvedActionId: effectiveApproval.actionId, approvedAt: effectiveApproval.approvedAt }
         : {}),
     },
   };
@@ -721,22 +737,117 @@ function modelMaturity() {
 }
 
 function onboardingSnapshot() {
+  const context = ownerEvidenceContext();
   return {
     generatedAt: new Date().toISOString(),
     persistence: 'ephemeral',
-    modelMaturity: modelMaturity(),
+    modelMaturity: context.maturity,
+    strategyReadiness: {
+      ready: context.strategy.evidenceIds.length > 0,
+      evidenceCount: context.strategy.evidenceIds.length,
+      withheldEvidenceCount: context.strategy.withheldEvidenceCount,
+      sourceTypes: context.strategy.sourceTypes,
+    },
     assets: assetSnapshot(),
   };
 }
 
-function contextualRationale(action) {
+function ownerEvidenceContext() {
+  const assets = assetSnapshot();
+  const memory = memorySnapshot();
+  const activeMemory = memory.records.filter((record) => record.lifecycle.status === 'active');
+  const strategyAssets = assets.records.filter((record) => record.permissions.brandUsage);
+  const strategyMemory = activeMemory.filter((record) => record.consent.brandUsage);
+  const evidenceIds = distinct([
+    ...strategyAssets.map((record) => record.evidenceId),
+    ...strategyMemory.flatMap((record) => record.provenance.evidenceIds),
+  ]);
+  const assertionIds = distinct([
+    ...strategyAssets.map((record) => record.assertionId),
+    ...strategyMemory.map((record) => record.assertionId),
+  ]);
+  const sourceTypes = distinct([
+    ...strategyAssets.map((record) => record.sourceType),
+    ...strategyMemory.flatMap((record) => record.provenance.sourceTypes),
+  ]);
+  const maturity = modelMaturity();
+  return {
+    maturity,
+    strategy: {
+      evidenceIds,
+      assertionIds,
+      sourceTypes,
+      withheldEvidenceCount: Math.max(0, maturity.evidenceCount - evidenceIds.length),
+    },
+    openContradictions: memory.records.filter((record) => record.lifecycle.status === 'contested').length,
+  };
+}
+
+function workbenchActions(context) {
+  if (context.strategy.evidenceIds.length === 0) return coldStartActions(context);
+  return groundedActions.map((action) => {
+    const evidenceCount = action.kind === 'content'
+      ? context.strategy.evidenceIds.length
+      : Math.min(context.strategy.evidenceIds.length, action.kind === 'no_action' ? 1 : 2);
+    return {
+      ...action,
+      rationale: contextualRationale(action, evidenceCount),
+      evidenceCount,
+      confidence: Math.min(action.confidence, 0.5 + Math.min(0.3, evidenceCount * 0.1)),
+      evidenceState: 'grounded',
+      evidenceSourceTypes: context.strategy.sourceTypes,
+      interaction: 'approve',
+    };
+  });
+}
+
+function coldStartActions(context) {
+  const withheld = context.strategy.withheldEvidenceCount;
+  return [
+    {
+      id: 'collect_evidence', kind: 'research', title: 'یک منبع واقعی برای تحلیل برند وارد کن',
+      rationale: withheld > 0
+        ? `${String(withheld)} شاهد فقط برای فهم شخصی ثبت شده، اما برای تحلیل برند مجوز ندارد.`
+        : 'هنوز هیچ شاهد مالک‌محور و مجازی برای تحلیل برند وجود ندارد؛ قبل از پیشنهاد حرکت بیرونی، یک منبع واقعی ثبت کنید.',
+      benefits: ['ساخت پایه قابل‌ردیابی برای تصمیم بعدی'], risks: ['ورود متن نامرتبط یا بیش‌ازحد حساس'],
+      prerequisites: ['انتخاب یک متن واقعی', 'تعیین صریح مجوز تحلیل برند'], evidenceCount: 0,
+      confidence: 1, riskLevel: 'low', attentionCostMinutes: 10, energyCost: 1, feasible: true,
+      utilityScore: null, opportunityCost: null, rank: 1, evidenceState: 'insufficient',
+      evidenceSourceTypes: [], interaction: 'open_intake',
+    },
+    {
+      id: 'reflect_first', kind: 'private_conversation', title: 'یک تجربه واقعی را در گفت‌وگو ثبت کن',
+      rationale: 'اگر منبع آماده‌ای ندارید، یک تجربه مشخص را تعریف کنید؛ سیستم فقط با تأیید جداگانه آن را به حافظه تبدیل می‌کند.',
+      benefits: ['شروع کم‌اصطکاک مدل شخصی'], risks: ['یک Self-report منفرد هنوز شاهد مستقل نیست'],
+      prerequisites: ['تعریف یک موقعیت مشخص', 'تأیید جداگانه حافظه'], evidenceCount: 0,
+      confidence: 1, riskLevel: 'low', attentionCostMinutes: 8, energyCost: 1, feasible: true,
+      utilityScore: null, opportunityCost: null, rank: 2, evidenceState: 'insufficient',
+      evidenceSourceTypes: [], interaction: 'open_conversation',
+    },
+    {
+      id: 'wait', kind: 'no_action', title: 'تا رسیدن شاهد، اقدام عمومی نکن',
+      rationale: `برای هدف «${strategy.goal.title}» هنوز Evidence مجاز کافی وجود ندارد؛ خودداری از توصیه عمومی از ساختن قطعیت کاذب معتبرتر است.`,
+      benefits: ['پرهیز از توصیه و ادعای بدون پشتوانه'], risks: ['عقب‌افتادن یک پنجره زمانی کوتاه'],
+      prerequisites: ['بازبینی پس از ورود اولین منبع مجاز'], evidenceCount: 0,
+      confidence: 1, riskLevel: 'low', attentionCostMinutes: 0, energyCost: 1, feasible: true,
+      utilityScore: null, opportunityCost: null, rank: 3, evidenceState: 'insufficient',
+      evidenceSourceTypes: [], interaction: 'approve',
+    },
+  ];
+}
+
+function contextualRationale(action, evidenceCount) {
   if (action.kind === 'private_conversation') {
-    return `برای هدف «${strategy.goal.title}»، یک تعامل عمیق با ${strategy.desiredPositioning.audience} از چند انتشار عمومی ارزشمندتر است.`;
+    return `با اتکا به ${String(evidenceCount)} شاهد مجاز و برای هدف «${strategy.goal.title}»، یک تعامل عمیق با ${strategy.desiredPositioning.audience} از چند انتشار عمومی ارزشمندتر است.`;
   }
   if (action.kind === 'content') {
-    return `این اقدام باید ادراک «${strategy.desiredPositioning.desiredPerception}» را با تجربه و ادعاهای قابل‌ردیابی پشتیبانی کند.`;
+    return `${String(evidenceCount)} شاهد مجاز در دسترس است؛ این اقدام باید ادراک «${strategy.desiredPositioning.desiredPerception}» را فقط با ادعاهای قابل‌ردیابی پشتیبانی کند.`;
   }
-  return `عدم اقدام نیز نسبت به هدف «${strategy.goal.title}» یک گزینه آگاهانه است؛ کیفیت برند نباید قربانی پرکردن تقویم شود.`;
+  return `با وجود ${String(evidenceCount)} شاهد مجاز، عدم اقدام نیز نسبت به هدف «${strategy.goal.title}» یک گزینه آگاهانه است؛ کیفیت برند نباید قربانی پرکردن تقویم شود.`;
+}
+
+function distinct(values) {
+  return [...new Set(values)].sort();
 }
 
 function validStrategyRequest(body) {

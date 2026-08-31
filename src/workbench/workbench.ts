@@ -24,6 +24,10 @@ import {
   InMemoryWorkbenchApprovalRepository,
   type WorkbenchApprovalRepository,
 } from './approval-repository.js';
+import type {
+  OwnerEvidenceContextProvider,
+  OwnerEvidenceContextSnapshot,
+} from './evidence-context.js';
 
 export type WorkbenchRuntime = Readonly<{
   source: 'node_api' | 'preview_worker';
@@ -47,6 +51,9 @@ export type WorkbenchAction = Readonly<{
   utilityScore: number | null;
   opportunityCost: number | null;
   rank: number;
+  evidenceState: 'insufficient' | 'grounded';
+  evidenceSourceTypes: readonly string[];
+  interaction: 'approve' | 'open_intake' | 'open_conversation';
 }>;
 
 export type WorkbenchSnapshot = Readonly<{
@@ -65,6 +72,12 @@ export type WorkbenchSnapshot = Readonly<{
     successMetrics: readonly string[];
   }>;
   attentionBudget: AttentionBudget;
+  evidence: Readonly<{
+    state: 'insufficient' | 'grounded';
+    strategyEvidenceCount: number;
+    withheldEvidenceCount: number;
+    sourceTypes: readonly string[];
+  }>;
   actions: readonly WorkbenchAction[];
   workflow: Readonly<{
     id: string;
@@ -80,7 +93,6 @@ export type WorkbenchSeed = Readonly<{
   options: readonly StrategicOption[];
   attentionBudget: AttentionBudget;
   rankingPolicy: RankingPolicy;
-  profile: WorkbenchSnapshot['profile'];
 }>;
 
 export class WorkbenchActionNotFoundError extends Error {
@@ -90,7 +102,13 @@ export class WorkbenchActionNotFoundError extends Error {
 }
 
 export class WorkbenchApprovalConflictError extends Error {
-  public constructor(public readonly reason: 'action_not_feasible' | 'different_action_approved') {
+  public constructor(
+    public readonly reason:
+      | 'action_not_feasible'
+      | 'action_not_approvable'
+      | 'different_action_approved'
+      | 'insufficient_evidence',
+  ) {
     super(`Workbench approval conflict: ${reason}`);
   }
 }
@@ -98,18 +116,19 @@ export class WorkbenchApprovalConflictError extends Error {
 export class WorkbenchService {
   readonly #rankedOptions: readonly RankedOption[];
   readonly #attentionBudget: AttentionBudget;
-  readonly #profile: WorkbenchSnapshot['profile'];
   readonly #clock: () => Date;
   readonly #awaitingWorkflow: WorkflowState;
   readonly #approvalRepository: WorkbenchApprovalRepository;
   readonly #strategyContext: Pick<StrategyContextService, 'snapshot'>;
   readonly #ownerUserId: UserId;
+  readonly #evidenceContext: OwnerEvidenceContextProvider;
 
   public constructor(
     seed: WorkbenchSeed,
     clock: () => Date = () => new Date(),
     approvalRepository: WorkbenchApprovalRepository = new InMemoryWorkbenchApprovalRepository(),
     strategyContext?: Pick<StrategyContextService, 'snapshot'>,
+    evidenceContext: OwnerEvidenceContextProvider = emptyEvidenceContextProvider(),
   ) {
     validateGoal(seed.goal);
     this.#rankedOptions = rankStrategicOptions(
@@ -119,7 +138,6 @@ export class WorkbenchService {
       seed.rankingPolicy,
     );
     this.#attentionBudget = seed.attentionBudget;
-    this.#profile = seed.profile;
     this.#clock = clock;
     this.#approvalRepository = approvalRepository;
     this.#ownerUserId = seed.goal.ownerUserId;
@@ -130,6 +148,7 @@ export class WorkbenchService {
       ),
       { tenantId: seed.goal.tenantId, ownerUserId: seed.goal.ownerUserId },
     );
+    this.#evidenceContext = evidenceContext;
     this.#awaitingWorkflow = evolveWorkflow(createWorkflow('workbench_today'), {
       id: 'workbench_today:approval_requested',
       type: 'approval_requested',
@@ -137,12 +156,21 @@ export class WorkbenchService {
   }
 
   public async snapshot(): Promise<WorkbenchSnapshot> {
-    const strategy = await this.#strategyContext.snapshot(this.#ownerUserId);
+    const [strategy, evidence] = await Promise.all([
+      this.#strategyContext.snapshot(this.#ownerUserId),
+      this.#evidenceContext.snapshot(),
+    ]);
     const approval = await this.#approvalRepository.find(strategy.revision);
+    const grounded = evidence.strategy.evidenceIds.length > 0;
+    const effectiveApproval = grounded || approval?.actionId === 'wait' ? approval : null;
     return {
       generatedAt: this.#clock().toISOString(),
       runtime: { source: 'node_api', persistence: this.#approvalRepository.persistence },
-      profile: this.#profile,
+      profile: {
+        maturityPercent: evidence.maturity.percent,
+        evidenceCount: evidence.maturity.evidenceCount,
+        openContradictions: evidence.openContradictions,
+      },
       goal: {
         id: strategy.goalId,
         revision: strategy.revision,
@@ -151,13 +179,21 @@ export class WorkbenchService {
         successMetrics: strategy.goal.successMetrics,
       },
       attentionBudget: this.#attentionBudget,
-      actions: this.#rankedOptions.map((option) => toWorkbenchAction(option, strategy)),
+      evidence: {
+        state: grounded ? 'grounded' : 'insufficient',
+        strategyEvidenceCount: evidence.strategy.evidenceIds.length,
+        withheldEvidenceCount: evidence.strategy.withheldEvidenceCount,
+        sourceTypes: evidence.strategy.sourceTypes,
+      },
+      actions: grounded
+        ? this.#rankedOptions.map((option) => toWorkbenchAction(option, strategy, evidence))
+        : coldStartActions(strategy, evidence),
       workflow: {
         id: this.#awaitingWorkflow.id,
-        status: approval ? 'approved' : this.#awaitingWorkflow.status,
-        revision: approval?.revision ?? this.#awaitingWorkflow.revision,
-        ...(approval ? { approvedActionId: approval.actionId } : {}),
-        ...(approval ? { approvedAt: approval.approvedAt.toISOString() } : {}),
+        status: effectiveApproval ? 'approved' : this.#awaitingWorkflow.status,
+        revision: effectiveApproval?.revision ?? this.#awaitingWorkflow.revision,
+        ...(effectiveApproval ? { approvedActionId: effectiveApproval.actionId } : {}),
+        ...(effectiveApproval ? { approvedAt: effectiveApproval.approvedAt.toISOString() } : {}),
       },
     };
   }
@@ -167,7 +203,22 @@ export class WorkbenchService {
     actorId: UserId,
     occurredAt: Date,
   ): Promise<WorkbenchSnapshot> {
-    const strategy = await this.#strategyContext.snapshot(this.#ownerUserId);
+    const [strategy, evidence] = await Promise.all([
+      this.#strategyContext.snapshot(this.#ownerUserId),
+      this.#evidenceContext.snapshot(),
+    ]);
+    if (evidence.strategy.evidenceIds.length === 0) {
+      const coldAction = coldStartActions(strategy, evidence).find(
+        (candidate) => candidate.id === actionId,
+      );
+      if (!coldAction) throw new WorkbenchActionNotFoundError(actionId);
+      if (coldAction.interaction !== 'approve') {
+        throw new WorkbenchApprovalConflictError('action_not_approvable');
+      }
+      if (actionId !== 'wait') {
+        throw new WorkbenchApprovalConflictError('insufficient_evidence');
+      }
+    }
     const option = this.#rankedOptions.find((candidate) => candidate.id === actionId);
     if (!option) throw new WorkbenchActionNotFoundError(actionId);
     if (!option.feasible) throw new WorkbenchApprovalConflictError('action_not_feasible');
@@ -200,6 +251,7 @@ export function createDefaultWorkbenchService(
     ownerUserId: 'owner_primary',
   },
   strategyContext?: Pick<StrategyContextService, 'snapshot'>,
+  evidenceContext?: OwnerEvidenceContextProvider,
 ): WorkbenchService {
   const tenant = tenantId(identity.tenantId);
   const owner = userId(identity.ownerUserId);
@@ -228,9 +280,6 @@ export function createDefaultWorkbenchService(
         confidenceWeight: 0.15,
         attentionPenaltyPerHour: 2,
       },
-      // The authoritative, evidence-derived maturity lives at /api/onboarding.
-      // Keep this legacy field neutral so no client mistakes seeded demo data for owner evidence.
-      profile: { maturityPercent: 0, evidenceCount: 0, openContradictions: 0 },
       options: [
         {
           id: 'conversation',
@@ -291,23 +340,32 @@ export function createDefaultWorkbenchService(
     clock,
     approvalRepository,
     strategyContext,
+    evidenceContext,
   );
 }
 
 function toWorkbenchAction(
   option: RankedOption,
   strategy: StrategyContextSnapshot,
+  evidence: OwnerEvidenceContextSnapshot,
 ): WorkbenchAction {
+  const usableEvidenceIds = option.kind === 'content'
+    ? evidence.strategy.evidenceIds
+    : evidence.strategy.evidenceIds.slice(0, option.kind === 'no_action' ? 1 : 2);
+  const groundedConfidence = Math.min(
+    option.confidence,
+    0.5 + Math.min(0.3, usableEvidenceIds.length * 0.1),
+  );
   return {
     id: option.id,
     kind: option.kind,
     title: option.title,
-    rationale: contextualRationale(option, strategy),
+    rationale: contextualRationale(option, strategy, usableEvidenceIds.length),
     benefits: option.benefits,
     risks: option.risks,
     prerequisites: option.prerequisites,
-    evidenceCount: option.evidenceIds.length,
-    confidence: option.confidence,
+    evidenceCount: usableEvidenceIds.length,
+    confidence: groundedConfidence,
     riskLevel: option.riskScore < 30 ? 'low' : option.riskScore < 60 ? 'medium' : 'high',
     attentionCostMinutes: option.attentionCostMinutes,
     energyCost: option.energyCost,
@@ -315,20 +373,121 @@ function toWorkbenchAction(
     utilityScore: option.feasible ? round(option.utilityScore) : null,
     opportunityCost: option.feasible ? round(option.opportunityCost) : null,
     rank: option.rank,
+    evidenceState: 'grounded',
+    evidenceSourceTypes: evidence.strategy.sourceTypes,
+    interaction: 'approve',
   };
 }
 
 function contextualRationale(
   option: RankedOption,
   strategy: StrategyContextSnapshot,
+  evidenceCount: number,
 ): string {
   if (option.kind === 'private_conversation') {
-    return `برای هدف «${strategy.goal.title}»، یک تعامل عمیق با ${strategy.desiredPositioning.audience} از چند انتشار عمومی ارزشمندتر است.`;
+    return `با اتکا به ${String(evidenceCount)} شاهد مجاز برای تحلیل برند و برای هدف «${strategy.goal.title}»، یک تعامل عمیق با ${strategy.desiredPositioning.audience} از چند انتشار عمومی ارزشمندتر است.`;
   }
   if (option.kind === 'content') {
-    return `این اقدام باید ادراک «${strategy.desiredPositioning.desiredPerception}» را با تجربه و ادعاهای قابل‌ردیابی پشتیبانی کند.`;
+    return `${String(evidenceCount)} شاهد مجاز در دسترس است؛ این اقدام باید ادراک «${strategy.desiredPositioning.desiredPerception}» را فقط با ادعاهای قابل‌ردیابی پشتیبانی کند.`;
   }
-  return `عدم اقدام نیز نسبت به هدف «${strategy.goal.title}» یک گزینه آگاهانه است؛ کیفیت برند نباید قربانی پرکردن تقویم شود.`;
+  return `با وجود ${String(evidenceCount)} شاهد مجاز، عدم اقدام نیز نسبت به هدف «${strategy.goal.title}» یک گزینه آگاهانه است؛ کیفیت برند نباید قربانی پرکردن تقویم شود.`;
+}
+
+function coldStartActions(
+  strategy: StrategyContextSnapshot,
+  evidence: OwnerEvidenceContextSnapshot,
+): readonly WorkbenchAction[] {
+  const withheld = evidence.strategy.withheldEvidenceCount;
+  return [
+    {
+      id: 'collect_evidence',
+      kind: 'research',
+      title: 'یک منبع واقعی برای تحلیل برند وارد کن',
+      rationale: withheld > 0
+        ? `${String(withheld)} شاهد فقط برای فهم شخصی ثبت شده، اما برای تحلیل برند مجوز ندارد. یک منبع مرتبط را با دامنه استفاده روشن آماده کنید.`
+        : 'هنوز هیچ شاهد مالک‌محور و مجازی برای تحلیل برند وجود ندارد؛ قبل از پیشنهاد حرکت بیرونی، یک منبع واقعی ثبت کنید.',
+      benefits: ['ساخت پایه قابل‌ردیابی برای تصمیم بعدی'],
+      risks: ['ورود متن نامرتبط یا بیش‌ازحد حساس'],
+      prerequisites: ['انتخاب یک متن واقعی', 'تعیین صریح مجوز تحلیل برند'],
+      evidenceCount: 0,
+      confidence: 1,
+      riskLevel: 'low',
+      attentionCostMinutes: 10,
+      energyCost: 1,
+      feasible: true,
+      utilityScore: null,
+      opportunityCost: null,
+      rank: 1,
+      evidenceState: 'insufficient',
+      evidenceSourceTypes: [],
+      interaction: 'open_intake',
+    },
+    {
+      id: 'reflect_first',
+      kind: 'private_conversation',
+      title: 'یک تجربه واقعی را در گفت‌وگو ثبت کن',
+      rationale: 'اگر منبع آماده‌ای ندارید، یک تجربه مشخص را تعریف کنید؛ سیستم فقط با تأیید جداگانه آن را به حافظه تبدیل می‌کند.',
+      benefits: ['شروع کم‌اصطکاک مدل شخصی'],
+      risks: ['یک Self-report منفرد هنوز شاهد مستقل نیست'],
+      prerequisites: ['تعریف یک موقعیت مشخص', 'تأیید جداگانه حافظه'],
+      evidenceCount: 0,
+      confidence: 1,
+      riskLevel: 'low',
+      attentionCostMinutes: 8,
+      energyCost: 1,
+      feasible: true,
+      utilityScore: null,
+      opportunityCost: null,
+      rank: 2,
+      evidenceState: 'insufficient',
+      evidenceSourceTypes: [],
+      interaction: 'open_conversation',
+    },
+    {
+      id: 'wait',
+      kind: 'no_action',
+      title: 'تا رسیدن شاهد، اقدام عمومی نکن',
+      rationale: `برای هدف «${strategy.goal.title}» هنوز Evidence مجاز کافی وجود ندارد؛ Abstain کردن از توصیه عمومی از ساختن قطعیت کاذب معتبرتر است.`,
+      benefits: ['پرهیز از توصیه و ادعای بدون پشتوانه'],
+      risks: ['عقب‌افتادن یک پنجره زمانی کوتاه'],
+      prerequisites: ['بازبینی پس از ورود اولین منبع مجاز'],
+      evidenceCount: 0,
+      confidence: 1,
+      riskLevel: 'low',
+      attentionCostMinutes: 0,
+      energyCost: 1,
+      feasible: true,
+      utilityScore: null,
+      opportunityCost: null,
+      rank: 3,
+      evidenceState: 'insufficient',
+      evidenceSourceTypes: [],
+      interaction: 'approve',
+    },
+  ];
+}
+
+function emptyEvidenceContextProvider(): OwnerEvidenceContextProvider {
+  return {
+    snapshot: () => Promise.resolve({
+      generatedAt: new Date(0),
+      persistence: 'memory',
+      maturity: {
+        percent: 0,
+        evidenceCount: 0,
+        sourceTypes: [],
+        components: {
+          importedEvidence: 0,
+          confirmedSelfReports: 0,
+          sourceDiversity: 0,
+          exercisedDataControl: 0,
+        },
+        nextStep: 'یک یادداشت یا متن واقعی وارد کنید.',
+      },
+      strategy: { evidenceIds: [], assertionIds: [], sourceTypes: [], withheldEvidenceCount: 0 },
+      openContradictions: 0,
+    }),
+  };
 }
 
 function round(value: number): number {

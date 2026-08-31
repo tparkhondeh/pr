@@ -22,7 +22,9 @@ import {
   defaultStrategyContext,
 } from '../src/strategy/context.js';
 import { InMemoryWorkbenchApprovalRepository } from '../src/workbench/approval-repository.js';
+import { OwnerEvidenceContextService } from '../src/workbench/evidence-context.js';
 import { createDefaultWorkbenchService } from '../src/workbench/workbench.js';
+import { groundedEvidence } from './support/grounded-evidence.js';
 
 const servers: ReturnType<typeof createServer>[] = [];
 
@@ -99,7 +101,13 @@ describe('operational endpoints', () => {
 
   it('accepts a human approval and returns the evolved workflow', async () => {
     const fixedTime = new Date('2026-08-31T12:05:00.000Z');
-    const workbench = createDefaultWorkbenchService(() => fixedTime);
+    const workbench = createDefaultWorkbenchService(
+      () => fixedTime,
+      undefined,
+      { tenantId: 'tenant_primary', ownerUserId: 'owner_primary' },
+      undefined,
+      groundedEvidence(fixedTime),
+    );
     const response = await request(
       '/api/workbench/approval',
       () => ({ ready: true }),
@@ -408,6 +416,7 @@ describe('operational endpoints', () => {
       approval,
       { tenantId: activeTenant, ownerUserId: owner },
       strategy,
+      groundedEvidence(fixedTime),
     );
     const dependencies: ApplicationDependencies = {
       workbench,
@@ -479,6 +488,7 @@ describe('operational endpoints', () => {
       approval,
       { tenantId: activeTenant, ownerUserId: owner },
       strategy,
+      groundedEvidence(fixedTime),
     );
     const proposalResult = await conversation.submitTurn({
       tenantId: activeTenant,
@@ -616,13 +626,27 @@ describe('operational endpoints', () => {
       tenantId: activeTenant,
       ownerUserId: owner,
     });
+    const conversation = new ConversationIntakeService();
+    const workbench = createDefaultWorkbenchService(
+      () => fixedTime,
+      undefined,
+      { tenantId: activeTenant, ownerUserId: owner },
+      undefined,
+      new OwnerEvidenceContextService(
+        assets,
+        conversation,
+        { tenantId: activeTenant, ownerUserId: owner },
+        () => fixedTime,
+      ),
+    );
     const auditTrail = new AuditTrailService(new InMemoryAuditTrailRepository(), {
       tenantId: activeTenant,
       ownerUserId: owner,
     });
     const dependencies: ApplicationDependencies = {
       assets,
-      conversation: new ConversationIntakeService(),
+      conversation,
+      workbench,
       auditTrail,
       mutationAuditTrail: auditTrail,
       tenantId: activeTenant,
@@ -675,10 +699,44 @@ describe('operational endpoints', () => {
         sourceTypes: ['text_asset'],
         components: { importedEvidence: 15, sourceDiversity: 8 },
       },
+      strategyReadiness: {
+        ready: false,
+        evidenceCount: 0,
+        withheldEvidenceCount: 1,
+        sourceTypes: [],
+      },
       assets: { summary: { assets: 1, evidenceItems: 1, assertions: 1 } },
     });
+    const coldSnapshot = await workbench.snapshot();
+    expect(coldSnapshot.evidence).toMatchObject({
+      state: 'insufficient', strategyEvidenceCount: 0, withheldEvidenceCount: 1,
+    });
+    expect(coldSnapshot.actions[0]).toMatchObject({
+      id: 'collect_evidence', interaction: 'open_intake',
+    });
+
+    const grounded = await request('/api/assets/text', () => ({ ready: true }), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...body,
+        requestId: 'asset_http_brand_note',
+        title: 'یادداشت دوم برای تحلیل برند',
+        content: 'در یک تجربه دیگر، توضیح محدودیت‌های تصمیم به حفظ اعتماد و انتخاب مسئولانه کمک کرد.',
+        assertionText: 'توضیح محدودیت‌ها را بخشی از تصمیم مسئولانه و اعتمادساز می‌دانم.',
+        permissions: { personalUnderstanding: true, brandUsage: true },
+      }),
+    }, dependencies);
+    expect(grounded.status).toBe(201);
+    const groundedSnapshot = await workbench.snapshot();
+    expect(groundedSnapshot.evidence).toMatchObject({
+      state: 'grounded', strategyEvidenceCount: 1, withheldEvidenceCount: 1,
+    });
+    expect(groundedSnapshot.actions[0]).toMatchObject({
+      id: 'conversation', evidenceState: 'grounded', interaction: 'approve',
+    });
     const activity = await auditTrail.snapshot(owner, fixedTime);
-    expect(activity.events.filter((event) => event.eventType === 'asset.text_imported')).toHaveLength(1);
+    expect(activity.events.filter((event) => event.eventType === 'asset.text_imported')).toHaveLength(2);
   });
 
   it('exposes an owner audit trail and a portable, auditable account export', async () => {
@@ -695,6 +753,7 @@ describe('operational endpoints', () => {
       approval,
       { tenantId: activeTenant, ownerUserId: owner },
       strategy,
+      groundedEvidence(fixedTime),
     );
     const conversation = new ConversationIntakeService();
     const learning = new FeedbackLearningService(

@@ -22,6 +22,9 @@ export type WorkbenchAction = Readonly<{
   utilityScore: number | null;
   opportunityCost: number | null;
   rank: number;
+  evidenceState: 'insufficient' | 'grounded';
+  evidenceSourceTypes: readonly string[];
+  interaction: 'approve' | 'open_intake' | 'open_conversation';
 }>;
 
 export type WorkbenchSnapshot = Readonly<{
@@ -45,6 +48,12 @@ export type WorkbenchSnapshot = Readonly<{
   attentionBudget: Readonly<{
     availableMinutes: number;
     maximumEnergyCost: 1 | 2 | 3 | 4 | 5;
+  }>;
+  evidence: Readonly<{
+    state: 'insufficient' | 'grounded';
+    strategyEvidenceCount: number;
+    withheldEvidenceCount: number;
+    sourceTypes: readonly string[];
   }>;
   actions: readonly WorkbenchAction[];
   workflow: Readonly<{
@@ -309,6 +318,12 @@ export type OnboardingSnapshot = Readonly<{
       exercisedDataControl: number;
     }>;
     nextStep: string;
+  }>;
+  strategyReadiness: Readonly<{
+    ready: boolean;
+    evidenceCount: number;
+    withheldEvidenceCount: number;
+    sourceTypes: readonly string[];
   }>;
   assets: TextAssetSnapshot;
 }>;
@@ -667,6 +682,7 @@ function isWorkbenchSnapshot(payload: unknown): payload is WorkbenchSnapshot {
   const goal = payload['goal'];
   const workflow = payload['workflow'];
   const runtime = payload['runtime'];
+  const evidence = payload['evidence'];
   return (
     Array.isArray(actions) &&
     actions.length >= 3 &&
@@ -675,7 +691,27 @@ function isWorkbenchSnapshot(payload: unknown): payload is WorkbenchSnapshot {
     isRecord(workflow) &&
     typeof workflow['status'] === 'string' &&
     isRecord(runtime) &&
-    typeof runtime['source'] === 'string'
+    typeof runtime['source'] === 'string' &&
+    isRecord(evidence) &&
+    (evidence['state'] === 'insufficient' || evidence['state'] === 'grounded') &&
+    typeof evidence['strategyEvidenceCount'] === 'number' &&
+    typeof evidence['withheldEvidenceCount'] === 'number' &&
+    Array.isArray(evidence['sourceTypes']) &&
+    actions.every(isWorkbenchAction)
+  );
+}
+
+function isWorkbenchAction(value: unknown): value is WorkbenchAction {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value['id'] === 'string' && typeof value['title'] === 'string' &&
+    typeof value['rationale'] === 'string' && typeof value['evidenceCount'] === 'number' &&
+    (value['evidenceState'] === 'insufficient' || value['evidenceState'] === 'grounded') &&
+    Array.isArray(value['evidenceSourceTypes']) &&
+    (
+      value['interaction'] === 'approve' || value['interaction'] === 'open_intake' ||
+      value['interaction'] === 'open_conversation'
+    )
   );
 }
 
@@ -771,8 +807,12 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
 }
 
 function isOnboardingSnapshot(payload: unknown): payload is OnboardingSnapshot {
-  if (!isRecord(payload) || !isRecord(payload['modelMaturity'])) return false;
+  if (
+    !isRecord(payload) || !isRecord(payload['modelMaturity']) ||
+    !isRecord(payload['strategyReadiness'])
+  ) return false;
   const maturity = payload['modelMaturity'];
+  const readiness = payload['strategyReadiness'];
   return (
     typeof payload['generatedAt'] === 'string' &&
     (
@@ -784,6 +824,10 @@ function isOnboardingSnapshot(payload: unknown): payload is OnboardingSnapshot {
     Array.isArray(maturity['sourceTypes']) &&
     isRecord(maturity['components']) &&
     typeof maturity['nextStep'] === 'string' &&
+    typeof readiness['ready'] === 'boolean' &&
+    typeof readiness['evidenceCount'] === 'number' &&
+    typeof readiness['withheldEvidenceCount'] === 'number' &&
+    Array.isArray(readiness['sourceTypes']) &&
     isTextAssetSnapshot(payload['assets'])
   );
 }

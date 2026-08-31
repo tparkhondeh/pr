@@ -54,6 +54,7 @@ import {
   WorkbenchApprovalConflictError,
   type WorkbenchService,
 } from '../workbench/workbench.js';
+import { calculateOwnerEvidenceContext } from '../workbench/evidence-context.js';
 
 export type ReadinessCheck = () =>
   | Promise<Readonly<{ ready: boolean; reason?: string }>>
@@ -488,10 +489,17 @@ async function handleOnboardingSnapshot(
         generatedAt,
       }),
     ]);
+    const context = calculateOwnerEvidenceContext(assets, memory, generatedAt);
     sendJson(response, 200, {
       generatedAt: generatedAt.toISOString(),
       persistence: assets.persistence === memory.persistence ? assets.persistence : 'mixed',
-      modelMaturity: modelMaturity(assets, memory),
+      modelMaturity: context.maturity,
+      strategyReadiness: {
+        ready: context.strategy.evidenceIds.length > 0,
+        evidenceCount: context.strategy.evidenceIds.length,
+        withheldEvidenceCount: context.strategy.withheldEvidenceCount,
+        sourceTypes: context.strategy.sourceTypes,
+      },
       assets: serializeTextAssetSnapshot(assets),
     });
   } catch (error: unknown) {
@@ -581,39 +589,6 @@ function serializeTextAssetRecord(record: TextAssetSnapshot['records'][number]):
     ...record,
     occurredAt: record.occurredAt.toISOString(),
     importedAt: record.importedAt.toISOString(),
-  };
-}
-
-function modelMaturity(assets: TextAssetSnapshot, memory: PersonalMemorySnapshot): Record<string, unknown> {
-  const activeMemory = memory.records.filter((record) => record.lifecycle.status === 'active');
-  const controlledMemory = memory.records.some((record) => record.lifecycle.status !== 'active');
-  const sourceTypes = new Set([
-    ...assets.records.map((record) => record.sourceType),
-    ...activeMemory.flatMap((record) => record.provenance.sourceTypes),
-  ]);
-  const components = {
-    importedEvidence: Math.min(45, assets.summary.evidenceItems * 15),
-    confirmedSelfReports: Math.min(30, activeMemory.length * 10),
-    sourceDiversity: Math.min(15, sourceTypes.size * 8),
-    exercisedDataControl: controlledMemory ? 10 : 0,
-  };
-  const percent = Math.min(100, Object.values(components).reduce((total, value) => total + value, 0));
-  const evidenceCount = assets.summary.evidenceItems + activeMemory.reduce(
-    (total, record) => total + record.provenance.evidenceCount,
-    0,
-  );
-  return {
-    percent,
-    evidenceCount,
-    sourceTypes: [...sourceTypes].sort(),
-    components,
-    nextStep: assets.summary.assets === 0
-      ? 'یک یادداشت یا متن واقعی وارد کنید.'
-      : activeMemory.length === 0
-        ? 'یک برداشت گفت‌وگویی را تأیید یا اصلاح کنید.'
-        : sourceTypes.size < 2
-          ? 'یک شاهد از نوع متفاوت اضافه کنید.'
-          : 'مدل را با اصلاح‌ها و شواهد مستقل دقیق‌تر کنید.',
   };
 }
 

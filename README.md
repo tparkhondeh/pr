@@ -46,9 +46,12 @@ Health endpoint پس از اجرا: `GET /health`
 pnpm web:dev
 ```
 
-Workbench فعلی حلقه تصمیم MVP را نمایش می‌دهد: Goal، سه Action شامل عدم اقدام،
-Attention Budget، Evidence، Risk و Approval انسانی. View از `GET /api/workbench`
-داده می‌گیرد و تأیید را با `POST /api/workbench/approval` ثبت می‌کند. Store فعلی
+Workbench فعلی حلقه تصمیم MVP را نمایش می‌دهد: Goal، Action شامل عدم اقدام،
+Attention Budget، Evidence، Risk و Approval انسانی. تا وقتی هیچ Evidence با رضایت
+صریح `brandUsage` وجود ندارد، سیستم از پیشنهاد بیرونی خودداری می‌کند و فقط مسیرهای
+ورود منبع، گفت‌وگوی Evidence-first و «عدم اقدام» را نشان می‌دهد؛ تعداد شاهد نمایشی یا
+Seedشده به کاربر ارائه نمی‌شود. View از `GET /api/workbench` داده می‌گیرد و تأیید را
+با `POST /api/workbench/approval` ثبت می‌کند. Store فعلی
 بدون تنظیم دیتابیس حافظه‌ای است و با Restart پاک می‌شود. با تنظیم هم‌زمان
 `DATABASE_URL`، `PR_TENANT_ID` و `PR_OWNER_USER_ID`، تأیید با Optimistic Lock در
 PostgreSQL ذخیره و در همان Transaction به Audit Log و Outbox افزوده می‌شود.
@@ -60,7 +63,9 @@ PostgreSQL ذخیره و در همان Transaction به Audit Log و Outbox اف
 Asset، Evidence، Assertion، Consent، Audit، Outbox و رکورد idempotency در یک
 Transaction ساخته می‌شوند. `GET /api/onboarding` منابع و بلوغ مدل را از شواهد واقعی،
 Self-reportهای فعال، تنوع منبع و اعمال حقوق داده محاسبه می‌کند؛ عدد نمایشی ثابت در UI
-استفاده نمی‌شود. Store محلی و Sites در نبود PostgreSQL با Restart پاک می‌شوند.
+استفاده نمی‌شود. بلوغ شخصی مستقل از مجوز تحلیل برند است و فیلد
+`strategyReadiness` دقیقاً مشخص می‌کند چند شاهد برای توصیه استراتژیک مجاز یا withheld
+است. Store محلی و Sites در نبود PostgreSQL با Restart پاک می‌شوند.
 
 دکمه «شروع گفت‌وگو» نیز به `POST /api/conversations/turns` متصل است. Opt-in ساخت
 پیشنهاد حافظه پیش‌فرض خاموش است و حتی پس از فعال‌کردن، ثبت نهایی فقط با درخواست دوم

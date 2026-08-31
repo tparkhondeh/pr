@@ -175,8 +175,7 @@ export function App() {
         occurredAt: input.occurredAt,
         permissions: { personalUnderstanding: true, brandUsage: input.brandUsage },
       });
-      setOnboardingSnapshot(await loadOnboarding());
-      setOnboardingState('ready');
+      await refresh();
       await refreshAudit();
     } catch (caught: unknown) {
       setOnboardingError(errorMessage(caught));
@@ -405,6 +404,16 @@ export function App() {
 
   const approve = async () => {
     if (!selectedAction || state === 'approving' || !selectedAction.feasible) return;
+    if (selectedAction.interaction === 'open_intake') {
+      setActiveView('intake');
+      await refreshOnboarding();
+      return;
+    }
+    if (selectedAction.interaction === 'open_conversation') {
+      setActiveView('today');
+      setConversationOpen(true);
+      return;
+    }
     setState('approving');
     setError(null);
     try {
@@ -802,6 +811,20 @@ export function App() {
           <div className="budget"><Clock3 size={18} /><span>بودجه توجه امروز</span><strong>{formatMinutes(snapshot.attentionBudget.availableMinutes)}</strong></div>
         </section>
 
+        {snapshot.evidence.state === 'insufficient' ? (
+          <div className="evidence-abstention" role="status">
+            <ShieldCheck size={18} />
+            <div>
+              <strong>سیستم از توصیه بیرونی بدون شاهد مجاز خودداری کرده است.</strong>
+              <span>
+                {snapshot.evidence.withheldEvidenceCount > 0
+                  ? `${String(snapshot.evidence.withheldEvidenceCount)} شاهد فقط برای فهم شخصی موجود است و در تحلیل برند مصرف نمی‌شود.`
+                  : 'ابتدا یک منبع واقعی وارد کنید یا یک تجربه مشخص را با رضایت جداگانه ثبت کنید.'}
+              </span>
+            </div>
+          </div>
+        ) : null}
+
         <div className="workspace">
           <section className="options" aria-label="گزینه‌های اقدام">
             {snapshot.actions.map((action) => (
@@ -834,7 +857,7 @@ export function App() {
             <div className="evidence-title"><ShieldCheck size={20} /><span>چرا این پیشنهاد؟</span></div>
             <p>{selectedAction?.rationale}</p>
             <ul>
-              <li><BookOpenText size={16} /><span><b>{selectedAction?.evidenceCount ?? 0} شاهد</b> قابل‌ردیابی</span></li>
+              <li><BookOpenText size={16} /><span><b>{selectedAction?.evidenceCount ?? 0} شاهد</b> مجاز و قابل‌ردیابی</span></li>
               <li><Fingerprint size={16} /><span><b>فایده:</b> {selectedAction?.benefits[0]}</span></li>
               <li><Network size={16} /><span><b>پیش‌نیاز:</b> {selectedAction?.prerequisites[0]}</span></li>
             </ul>
@@ -846,14 +869,21 @@ export function App() {
                 disabled={
                   state === 'approving' ||
                   !selectedAction?.feasible ||
-                  (snapshot.workflow.status === 'approved' && !selectedIsApproved)
+                  (
+                    selectedAction.interaction === 'approve' &&
+                    snapshot.workflow.status === 'approved' && !selectedIsApproved
+                  )
                 }
                 type="button"
                 onClick={() => void approve()}
               >
-                {approvalLabel(state, selectedIsApproved, snapshot.workflow.status)}
+                {approvalLabel(state, selectedAction, selectedIsApproved, snapshot.workflow.status)}
               </button>
-              <small>تأیید فقط Workflow را آماده می‌کند؛ هیچ اقدام بیرونی اجرا نمی‌شود.</small>
+              <small>
+                {selectedAction?.interaction === 'approve'
+                  ? 'تأیید فقط Workflow را آماده می‌کند؛ هیچ اقدام بیرونی اجرا نمی‌شود.'
+                  : 'این مسیر فقط شما را به جمع‌آوری Evidence می‌برد و اقدام بیرونی اجرا نمی‌کند.'}
+              </small>
             </div>
           </aside>
         </div>
@@ -1631,6 +1661,14 @@ function AssetIntakePanel({
         <div>
           <h3>{snapshot.modelMaturity.nextStep}</h3>
           <p>{snapshot.modelMaturity.evidenceCount} شاهد واقعی از {snapshot.modelMaturity.sourceTypes.length} نوع منبع در محاسبه فعلی حضور دارد.</p>
+          <div className={snapshot.strategyReadiness.ready ? 'strategy-ready' : 'strategy-not-ready'}>
+            <ShieldCheck size={14} />
+            {snapshot.strategyReadiness.ready
+              ? `${String(snapshot.strategyReadiness.evidenceCount)} شاهد برای تحلیل برند مجاز است.`
+              : snapshot.strategyReadiness.withheldEvidenceCount > 0
+                ? `${String(snapshot.strategyReadiness.withheldEvidenceCount)} شاهد موجود است، اما مجوز تحلیل برند ندارد.`
+                : 'هنوز شاهد مجازی برای تحلیل برند وجود ندارد.'}
+          </div>
           <ul>
             <li>شواهد واردشده: {snapshot.modelMaturity.components.importedEvidence} امتیاز</li>
             <li>Self-report تأییدشده: {snapshot.modelMaturity.components.confirmedSelfReports} امتیاز</li>
@@ -1964,9 +2002,12 @@ function formatTimestamp(value: string): string {
 
 function approvalLabel(
   state: 'loading' | 'ready' | 'approving' | 'error',
+  action: WorkbenchAction | undefined,
   selectedIsApproved: boolean,
   workflowStatus: WorkbenchSnapshot['workflow']['status'],
 ) {
+  if (action?.interaction === 'open_intake') return 'رفتن به شروع و منابع';
+  if (action?.interaction === 'open_conversation') return 'شروع گفت‌وگوی Evidence-first';
   if (state === 'approving') return <><LoaderCircle className="spin" size={18} /> در حال ثبت تأیید…</>;
   if (selectedIsApproved) return <><Check size={18} /> برای اجرا تأیید شد</>;
   if (workflowStatus === 'approved') return 'اقدام دیگری قبلاً تأیید شده';
@@ -1979,6 +2020,8 @@ function errorMessage(error: unknown): string {
     network_unavailable: 'سرویس تصمیم در دسترس نیست. اتصال API را بررسی کنید.',
     authentication_required: 'برای ثبت تأیید باید دوباره وارد شوید.',
     different_action_approved: 'یک اقدام دیگر قبلاً تأیید شده و قابل جایگزینی خودکار نیست.',
+    action_not_approvable: 'این گزینه یک مسیر جمع‌آوری شاهد است و به‌عنوان اقدام بیرونی تأیید نمی‌شود.',
+    insufficient_evidence: 'برای تأیید این اقدام هنوز شاهد مجاز کافی وجود ندارد.',
     action_not_found: 'این اقدام دیگر در Snapshot فعلی وجود ندارد.',
     invalid_conversation_input: 'متن یا شناسه گفت‌وگو معتبر نیست.',
     memory_permission_denied: 'مجوز لازم برای ثبت این حافظه داده نشده است.',

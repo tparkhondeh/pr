@@ -20,6 +20,7 @@ import {
 } from '../src/strategy/context.js';
 import { InMemoryWorkbenchApprovalRepository } from '../src/workbench/approval-repository.js';
 import { createDefaultWorkbenchService } from '../src/workbench/workbench.js';
+import { groundedEvidence } from './support/grounded-evidence.js';
 
 const tenant = tenantId('11111111-1111-4111-8111-111111111111');
 const owner = userId('22222222-2222-4222-8222-222222222222');
@@ -37,6 +38,7 @@ async function fixture() {
     approval,
     { tenantId: tenant, ownerUserId: owner },
     strategy,
+    groundedEvidence(now),
   );
   const turn = await conversation.submitTurn({
     tenantId: tenant,

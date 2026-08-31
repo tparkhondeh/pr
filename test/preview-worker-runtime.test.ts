@@ -23,6 +23,22 @@ describe('private preview worker draft runtime', () => {
       env,
     );
 
+    const coldWorkbench = await worker.fetch(
+      new Request('https://preview.example/api/workbench'),
+      env,
+    );
+    const coldSnapshot = await coldWorkbench.json() as {
+      evidence: { state: string; strategyEvidenceCount: number };
+      actions: Array<{ id: string; interaction: string }>;
+    };
+    expect(coldSnapshot.evidence).toMatchObject({ state: 'insufficient', strategyEvidenceCount: 0 });
+    expect(coldSnapshot.actions[0]).toMatchObject({
+      id: 'collect_evidence', interaction: 'open_intake',
+    });
+    const routedApproval = await post('/api/workbench/approval', { actionId: 'collect_evidence' });
+    expect(routedApproval.status).toBe(409);
+    await expect(routedApproval.json()).resolves.toEqual({ error: 'action_not_approvable' });
+
     const turn = await post('/api/conversations/turns', {
       conversationId: 'conversation_runtime',
       turnId: 'turn_runtime',
@@ -39,6 +55,14 @@ describe('private preview worker draft runtime', () => {
         publicUsage: false,
       },
     })).status).toBe(200);
+    expect((await post('/api/assets/text', {
+      requestId: 'asset_runtime_brand_basis',
+      title: 'مبنای واقعی تحلیل برند',
+      content: 'در یک تجربه واقعی، گفت‌وگوی مستقیم باعث شد ابهام به تصمیمی مسئولانه و قابل اجرا تبدیل شود.',
+      assertionText: 'گفت‌وگوی مستقیم را ابزاری برای تبدیل ابهام به تصمیم مسئولانه می‌دانم.',
+      occurredAt: '2026-08-19T12:00:00.000Z',
+      permissions: { personalUnderstanding: true, brandUsage: true },
+    })).status).toBe(201);
     expect((await post('/api/workbench/approval', { actionId: 'essay' })).status).toBe(200);
 
     const createRequest = {
@@ -156,8 +180,9 @@ describe('private preview worker draft runtime', () => {
       env,
     );
     await expect(onboardingResponse.json()).resolves.toMatchObject({
-      modelMaturity: { evidenceCount: 1 },
-      assets: { summary: { assets: 1, evidenceItems: 1, assertions: 1 } },
+      modelMaturity: { evidenceCount: 2 },
+      strategyReadiness: { ready: true, evidenceCount: 1, withheldEvidenceCount: 1 },
+      assets: { summary: { assets: 2, evidenceItems: 2, assertions: 2 } },
     });
 
     const accountExportResponse = await worker.fetch(

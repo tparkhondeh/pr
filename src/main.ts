@@ -36,6 +36,7 @@ import {
   InMemoryWorkbenchApprovalRepository,
   PostgresWorkbenchApprovalRepository,
 } from './workbench/approval-repository.js';
+import { OwnerEvidenceContextService } from './workbench/evidence-context.js';
 import { createDefaultWorkbenchService } from './workbench/workbench.js';
 
 const environment = loadEnvironment();
@@ -93,14 +94,20 @@ const strategy = new StrategyContextService(strategyRepository, {
   tenantId: activeTenant,
   ownerUserId: owner,
 });
+const conversation = new ConversationIntakeService(conversationRepository);
+const evidenceContext = new OwnerEvidenceContextService(
+  assets,
+  conversation,
+  { tenantId: activeTenant, ownerUserId: owner },
+);
 
 const workbench = createDefaultWorkbenchService(
   () => new Date(),
   approvalRepository,
   { tenantId: activeTenantId, ownerUserId },
   strategy,
+  evidenceContext,
 );
-const conversation = new ConversationIntakeService(conversationRepository);
 const draftRepository = postgres && environment.database
   ? new PostgresDraftWorkspaceRepository(postgres, {
       tenantId: environment.database.tenantId,

@@ -5,24 +5,51 @@ import {
   WorkbenchApprovalConflictError,
   createDefaultWorkbenchService,
 } from '../src/workbench/workbench.js';
+import { groundedEvidence } from './support/grounded-evidence.js';
 
 const fixedTime = new Date('2026-08-31T12:00:00.000Z');
 
+function groundedService() {
+  return createDefaultWorkbenchService(
+    () => fixedTime,
+    undefined,
+    { tenantId: 'tenant_primary', ownerUserId: 'owner_primary' },
+    undefined,
+    groundedEvidence(fixedTime),
+  );
+}
+
 describe('workbench application state', () => {
-  it('exposes ranked evidence-aware choices including deliberate no-action', async () => {
+  it('abstains from seeded recommendations when no owner evidence is authorized', async () => {
     const snapshot = await createDefaultWorkbenchService(() => fixedTime).snapshot();
 
     expect(snapshot.generatedAt).toBe(fixedTime.toISOString());
     expect(snapshot.runtime).toEqual({ source: 'node_api', persistence: 'memory' });
     expect(snapshot.workflow.status).toBe('awaiting_approval');
     expect(snapshot.actions).toHaveLength(3);
-    expect(snapshot.actions[0]?.id).toBe('conversation');
+    expect(snapshot.actions[0]?.id).toBe('collect_evidence');
     expect(snapshot.actions.some((action) => action.kind === 'no_action')).toBe(true);
+    expect(snapshot.actions.every((action) => action.evidenceCount === 0)).toBe(true);
+    expect(snapshot.evidence).toEqual({
+      state: 'insufficient',
+      strategyEvidenceCount: 0,
+      withheldEvidenceCount: 0,
+      sourceTypes: [],
+    });
+    expect(snapshot.actions.some((action) => action.title.includes('یادداشت تحلیلی'))).toBe(false);
+  });
+
+  it('exposes evidence-grounded strategic choices after brand-analysis consent', async () => {
+    const snapshot = await groundedService().snapshot();
+    expect(snapshot.actions[0]?.id).toBe('conversation');
     expect(snapshot.actions.every((action) => action.evidenceCount > 0)).toBe(true);
+    expect(snapshot.actions.every((action) => action.evidenceState === 'grounded')).toBe(true);
+    expect(snapshot.evidence).toMatchObject({ state: 'grounded', strategyEvidenceCount: 1 });
+    expect(snapshot.profile).toMatchObject({ maturityPercent: 23, evidenceCount: 1 });
   });
 
   it('records human approval without executing the action', async () => {
-    const service = createDefaultWorkbenchService(() => fixedTime);
+    const service = groundedService();
     const approved = await service.approve('conversation', userId('owner_primary'), fixedTime);
 
     expect(approved.workflow).toMatchObject({
@@ -34,7 +61,7 @@ describe('workbench application state', () => {
   });
 
   it('is idempotent for the same approval and rejects replacement approval', async () => {
-    const service = createDefaultWorkbenchService(() => fixedTime);
+    const service = groundedService();
     const actor = userId('owner_primary');
     const first = await service.approve('conversation', actor, fixedTime);
     const repeated = await service.approve('conversation', actor, fixedTime);
@@ -50,5 +77,14 @@ describe('workbench application state', () => {
     await expect(
       service.approve('missing', userId('owner_primary'), fixedTime),
     ).rejects.toThrow(WorkbenchActionNotFoundError);
+  });
+
+  it('routes cold-start collection actions instead of approving them', async () => {
+    const service = createDefaultWorkbenchService(() => fixedTime);
+    await expect(
+      service.approve('collect_evidence', userId('owner_primary'), fixedTime),
+    ).rejects.toMatchObject({ reason: 'action_not_approvable' });
+    const abstained = await service.approve('wait', userId('owner_primary'), fixedTime);
+    expect(abstained.workflow).toMatchObject({ status: 'approved', approvedActionId: 'wait' });
   });
 });
