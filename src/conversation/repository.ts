@@ -491,16 +491,20 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
         ],
       );
       const storedTurn = turn.rows[0];
-      if (
-        !storedTurn ||
-        storedTurn.conversation_ref !== command.conversationId ||
-        storedTurn.user_text !== command.text ||
-        storedTurn.assistant_question !== command.followUpQuestion ||
-        storedTurn.propose_memory !== command.proposeMemory ||
-        storedTurn.content_sha256 !== textSha256(command.text) ||
-        !storedTurn.orchestration_matches
-      ) {
-        throw new ConversationRepositoryConflictError('Turn ID has conflicting content.');
+      if (!storedTurn) {
+        throw new ConversationRepositoryConflictError('Turn ID has conflicting content (missing).');
+      }
+      const conflictingFields: string[] = [];
+      if (storedTurn.conversation_ref !== command.conversationId) conflictingFields.push('conversation');
+      if (storedTurn.user_text !== command.text) conflictingFields.push('text');
+      if (storedTurn.assistant_question !== command.followUpQuestion) conflictingFields.push('question');
+      if (storedTurn.propose_memory !== command.proposeMemory) conflictingFields.push('proposal_mode');
+      if (storedTurn.content_sha256 !== textSha256(command.text)) conflictingFields.push('integrity');
+      if (!storedTurn.orchestration_matches) conflictingFields.push('orchestration');
+      if (conflictingFields.length > 0) {
+        throw new ConversationRepositoryConflictError(
+          `Turn ID has conflicting content (${conflictingFields.join(',')}).`,
+        );
       }
       if (!command.proposal) return undefined;
 
