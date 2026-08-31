@@ -34,6 +34,8 @@ const assetRightRequests = new Map();
 const retiredAssetRequests = new Set();
 const retiredAssetContentHashes = new Set();
 const textAssets = new Map();
+const researchSources = new Map();
+const researchRequests = new Map();
 
 const groundedActions = [
   {
@@ -116,6 +118,46 @@ export default {
       return json(feedbackSnapshot());
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/research') {
+      return json(researchSnapshot());
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/research/sources') {
+      const body = await readJson(request);
+      if (!validResearchSource(body)) return json({ error: 'invalid_research_input' }, 400);
+      const fingerprint = JSON.stringify(body);
+      const repeated = researchRequests.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json({ outcome: 'already_applied', persistence: 'ephemeral', record: repeated.record })
+          : json({ error: 'research_import_conflict' }, 409);
+      }
+      const normalizedUrl = normalizeResearchUrl(body.url);
+      const statementKey = normalizeResearchStatement(body.statement);
+      const duplicate = [...researchSources.values()].some((source) => (
+        source.url === normalizedUrl && normalizeResearchStatement(source.statement) === statementKey &&
+        source.stance === body.stance
+      ));
+      if (duplicate) return json({ error: 'research_import_conflict' }, 409);
+      const record = {
+        sourceId: crypto.randomUUID(), claimId: crypto.randomUUID(), evidenceId: crypto.randomUUID(),
+        requestId: body.requestId, title: body.title.trim(), publisher: body.publisher.trim(),
+        url: normalizedUrl, excerpt: body.excerpt.trim(), statement: body.statement.trim(),
+        quality: body.quality, stance: body.stance,
+        publishedAt: new Date(body.publishedAt).toISOString(), accessedAt: new Date().toISOString(),
+        maxAgeDays: body.maxAgeDays,
+      };
+      researchSources.set(record.sourceId, record);
+      researchRequests.set(body.requestId, { fingerprint, record });
+      recordAudit(`research.import:${body.requestId}`, {
+        eventType: 'research.source_recorded', resourceType: 'research_source', resourceId: record.sourceId,
+        purpose: 'external_research', decision: 'claim_proposed',
+        metadata: { requestId: body.requestId, quality: body.quality, stance: body.stance },
+        occurredAt: record.accessedAt,
+      });
+      return json({ outcome: 'applied', persistence: 'ephemeral', record }, 201);
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/account/activity') {
       return json(auditSnapshot());
     }
@@ -147,6 +189,7 @@ export default {
           memory: memorySnapshot(),
           assets: assetSnapshot(),
           draft: currentDraft ? draftSnapshot() : null,
+          research: researchSnapshot(),
           feedback: feedbackSnapshot(),
           activity,
         },
@@ -949,6 +992,88 @@ function validStrategyRequest(body) {
     validStringList(positioning?.proofPoints, 1, 8, 3, 500) &&
     validText(positioning?.horizon, 3, 120)
   );
+}
+
+const researchQualities = ['primary', 'authoritative_secondary', 'secondary', 'unverified'];
+const researchStances = ['supports', 'contradicts'];
+const researchQualityScores = {
+  primary: 1, authoritative_secondary: .85, secondary: .65, unverified: .25,
+};
+
+function validResearchSource(body) {
+  if (
+    typeof body?.requestId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) ||
+    !validText(body.title, 3, 300) || !validText(body.publisher, 2, 200) ||
+    !validText(body.excerpt, 20, 4000) || !validText(body.statement, 3, 4000) ||
+    !researchQualities.includes(body.quality) || !researchStances.includes(body.stance) ||
+    typeof body.publishedAt !== 'string' || !Number.isSafeInteger(body.maxAgeDays) ||
+    body.maxAgeDays < 1 || body.maxAgeDays > 3650
+  ) return false;
+  const publishedAt = new Date(body.publishedAt);
+  if (Number.isNaN(publishedAt.getTime()) || publishedAt > new Date()) return false;
+  try {
+    const sourceUrl = new URL(body.url);
+    return body.url.length <= 2048 && sourceUrl.protocol === 'https:' && !sourceUrl.username && !sourceUrl.password;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeResearchUrl(value) {
+  const sourceUrl = new URL(value.trim());
+  sourceUrl.hash = '';
+  return sourceUrl.toString();
+}
+
+function normalizeResearchStatement(value) {
+  return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('fa-IR');
+}
+
+function researchSnapshot() {
+  const now = new Date();
+  const records = [...researchSources.values()];
+  const stanceMap = new Map();
+  for (const source of records) {
+    const key = normalizeResearchStatement(source.statement);
+    const values = stanceMap.get(key) ?? new Set();
+    values.add(source.stance);
+    stanceMap.set(key, values);
+  }
+  const conflictKeys = new Set(
+    [...stanceMap.entries()].filter(([, values]) => values.size > 1).map(([key]) => key),
+  );
+  const sources = records.map((source) => {
+    const ageDays = Math.max(0, Math.floor((now.getTime() - new Date(source.publishedAt).getTime()) / 86400000));
+    const freshness = ageDays > source.maxAgeDays
+      ? 'stale'
+      : ageDays >= Math.ceil(source.maxAgeDays * .75) ? 'aging' : 'fresh';
+    const conflictDetected = conflictKeys.has(normalizeResearchStatement(source.statement));
+    const factCheckStatus = conflictDetected
+      ? 'conflicted'
+      : source.stance === 'contradicts'
+        ? 'contradicted'
+        : source.quality === 'unverified' || freshness === 'stale'
+          ? 'review_required'
+          : 'citation_ready';
+    return {
+      ...source,
+      qualityScore: researchQualityScores[source.quality], freshness, ageDays,
+      factCheckStatus, conflictDetected,
+      citation: `${source.publisher}. «${source.title}». ${source.publishedAt.slice(0, 10)}. ${source.url} (accessed ${source.accessedAt.slice(0, 10)}).`,
+      usableForPublicClaim: factCheckStatus === 'citation_ready',
+    };
+  }).sort((left, right) => right.accessedAt.localeCompare(left.accessedAt));
+  return {
+    generatedAt: now.toISOString(), persistence: 'ephemeral',
+    summary: {
+      totalSources: sources.length,
+      citationReady: sources.filter((source) => source.factCheckStatus === 'citation_ready').length,
+      stale: sources.filter((source) => source.freshness === 'stale').length,
+      conflicts: conflictKeys.size,
+      unverified: sources.filter((source) => source.quality === 'unverified').length,
+    },
+    sources,
+  };
 }
 
 const draftChannels = ['linkedin', 'instagram', 'x', 'youtube', 'podcast', 'newsletter', 'blog'];

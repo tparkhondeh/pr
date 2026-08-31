@@ -17,6 +17,10 @@ import {
 } from '../src/http/application.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
 import {
+  InMemoryResearchWorkspaceRepository,
+  ResearchWorkspaceService,
+} from '../src/research/workspace.js';
+import {
   InMemoryStrategyContextRepository,
   StrategyContextService,
   defaultStrategyContext,
@@ -164,6 +168,68 @@ describe('operational endpoints', () => {
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: 'authentication_required' });
+  });
+
+  it('records external research separately with citation and freshness metadata', async () => {
+    const fixedTime = new Date('2026-08-31T18:00:00.000Z');
+    const tenant = tenantId('tenant_primary');
+    const owner = userId('owner_primary');
+    const research = new ResearchWorkspaceService(
+      new InMemoryResearchWorkspaceRepository(),
+      { tenantId: tenant, ownerUserId: owner },
+    );
+    const dependencies: ApplicationDependencies = {
+      research,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+    const created = await request(
+      '/api/research/sources',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'research_http_source',
+          title: 'گزارش رسمی درباره اعتماد سازمانی',
+          publisher: 'مرکز پژوهش نمونه',
+          url: 'https://research.example.org/report',
+          excerpt: 'این بخش از گزارش، ارتباط شفافیت تصمیم با حفظ اعتماد را بررسی می‌کند.',
+          statement: 'شفافیت تصمیم می‌تواند اعتماد سازمانی را حفظ کند.',
+          quality: 'primary',
+          stance: 'supports',
+          publishedAt: '2026-08-01T00:00:00.000Z',
+          maxAgeDays: 90,
+        }),
+      },
+      dependencies,
+    );
+    expect(created.status).toBe(201);
+    await expect(created.json()).resolves.toMatchObject({
+      outcome: 'applied',
+      persistence: 'memory',
+      record: { quality: 'primary', stance: 'supports' },
+    });
+
+    const snapshotResponse = await request(
+      '/api/research',
+      () => ({ ready: true }),
+      undefined,
+      dependencies,
+    );
+    expect(snapshotResponse.status).toBe(200);
+    const researchSnapshot = await snapshotResponse.json() as {
+      summary: { totalSources: number; citationReady: number; conflicts: number };
+      sources: Array<{ factCheckStatus: string; usableForPublicClaim: boolean; citation: string }>;
+    };
+    expect(researchSnapshot).toMatchObject({
+      summary: { totalSources: 1, citationReady: 1, conflicts: 0 },
+      sources: [{
+        factCheckStatus: 'citation_ready',
+        usableForPublicClaim: true,
+      }],
+    });
+    expect(researchSnapshot.sources[0]?.citation).toContain('https://research.example.org/report');
   });
 
   it('rejects malformed approval input without mutating the workflow', async () => {
@@ -874,6 +940,10 @@ describe('operational endpoints', () => {
       tenantId: activeTenant,
       ownerUserId: owner,
     });
+    const research = new ResearchWorkspaceService(
+      new InMemoryResearchWorkspaceRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
     const dependencies: ApplicationDependencies = {
       workbench,
       strategy,
@@ -882,6 +952,7 @@ describe('operational endpoints', () => {
       learning,
       auditTrail,
       assets,
+      research,
       mutationAuditTrail: auditTrail,
       tenantId: activeTenant,
       resolveActor: () => owner,
@@ -929,6 +1000,7 @@ describe('operational endpoints', () => {
       data: {
         memory: { records: unknown[] };
         assets: { records: unknown[] };
+        research: { sources: unknown[] };
         activity: { events: unknown[] };
       };
     };
@@ -937,7 +1009,7 @@ describe('operational endpoints', () => {
     expect(portable).toMatchObject({
       schemaVersion: 1,
       scope: 'owner_portable_data',
-      data: { memory: { records: [] }, assets: { records: [] } },
+      data: { memory: { records: [] }, assets: { records: [] }, research: { sources: [] } },
     });
     expect(portable.data.activity.events).toHaveLength(1);
 

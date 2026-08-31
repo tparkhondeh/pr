@@ -66,6 +66,10 @@ const platformAdaptationMigrationPath = fileURLToPath(
   new URL('../db/migrations/0015_platform_adaptation_profile.sql', import.meta.url),
 );
 const platformAdaptationSql = readFileSync(platformAdaptationMigrationPath, 'utf8');
+const researchWorkspaceMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0016_research_workspace.sql', import.meta.url),
+);
+const researchWorkspaceSql = readFileSync(researchWorkspaceMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -270,5 +274,14 @@ describe('foundation migration', () => {
     defineMigration('0015_platform_adaptation_profile', platformAdaptationSql);
     expect(platformAdaptationSql).toContain('ADD COLUMN adaptation_profile_version text NOT NULL');
     expect(platformAdaptationSql).toContain("adaptation_profile_version = 'platform-adaptation-v1'");
+  });
+
+  it('keeps external research in a dedicated tenant-isolated workspace', () => {
+    defineMigration('0016_research_workspace', researchWorkspaceSql);
+    expect(researchWorkspaceSql).toContain('CREATE TABLE app.research_sources');
+    expect(researchWorkspaceSql).toContain("quality IN ('primary', 'authoritative_secondary', 'secondary', 'unverified')");
+    expect(researchWorkspaceSql).toContain("stance IN ('supports', 'contradicts')");
+    expect(researchWorkspaceSql).toContain('ALTER TABLE app.research_sources FORCE ROW LEVEL SECURITY');
+    expect(researchWorkspaceSql).toContain('CREATE POLICY research_sources_tenant_isolation');
   });
 });

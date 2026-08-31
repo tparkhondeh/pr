@@ -100,6 +100,55 @@ export type StrategyContextSnapshot = EditableStrategyContext & Readonly<{
   outcome?: 'saved' | 'already_saved';
 }>;
 
+export type ResearchSourceQuality = 'primary' | 'authoritative_secondary' | 'secondary' | 'unverified';
+export type ResearchSourceStance = 'supports' | 'contradicts';
+
+export type ResearchSourceRecord = Readonly<{
+  sourceId: string;
+  claimId: string;
+  evidenceId: string;
+  requestId: string;
+  title: string;
+  publisher: string;
+  url: string;
+  excerpt: string;
+  statement: string;
+  quality: ResearchSourceQuality;
+  stance: ResearchSourceStance;
+  publishedAt: string;
+  accessedAt: string;
+  maxAgeDays: number;
+}>;
+
+export type ResearchSource = ResearchSourceRecord & Readonly<{
+  qualityScore: number;
+  freshness: 'fresh' | 'aging' | 'stale';
+  ageDays: number;
+  factCheckStatus: 'citation_ready' | 'review_required' | 'contradicted' | 'conflicted';
+  conflictDetected: boolean;
+  citation: string;
+  usableForPublicClaim: boolean;
+}>;
+
+export type ResearchImportResult = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  record: ResearchSourceRecord;
+}>;
+
+export type ResearchWorkspaceSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  summary: Readonly<{
+    totalSources: number;
+    citationReady: number;
+    stale: number;
+    conflicts: number;
+    unverified: number;
+  }>;
+  sources: readonly ResearchSource[];
+}>;
+
 export type DraftChannel = 'linkedin' | 'instagram' | 'x' | 'youtube' | 'podcast' | 'newsletter' | 'blog';
 export type DraftSourceKind = 'memory' | 'text_asset';
 
@@ -381,6 +430,7 @@ export type AccountDataExport = Readonly<{
     strategy: StrategyContextSnapshot;
     memory: PersonalMemorySnapshot;
     assets: TextAssetSnapshot;
+    research: ResearchWorkspaceSnapshot | null;
     draft: DraftWorkspaceSnapshot | null;
     feedback: FeedbackLearningSnapshot;
     activity: AuditTrailSnapshot;
@@ -421,6 +471,42 @@ export async function loadOnboarding(signal?: AbortSignal): Promise<OnboardingSn
   });
   if (!isOnboardingSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
   return payload;
+}
+
+export async function loadResearch(signal?: AbortSignal): Promise<ResearchWorkspaceSnapshot> {
+  const payload = await requestJson('/api/research', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isResearchWorkspaceSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function importResearchSource(input: Readonly<{
+  requestId: string;
+  title: string;
+  publisher: string;
+  url: string;
+  excerpt: string;
+  statement: string;
+  quality: ResearchSourceQuality;
+  stance: ResearchSourceStance;
+  publishedAt: string;
+  maxAgeDays: number;
+}>): Promise<ResearchImportResult> {
+  const payload = await requestJson('/api/research/sources', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (
+    !isRecord(payload) ||
+    (payload['outcome'] !== 'applied' && payload['outcome'] !== 'already_applied') ||
+    !isPersistence(payload['persistence']) || !isResearchSourceRecord(payload['record'])
+  ) {
+    throw new WorkbenchApiError(200, 'invalid_response');
+  }
+  return payload as ResearchImportResult;
 }
 
 export async function importTextAsset(input: Readonly<{
@@ -827,6 +913,51 @@ function isStrategyContextSnapshot(payload: unknown): payload is StrategyContext
   );
 }
 
+function isResearchWorkspaceSnapshot(payload: unknown): payload is ResearchWorkspaceSnapshot {
+  if (!isRecord(payload) || !isRecord(payload['summary']) || !Array.isArray(payload['sources'])) return false;
+  const summary = payload['summary'];
+  return (
+    typeof payload['generatedAt'] === 'string' && isPersistence(payload['persistence']) &&
+    typeof summary['totalSources'] === 'number' && typeof summary['citationReady'] === 'number' &&
+    typeof summary['stale'] === 'number' && typeof summary['conflicts'] === 'number' &&
+    typeof summary['unverified'] === 'number' && payload['sources'].every(isResearchSource)
+  );
+}
+
+function isResearchSource(value: unknown): value is ResearchSource {
+  if (!isResearchSourceRecord(value)) return false;
+  const source = value as ResearchSourceRecord & Record<string, unknown>;
+  return (
+    typeof source['qualityScore'] === 'number' &&
+    (source['freshness'] === 'fresh' || source['freshness'] === 'aging' || source['freshness'] === 'stale') &&
+    typeof source['ageDays'] === 'number' &&
+    (
+      source['factCheckStatus'] === 'citation_ready' || source['factCheckStatus'] === 'review_required' ||
+      source['factCheckStatus'] === 'contradicted' || source['factCheckStatus'] === 'conflicted'
+    ) &&
+    typeof source['conflictDetected'] === 'boolean' && typeof source['citation'] === 'string' &&
+    typeof source['usableForPublicClaim'] === 'boolean'
+  );
+}
+
+function isResearchSourceRecord(value: unknown): value is ResearchSourceRecord {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value['sourceId'] === 'string' && typeof value['claimId'] === 'string' &&
+    typeof value['evidenceId'] === 'string' && typeof value['requestId'] === 'string' &&
+    typeof value['title'] === 'string' && typeof value['publisher'] === 'string' &&
+    typeof value['url'] === 'string' && typeof value['excerpt'] === 'string' &&
+    typeof value['statement'] === 'string' &&
+    (
+      value['quality'] === 'primary' || value['quality'] === 'authoritative_secondary' ||
+      value['quality'] === 'secondary' || value['quality'] === 'unverified'
+    ) &&
+    (value['stance'] === 'supports' || value['stance'] === 'contradicts') &&
+    typeof value['publishedAt'] === 'string' && typeof value['accessedAt'] === 'string' &&
+    typeof value['maxAgeDays'] === 'number'
+  );
+}
+
 function isDraftWorkspaceSnapshot(payload: unknown): payload is DraftWorkspaceSnapshot {
   if (!isRecord(payload) || !isRecord(payload['guard']) || !isRecord(payload['source']) || !isRecord(payload['adaptation'])) return false;
   const guard = payload['guard'];
@@ -917,6 +1048,7 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     payload['consistency'] === 'best_effort_snapshot' && typeof payload['exportedAt'] === 'string' &&
     isWorkbenchSnapshot(data['workbench']) && isStrategyContextSnapshot(data['strategy']) &&
     isPersonalMemorySnapshot(data['memory']) && isTextAssetSnapshot(data['assets']) &&
+    (data['research'] === null || isResearchWorkspaceSnapshot(data['research'])) &&
     (data['draft'] === null || isDraftWorkspaceSnapshot(data['draft'])) &&
     isFeedbackLearningSnapshot(data['feedback']) && isAuditTrailSnapshot(data['activity'])
   );

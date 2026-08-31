@@ -37,6 +37,7 @@ import {
   exportAccountData,
   exportDraft,
   importTextAsset,
+  importResearchSource,
   decideLearnedPreference,
   loadDraftWorkspace,
   loadDraftSources,
@@ -44,6 +45,7 @@ import {
   loadAuditTrail,
   loadOnboarding,
   loadPersonalMemory,
+  loadResearch,
   loadStrategyContext,
   loadWorkbench,
   rejectDraftFeedback,
@@ -61,6 +63,9 @@ import {
   type OnboardingSnapshot,
   type PersonalMemoryRecord,
   type PersonalMemorySnapshot,
+  type ResearchSourceQuality,
+  type ResearchSourceStance,
+  type ResearchWorkspaceSnapshot,
   type EditableStrategyContext,
   type StrategyContextSnapshot,
   type TextAssetRightOperation,
@@ -86,7 +91,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -114,6 +119,9 @@ export function App() {
   const [strategySnapshot, setStrategySnapshot] = useState<StrategyContextSnapshot | null>(null);
   const [strategyViewState, setStrategyViewState] = useState<'idle' | 'loading' | 'ready' | 'saving' | 'error'>('idle');
   const [strategyViewError, setStrategyViewError] = useState<string | null>(null);
+  const [researchSnapshot, setResearchSnapshot] = useState<ResearchWorkspaceSnapshot | null>(null);
+  const [researchViewState, setResearchViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
+  const [researchViewError, setResearchViewError] = useState<string | null>(null);
   const [draftSnapshot, setDraftSnapshot] = useState<DraftWorkspaceSnapshot | null>(null);
   const [draftSources, setDraftSources] = useState<DraftSourceSnapshot | null>(null);
   const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
@@ -243,6 +251,41 @@ export function App() {
       setStrategyViewState('error');
     }
   }, []);
+
+  const refreshResearch = useCallback(async (signal?: AbortSignal) => {
+    setResearchViewState('loading');
+    setResearchViewError(null);
+    try {
+      setResearchSnapshot(await loadResearch(signal));
+      setResearchViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setResearchViewError(errorMessage(caught));
+      setResearchViewState('error');
+    }
+  }, []);
+
+  const addResearchSource = async (input: Readonly<{
+    title: string;
+    publisher: string;
+    url: string;
+    excerpt: string;
+    statement: string;
+    quality: ResearchSourceQuality;
+    stance: ResearchSourceStance;
+    publishedAt: string;
+    maxAgeDays: number;
+  }>) => {
+    setResearchViewState('mutating');
+    setResearchViewError(null);
+    try {
+      await importResearchSource({ requestId: `research_${crypto.randomUUID()}`, ...input });
+      await Promise.all([refreshResearch(), refreshAudit()]);
+    } catch (caught: unknown) {
+      setResearchViewError(errorMessage(caught));
+      setResearchViewState('error');
+    }
+  };
 
   const saveStrategy = async (value: EditableStrategyContext) => {
     if (!strategySnapshot || strategyViewState === 'saving') return;
@@ -553,6 +596,12 @@ export function App() {
     { label: 'امروز', icon: CircleGauge, view: 'today' as const },
     { label: 'شروع و منابع', icon: BookOpenText, view: 'intake' as const },
     { label: 'حافظه من', icon: Fingerprint, view: 'memory' as const },
+    {
+      label: 'تحقیق بیرونی',
+      icon: BookOpenText,
+      view: 'research' as const,
+      badge: researchSnapshot?.summary.conflicts ? String(researchSnapshot.summary.conflicts) : undefined,
+    },
     { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
     { label: 'پیش‌نویس', icon: PencilLine, view: 'draft' as const },
     {
@@ -584,6 +633,7 @@ export function App() {
                 setActiveView(view);
                 if (view === 'intake') void refreshOnboarding();
                 if (view === 'memory') void refreshMemory();
+                if (view === 'research') void refreshResearch();
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
                 if (view === 'learning') void refreshFeedback();
@@ -610,6 +660,8 @@ export function App() {
             <span className="date">{formatDate(snapshot.generatedAt)}</span>
             <h1>{activeView === 'memory'
               ? 'حافظه‌ای که شما کنترل می‌کنید.'
+              : activeView === 'research'
+                ? 'منبع بیرونی، جدا از حافظه شخصی.'
               : activeView === 'intake'
                 ? 'اولین شاهد واقعی را وارد کنید.'
               : activeView === 'strategy'
@@ -647,6 +699,14 @@ export function App() {
             onRefresh={() => refreshMemory()}
             snapshot={memorySnapshot}
             state={memoryViewState}
+          />
+        ) : activeView === 'research' ? (
+          <ResearchWorkspacePanel
+            error={researchViewError}
+            onImport={addResearchSource}
+            onRefresh={() => refreshResearch()}
+            snapshot={researchSnapshot}
+            state={researchViewState}
           />
         ) : activeView === 'strategy' ? (
           <StrategyPanel
@@ -1435,6 +1495,167 @@ function FeedbackLearningPanel({
   );
 }
 
+function ResearchWorkspacePanel({
+  error,
+  onImport,
+  onRefresh,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onImport: (input: Readonly<{
+    title: string;
+    publisher: string;
+    url: string;
+    excerpt: string;
+    statement: string;
+    quality: ResearchSourceQuality;
+    stance: ResearchSourceStance;
+    publishedAt: string;
+    maxAgeDays: number;
+  }>) => Promise<void>;
+  onRefresh: () => Promise<void>;
+  snapshot: ResearchWorkspaceSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
+}>) {
+  const [title, setTitle] = useState('');
+  const [publisher, setPublisher] = useState('');
+  const [url, setUrl] = useState('https://');
+  const [excerpt, setExcerpt] = useState('');
+  const [statement, setStatement] = useState('');
+  const [quality, setQuality] = useState<ResearchSourceQuality>('primary');
+  const [stance, setStance] = useState<ResearchSourceStance>('supports');
+  const [publishedAt, setPublishedAt] = useState('');
+  const [maxAgeDays, setMaxAgeDays] = useState(90);
+
+  if ((state === 'idle' || state === 'loading') && !snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <LoaderCircle className="spin" size={24} />
+        <h2>در حال بازیابی Research Workspace…</h2>
+        <p>منابع بیرونی جدا از Personal Memory خوانده می‌شوند.</p>
+      </section>
+    );
+  }
+  if (!snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <TriangleAlert size={25} />
+        <h2>Research Workspace در دسترس نیست</h2>
+        <p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p>
+        <button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="research-view" aria-label="تحقیق بیرونی و مدیریت منبع">
+      <header className="draft-head">
+        <div>
+          <p className="overline">External Research · Source Provenance</p>
+          <h2>منبع بیرونی، نه حافظه شخصی</h2>
+          <p>ثبت منبع به‌معنی تأیید Fact نیست. Quality، Freshness، Citation و تعارض منابع پیش از هر استفاده عمومی جداگانه بررسی می‌شوند.</p>
+        </div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button">
+          <RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی
+        </button>
+      </header>
+      <div className="research-summary">
+        <div><span>کل منابع</span><strong>{snapshot.summary.totalSources}</strong></div>
+        <div><span>Citation-ready</span><strong>{snapshot.summary.citationReady}</strong></div>
+        <div><span>کهنه</span><strong>{snapshot.summary.stale}</strong></div>
+        <div className={snapshot.summary.conflicts ? 'danger' : undefined}><span>تعارض باز</span><strong>{snapshot.summary.conflicts}</strong></div>
+        <div><span>تأییدنشده</span><strong>{snapshot.summary.unverified}</strong></div>
+      </div>
+      <form
+        className="research-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!publishedAt) return;
+          void onImport({
+            title, publisher, url, excerpt, statement, quality, stance,
+            publishedAt: `${publishedAt}T00:00:00.000Z`, maxAgeDays,
+          });
+        }}
+      >
+        <div className="research-form-head">
+          <div><BookOpenText size={20} /><span><strong>ثبت یک منبع قابل‌ردیابی</strong><small>در این نسخه منبع را خودتان وارد می‌کنید؛ Fetch خودکار وب انجام نمی‌شود.</small></span></div>
+          <ShieldCheck size={20} />
+        </div>
+        <label>عنوان منبع<input maxLength={300} onChange={(event) => { setTitle(event.target.value); }} required value={title} /></label>
+        <label>ناشر<input maxLength={200} onChange={(event) => { setPublisher(event.target.value); }} required value={publisher} /></label>
+        <label className="research-wide">URL امن<input dir="ltr" maxLength={2048} onChange={(event) => { setUrl(event.target.value); }} pattern="https://.*" required type="url" value={url} /></label>
+        <label>تاریخ انتشار<input onChange={(event) => { setPublishedAt(event.target.value); }} required type="date" value={publishedAt} /></label>
+        <label>پنجره تازگی (روز)<input max={3650} min={1} onChange={(event) => { setMaxAgeDays(Number(event.target.value)); }} required type="number" value={maxAgeDays} /></label>
+        <label>کیفیت منبع
+          <select onChange={(event) => { setQuality(event.target.value as ResearchSourceQuality); }} value={quality}>
+            <option value="primary">Primary / منبع اصلی</option>
+            <option value="authoritative_secondary">Secondary معتبر</option>
+            <option value="secondary">Secondary</option>
+            <option value="unverified">تأییدنشده</option>
+          </select>
+        </label>
+        <label>رابطه با Claim
+          <select onChange={(event) => { setStance(event.target.value as ResearchSourceStance); }} value={stance}>
+            <option value="supports">پشتیبانی می‌کند</option>
+            <option value="contradicts">نقض می‌کند</option>
+          </select>
+        </label>
+        <label className="research-wide">Claim مورد بررسی<textarea maxLength={4000} minLength={3} onChange={(event) => { setStatement(event.target.value); }} required rows={2} value={statement} /></label>
+        <label className="research-wide">Excerpt دقیق<textarea maxLength={4000} minLength={20} onChange={(event) => { setExcerpt(event.target.value); }} required rows={3} value={excerpt} /></label>
+        <button disabled={state === 'mutating'} type="submit">
+          {state === 'mutating' ? <LoaderCircle className="spin" size={16} /> : <FileCheck2 size={16} />}
+          {state === 'mutating' ? 'در حال ثبت…' : 'ثبت منبع؛ Claim همچنان Proposed بماند'}
+        </button>
+      </form>
+      <div className="research-list">
+        {snapshot.sources.length === 0 ? (
+          <div className="learning-empty"><BookOpenText size={25} /><p>هنوز منبع بیرونی ثبت نشده است. Fact خارجی بدون Citation وارد Draft عمومی نمی‌شود.</p></div>
+        ) : snapshot.sources.map((source) => (
+          <article className={`research-card ${source.factCheckStatus}`} key={source.sourceId}>
+            <div className="research-card-head">
+              <span><b>{researchFactStatusLabel(source.factCheckStatus)}</b><small>{researchQualityLabel(source.quality)} · {researchFreshnessLabel(source.freshness)}</small></span>
+              <a href={source.url} rel="noreferrer" target="_blank">مشاهده منبع <ArrowUpLeft size={14} /></a>
+            </div>
+            <h3>{source.title}</h3>
+            <p>{source.publisher} · {formatDate(source.publishedAt)}</p>
+            <blockquote>{source.statement}</blockquote>
+            <p className="research-excerpt">{source.excerpt}</p>
+            <code>{source.citation}</code>
+            <div className="research-card-foot">
+              <span>{source.stance === 'supports' ? 'Supports' : 'Contradicts'} · Quality {Math.round(source.qualityScore * 100)}٪</span>
+              <strong>{source.usableForPublicClaim ? 'آماده Citation؛ نه Verified' : 'استفاده عمومی متوقف'}</strong>
+            </div>
+          </article>
+        ))}
+      </div>
+      {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
+    </section>
+  );
+}
+
+function researchFactStatusLabel(status: ResearchWorkspaceSnapshot['sources'][number]['factCheckStatus']): string {
+  return {
+    citation_ready: 'Citation-ready',
+    review_required: 'نیازمند بازبینی',
+    contradicted: 'منبع نقض‌کننده',
+    conflicted: 'تعارض منابع',
+  }[status];
+}
+
+function researchQualityLabel(quality: ResearchSourceQuality): string {
+  return {
+    primary: 'منبع اصلی',
+    authoritative_secondary: 'Secondary معتبر',
+    secondary: 'Secondary',
+    unverified: 'تأییدنشده',
+  }[quality];
+}
+
+function researchFreshnessLabel(freshness: ResearchWorkspaceSnapshot['sources'][number]['freshness']): string {
+  return { fresh: 'تازه', aging: 'نزدیک بازبینی', stale: 'کهنه' }[freshness];
+}
+
 function DataRightsPanel({
   error,
   onExport,
@@ -1514,7 +1735,7 @@ function DataRightsPanel({
         <aside className="data-rights-note">
           <ShieldCheck size={25} />
           <h3>مرزهای این خروجی</h3>
-          <p>فقط Snapshot فعلی مالک، Evidence مجاز، Strategy، Draft، Preference و Audit نمایش‌داده‌شده صادر می‌شوند.</p>
+          <p>فقط Snapshot فعلی مالک، Evidence مجاز، Research، Strategy، Draft، Preference و Audit نمایش‌داده‌شده صادر می‌شوند.</p>
           <ul>
             <li>هیچ انتشار یا ارسال خارجی انجام نمی‌شود.</li>
             <li>Secret و اطلاعات زیرساخت داخل فایل نیست.</li>
@@ -1534,6 +1755,7 @@ function auditEventLabel(eventType: string): string {
     'workbench.action_approved': 'اقدام پیشنهادی تأیید شد',
     'strategy.context_saved': 'هدف و جایگاه مطلوب تغییر کرد',
     'memory.proposal_created': 'پیشنهاد حافظه ساخته شد',
+    'research.source_recorded': 'منبع تحقیق بیرونی ثبت شد',
     'memory.proposal_confirmed': 'حافظه با رضایت تأیید شد',
     'memory.correct': 'حافظه اصلاح شد',
     'memory.contest': 'به حافظه اعتراض شد',
@@ -2137,6 +2359,11 @@ function errorMessage(error: unknown): string {
     idempotency_mismatch: 'شناسه این ذخیره قبلاً برای محتوای دیگری استفاده شده است.',
     strategy_permission_denied: 'فقط مالک می‌تواند هدف و جایگاه مطلوب را تغییر دهد.',
     strategy_unavailable: 'سرویس استراتژی در دسترس نیست.',
+    research_unavailable: 'Research Workspace در دسترس نیست.',
+    invalid_research_input: 'مشخصات منبع، URL امن، تاریخ یا پنجره تازگی معتبر نیست.',
+    research_import_conflict: 'این درخواست یا رابطه منبع و Claim قبلاً با محتوای دیگری ثبت شده است.',
+    research_permission_denied: 'فقط مالک می‌تواند منابع تحقیق بیرونی را مدیریت کند.',
+    research_failed: 'ثبت یا بررسی منبع تحقیق کامل نشد.',
     drafts_unavailable: 'Draft Studio در دسترس نیست.',
     invalid_draft_input: 'اطلاعات Draft ناقص یا خارج از محدودیت‌های پلتفرم است.',
     draft_permission_denied: 'مجوز صریح مالک برای استفاده از این حافظه در Draft وجود ندارد.',

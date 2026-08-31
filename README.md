@@ -145,6 +145,18 @@ Interaction Model و عناصر الزامی دارد. Newsletter و Blog دیگ
 [`docs/architecture/platform-adaptation-v1.0.md`](docs/architecture/platform-adaptation-v1.0.md)
 ثبت شده است.
 
+نمای «تحقیق بیرونی» Personal Memory را از External Research جدا نگه می‌دارد. مالک در
+MVP منبع HTTPS، ناشر، تاریخ، Excerpt، Claim مورد بررسی، رابطه Supports/Contradicts،
+Quality و پنجره Freshness را ثبت می‌کند. سیستم Citation قابل‌حمل می‌سازد، منبع کهنه
+یا Unverified را برای Review نگه می‌دارد و وجود هر دو رابطه برای Claim یکسان را به‌عنوان
+Conflict باز نشان می‌دهد. ثبت منبع هرگز Claim را خودکار Verified نمی‌کند؛ در PostgreSQL
+یک `external_fact` با وضعیت `proposed`، Evidence و رابطه Claim/Evidence ساخته می‌شود.
+داده Research در `app.research_sources` و APIهای `GET /api/research` و
+`POST /api/research/sources` جدا از حافظه شخصی است. Fetch خودکار وب در این نسخه وجود
+ندارد و Adapter آینده در
+[`docs/architecture/research-layer-v1.0.md`](docs/architecture/research-layer-v1.0.md)
+تعریف شده است.
+
 هر ذخیره ویرایش Draft به Feedback Engine متصل است. سیستم فقط تغییرهای مادی و
 توضیح‌پذیر مانند کوتاه‌کردن متن/تیتر، کاهش میان‌تیتر یا حذف پرسش پایانی را به‌عنوان
 Signal ثبت می‌کند. یک Edit یا Reject منفرد Voice Model را تغییر نمی‌دهد؛ پس از دست‌کم

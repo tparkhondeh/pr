@@ -45,6 +45,18 @@ import {
 } from '../feedback/workspace.js';
 import type { TenantId, UserId } from '../kernel/identity.js';
 import {
+  ResearchConflictError,
+  ResearchPermissionError,
+  ResearchValidationError,
+  researchQualities,
+  researchStances,
+  type ResearchSourceQuality,
+  type ResearchSourceRecord,
+  type ResearchSourceStance,
+  type ResearchWorkspaceService,
+  type ResearchWorkspaceSnapshot,
+} from '../research/workspace.js';
+import {
   StrategyContextConflictError,
   StrategyContextPermissionError,
   StrategyContextValidationError,
@@ -78,6 +90,7 @@ export type ApplicationDependencies = Readonly<{
     'sources' | 'snapshot' | 'create' | 'edit' | 'approve' | 'export'
   >;
   learning?: Pick<FeedbackLearningService, 'snapshot' | 'rejectDraft' | 'decide'>;
+  research?: Pick<ResearchWorkspaceService, 'snapshot' | 'importSource'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -154,6 +167,16 @@ export function createRequestHandler(
 
     if (request.method === 'GET' && path === '/api/feedback') {
       await handleFeedbackSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/research') {
+      await handleResearchSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/research/sources') {
+      await handleResearchImport(request, response, dependencies);
       return;
     }
 
@@ -409,6 +432,167 @@ function serializeFeedback(snapshot: FeedbackLearningSnapshot): Record<string, u
   };
 }
 
+async function handleResearchSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = researchActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.research?.snapshot(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Research workspace disappeared.');
+    sendJson(response, 200, serializeResearchSnapshot(snapshot));
+  } catch (error: unknown) {
+    sendResearchError(response, error);
+  }
+}
+
+async function handleResearchImport(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = researchActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const title = body['title'];
+    const publisher = body['publisher'];
+    const url = body['url'];
+    const excerpt = body['excerpt'];
+    const statement = body['statement'];
+    const quality = body['quality'];
+    const stance = body['stance'];
+    const publishedAt = body['publishedAt'];
+    const maxAgeDays = body['maxAgeDays'];
+    if (
+      typeof requestId !== 'string' || typeof title !== 'string' ||
+      typeof publisher !== 'string' || typeof url !== 'string' ||
+      typeof excerpt !== 'string' || typeof statement !== 'string' ||
+      !isResearchQuality(quality) || !isResearchStance(stance) ||
+      typeof publishedAt !== 'string' || typeof maxAgeDays !== 'number'
+    ) {
+      sendJson(response, 400, { error: 'invalid_research_input' });
+      return;
+    }
+    const result = await dependencies.research?.importSource({
+      actorId,
+      requestId,
+      title,
+      publisher,
+      url,
+      excerpt,
+      statement,
+      quality,
+      stance,
+      publishedAt: new Date(publishedAt),
+      maxAgeDays,
+      accessedAt: now(dependencies),
+    });
+    if (!result) throw new Error('Research workspace disappeared.');
+    if (result.outcome === 'applied') {
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `research.source:${requestId}`,
+        eventType: 'research.source_recorded',
+        resourceType: 'research_source',
+        resourceId: result.record.sourceId,
+        purpose: 'external_research',
+        decision: 'claim_proposed',
+        metadata: { requestId, quality, stance },
+        occurredAt: result.record.accessedAt,
+      });
+    }
+    sendJson(response, result.outcome === 'applied' ? 201 : 200, {
+      outcome: result.outcome,
+      persistence: result.persistence,
+      record: serializeResearchRecord(result.record),
+    });
+  } catch (error: unknown) {
+    sendResearchError(response, error);
+  }
+}
+
+function researchActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.research) {
+    sendJson(response, 503, { error: 'research_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function serializeResearchSnapshot(snapshot: ResearchWorkspaceSnapshot): Record<string, unknown> {
+  return {
+    generatedAt: snapshot.generatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    summary: snapshot.summary,
+    sources: snapshot.sources.map((source) => ({
+      ...serializeResearchRecord(source),
+      qualityScore: source.qualityScore,
+      freshness: source.freshness,
+      ageDays: source.ageDays,
+      factCheckStatus: source.factCheckStatus,
+      conflictDetected: source.conflictDetected,
+      citation: source.citation,
+      usableForPublicClaim: source.usableForPublicClaim,
+    })),
+  };
+}
+
+function serializeResearchRecord(record: ResearchSourceRecord): Record<string, unknown> {
+  return {
+    sourceId: record.sourceId,
+    claimId: record.claimId,
+    evidenceId: record.evidenceId,
+    requestId: record.requestId,
+    title: record.title,
+    publisher: record.publisher,
+    url: record.url,
+    excerpt: record.excerpt,
+    statement: record.statement,
+    quality: record.quality,
+    stance: record.stance,
+    publishedAt: record.publishedAt.toISOString(),
+    accessedAt: record.accessedAt.toISOString(),
+    maxAgeDays: record.maxAgeDays,
+  };
+}
+
+function sendResearchError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof ResearchValidationError) {
+    sendJson(response, 400, { error: 'invalid_research_input' });
+    return;
+  }
+  if (error instanceof ResearchPermissionError) {
+    sendJson(response, 403, { error: 'research_permission_denied' });
+    return;
+  }
+  if (error instanceof ResearchConflictError) {
+    sendJson(response, 409, { error: 'research_import_conflict' });
+    return;
+  }
+  sendJson(response, 500, { error: 'research_failed' });
+}
+
+function isResearchQuality(value: unknown): value is ResearchSourceQuality {
+  return typeof value === 'string' && researchQualities.includes(value as ResearchSourceQuality);
+}
+
+function isResearchStance(value: unknown): value is ResearchSourceStance {
+  return typeof value === 'string' && researchStances.includes(value as ResearchSourceStance);
+}
+
 async function handleAuditTrail(
   request: IncomingMessage,
   response: ServerResponse,
@@ -442,7 +626,7 @@ async function handleAccountExport(
   }
   const exportedAt = now(dependencies);
   try {
-    const [workbench, strategy, draft, feedback, memory, assets, activity] = await Promise.all([
+    const [workbench, strategy, draft, feedback, memory, assets, research, activity] = await Promise.all([
       dependencies.workbench.snapshot(),
       dependencies.strategy.snapshot(actorId),
       dependencies.drafts.snapshot(actorId, exportedAt),
@@ -453,6 +637,7 @@ async function handleAccountExport(
         generatedAt: exportedAt,
       }),
       dependencies.assets.snapshot(actorId, exportedAt),
+      dependencies.research?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.auditTrail?.snapshot(actorId, exportedAt),
     ]);
     if (!activity) throw new Error('Audit trail disappeared.');
@@ -480,6 +665,7 @@ async function handleAccountExport(
           strategy: serializeStrategy(strategy),
           memory: serializeMemorySnapshot(memory),
           assets: serializeTextAssetSnapshot(assets),
+          research: research ? serializeResearchSnapshot(research) : null,
           draft: draft ? serializeDraft(draft) : null,
           feedback: serializeFeedback(feedback),
           activity: serializeAuditTrail(activity),

@@ -39,6 +39,42 @@ describe('private preview worker draft runtime', () => {
     expect(routedApproval.status).toBe(409);
     await expect(routedApproval.json()).resolves.toEqual({ error: 'action_not_approvable' });
 
+    const researchStatement = 'شفافیت تصمیم می‌تواند اعتماد سازمانی را حفظ کند.';
+    const researchBase = {
+      publisher: 'مرکز پژوهش نمونه',
+      excerpt: 'این بخش از گزارش، ارتباط شفافیت تصمیم با حفظ اعتماد را بررسی می‌کند.',
+      statement: researchStatement,
+      quality: 'primary',
+      publishedAt: '2026-08-01T00:00:00.000Z',
+      maxAgeDays: 90,
+    };
+    expect((await post('/api/research/sources', {
+      ...researchBase,
+      requestId: 'research_runtime_support',
+      title: 'گزارش رسمی درباره اعتماد سازمانی',
+      url: 'https://research.example.org/report',
+      stance: 'supports',
+    })).status).toBe(201);
+    expect((await post('/api/research/sources', {
+      ...researchBase,
+      requestId: 'research_runtime_contradict',
+      title: 'نقد روش‌شناسی گزارش اعتماد',
+      url: 'https://review.example.org/critique',
+      stance: 'contradicts',
+    })).status).toBe(201);
+    const researchResponse = await worker.fetch(
+      new Request('https://preview.example/api/research'),
+      env,
+    );
+    await expect(researchResponse.json()).resolves.toMatchObject({
+      persistence: 'ephemeral',
+      summary: { totalSources: 2, conflicts: 1, citationReady: 0 },
+      sources: [
+        { factCheckStatus: 'conflicted', usableForPublicClaim: false },
+        { factCheckStatus: 'conflicted', usableForPublicClaim: false },
+      ],
+    });
+
     const turn = await post('/api/conversations/turns', {
       conversationId: 'conversation_runtime',
       turnId: 'turn_runtime',
@@ -274,12 +310,15 @@ describe('private preview worker draft runtime', () => {
       data: {
         memory: { records: Array<{ consent: { personalUnderstanding: boolean } }> };
         assets: { records: Array<{ sourceType: string }> };
+        research: { summary: { conflicts: number }; sources: unknown[] };
       };
     };
     expect(accountExportResponse.status).toBe(200);
     expect(accountExport).toMatchObject({ schemaVersion: 1, scope: 'owner_portable_data' });
     expect(accountExport.data.memory.records[0]?.consent.personalUnderstanding).toBe(false);
     expect(accountExport.data.assets.records[0]?.sourceType).toBe('text_asset');
+    expect(accountExport.data.research).toMatchObject({ summary: { conflicts: 1 } });
+    expect(accountExport.data.research.sources).toHaveLength(2);
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

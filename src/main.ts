@@ -27,6 +27,11 @@ import { createRequestHandler } from './http/application.js';
 import { createStaticRequestHandler } from './http/static-application.js';
 import { tenantId, userId } from './kernel/identity.js';
 import {
+  InMemoryResearchWorkspaceRepository,
+  PostgresResearchWorkspaceRepository,
+  ResearchWorkspaceService,
+} from './research/workspace.js';
+import {
   InMemoryStrategyContextRepository,
   PostgresStrategyContextRepository,
   StrategyContextService,
@@ -124,6 +129,15 @@ const learning = new FeedbackLearningService(learningRepository, {
   tenantId: activeTenant,
   ownerUserId: owner,
 });
+const research = new ResearchWorkspaceService(
+  postgres && environment.database
+    ? new PostgresResearchWorkspaceRepository(postgres, {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+      })
+    : new InMemoryResearchWorkspaceRepository(),
+  { tenantId: activeTenant, ownerUserId: owner },
+);
 const drafts = new ContentDraftService(
   draftRepository,
   { tenantId: activeTenant, ownerUserId: owner },
@@ -147,6 +161,7 @@ const requestHandler = createRequestHandler(
     conversation,
     auditTrail,
     assets,
+    research,
     ...(!postgres ? { mutationAuditTrail: auditTrail } : {}),
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity
