@@ -2,6 +2,7 @@ export type Environment = Readonly<{
   nodeEnv: 'development' | 'test' | 'production';
   port: number;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
+  staticRoot?: string;
   database?: Readonly<{
     connectionString: string;
     tenantId: string;
@@ -28,6 +29,7 @@ export function loadEnvironment(
   const nodeEnv = input['NODE_ENV'] ?? 'development';
   const logLevel = input['LOG_LEVEL'] ?? 'info';
   const port = Number(input['PORT'] ?? '3000');
+  const staticRoot = input['PR_STATIC_ROOT']?.trim();
 
   if (!allowedNodeEnvs.has(nodeEnv as Environment['nodeEnv'])) {
     throw new Error(`Invalid NODE_ENV: ${nodeEnv}`);
@@ -47,6 +49,7 @@ export function loadEnvironment(
     nodeEnv: nodeEnv as Environment['nodeEnv'],
     logLevel: logLevel as Environment['logLevel'],
     port,
+    ...(staticRoot ? { staticRoot } : {}),
     ...(database ? { database } : {}),
   };
 }

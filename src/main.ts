@@ -14,6 +14,7 @@ import {
   PostgresFeedbackLearningRepository,
 } from './feedback/workspace.js';
 import { createRequestHandler } from './http/application.js';
+import { createStaticRequestHandler } from './http/static-application.js';
 import { tenantId, userId } from './kernel/identity.js';
 import {
   InMemoryStrategyContextRepository,
@@ -110,8 +111,19 @@ const requestHandler = createRequestHandler(
     resolveActor: () => owner,
   },
 );
+const staticRequestHandler = environment.staticRoot
+  ? createStaticRequestHandler(environment.staticRoot)
+  : undefined;
 const server = createServer((request, response) => {
-  void requestHandler(request, response);
+  const path = request.url ? new URL(request.url, 'http://localhost').pathname : '/';
+  const isApplicationRequest = path === '/health' || path === '/ready' || path.startsWith('/api/');
+  if (!staticRequestHandler || isApplicationRequest) {
+    void requestHandler(request, response);
+    return;
+  }
+  void staticRequestHandler(request, response).then((handled) => {
+    if (!handled) void requestHandler(request, response);
+  });
 });
 
 server.listen(environment.port, () => {

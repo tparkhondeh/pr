@@ -11,12 +11,9 @@ Require valid-user
 </Files>
 
 RewriteEngine On
-RewriteRule ^api(?:/(.*))?$ http://127.0.0.1:31056/api/$1 [P,L,NE]
-RewriteRule ^(health|ready)$ http://127.0.0.1:31056/$1 [P,L,NE]
-
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule ^ index.html [L]
+# Proxy the complete application through Node. cPanel's Apache ownership policy
+# can reject deploy-user-owned static files even when POSIX ACLs allow reads.
+RewriteRule ^(.*)$ http://127.0.0.1:31056/$1 [P,L,NE]
 
 <IfModule mod_headers.c>
   Header always set X-Content-Type-Options "nosniff"

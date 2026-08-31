@@ -14,6 +14,10 @@ describe('loadEnvironment', () => {
     expect(() => loadEnvironment({ PORT: '70000' })).toThrow('Invalid PORT');
   });
 
+  it('loads an optional static application root', () => {
+    expect(loadEnvironment({ PR_STATIC_ROOT: '/srv/pr/web' }).staticRoot).toBe('/srv/pr/web');
+  });
+
   it('loads PostgreSQL identity only as one complete configuration', () => {
     const environment = loadEnvironment({
       DATABASE_URL: 'postgresql://pr:secret@db.example.test/pr',

@@ -10,10 +10,11 @@
   `/home/wealthos/pr.wealthos.ir/.htpasswd` است، با ACL فقط برای Worker وب و Deny
   صریح در Apache. مقدار Password هیچ‌وقت وارد Git یا Archive نمی‌شود.
 
-`.htaccess` فقط `/api`، `/health` و `/ready` را به Node داخلی Proxy می‌کند و سایر
-درخواست‌ها را به SPA می‌فرستد. اگر `mod_proxy` یا Proxy از `.htaccess` روی Host مجاز
-نباشد، استقرار باید Fail closed و به Backup قبلی برگردد؛ حذف Basic Auth برای دورزدن
-این محدودیت مجاز نیست.
+`.htaccess` تمام Preview محافظت‌شده را به Node داخلی Proxy می‌کند. Node هم API و هم
+SPA ساخته‌شده در `PR_STATIC_ROOT` را سرو می‌کند. این مسیر از محدودیت مالکیت فایل‌های
+Static در cPanel عبور می‌کند، بدون اینکه Basic Auth حذف شود. اگر `mod_proxy` یا Proxy
+از `.htaccess` روی Host مجاز نباشد، استقرار باید Fail closed و به Backup قبلی برگردد؛
+حذف Basic Auth برای دورزدن این محدودیت مجاز نیست.
 
 Backend این Preview تا زمان Provision شدن PostgreSQL با Store حافظه‌ای اجرا می‌شود؛
 Restart پروسه state را پاک می‌کند. این تنظیم برای Production نهایی نیست. Production

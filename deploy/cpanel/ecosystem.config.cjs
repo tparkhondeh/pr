@@ -13,6 +13,7 @@ module.exports = {
         NODE_ENV: 'production',
         LOG_LEVEL: 'info',
         PORT: 31056,
+        PR_STATIC_ROOT: '/home/wealthos/apps/pr/web',
       },
     },
   ],
