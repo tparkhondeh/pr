@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ConversationIntakeService } from '../src/conversation/intake.js';
+import { ContentDraftService, InMemoryDraftWorkspaceRepository } from '../src/claims/workspace.js';
 import {
   createRequestHandler,
   type ApplicationDependencies,
@@ -452,5 +453,99 @@ describe('operational endpoints', () => {
     expect(workbenchAfter.goal).toMatchObject({ revision: 2, title: 'مرجع تصمیم‌گیری قابل‌اعتماد' });
     expect(workbenchAfter.workflow.status).toBe('awaiting_approval');
     expect(workbenchAfter.workflow).not.toHaveProperty('approvedActionId');
+  });
+
+  it('routes the evidence-bound draft through approval and export without publishing', async () => {
+    const fixedTime = new Date('2026-08-31T19:00:00.000Z');
+    const activeTenant = tenantId('tenant_primary');
+    const owner = userId('owner_primary');
+    const conversation = new ConversationIntakeService();
+    const approval = new InMemoryWorkbenchApprovalRepository();
+    const strategy = new StrategyContextService(
+      new InMemoryStrategyContextRepository(defaultStrategyContext(activeTenant, owner), approval),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    const workbench = createDefaultWorkbenchService(
+      () => fixedTime,
+      approval,
+      { tenantId: activeTenant, ownerUserId: owner },
+      strategy,
+    );
+    const proposalResult = await conversation.submitTurn({
+      tenantId: activeTenant,
+      actorId: owner,
+      conversationId: 'conversation_http_draft',
+      turnId: 'turn_http_draft',
+      text: 'در یک تصمیم دشوار، شفافیت را به نمایش قطعیت ترجیح دادم.',
+      proposeMemory: true,
+      occurredAt: fixedTime,
+    });
+    if (!proposalResult.memoryProposal) throw new Error('Draft source proposal missing.');
+    await conversation.confirmMemory({
+      tenantId: activeTenant,
+      actorId: owner,
+      proposalId: proposalResult.memoryProposal.id,
+      permissions: { personalUnderstanding: true, brandUsage: false, publicUsage: false },
+      confirmedAt: fixedTime,
+    });
+    await workbench.approve('essay', owner, fixedTime);
+    const drafts = new ContentDraftService(
+      new InMemoryDraftWorkspaceRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+      conversation,
+      workbench,
+      strategy,
+    );
+    const dependencies: ApplicationDependencies = {
+      drafts,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+    const createdResponse = await request(
+      '/api/drafts',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'draft_http_create',
+          sourceProposalId: proposalResult.memoryProposal.id,
+          channel: 'linkedin',
+          narrativeAngle: 'شفافیت در تصمیم‌های دشوار',
+          takeaway: 'اعتماد با صداقت درباره ابهام ساخته می‌شود.',
+          publicDraftingConsent: true,
+        }),
+      },
+      dependencies,
+    );
+    expect(createdResponse.status).toBe(200);
+    const created = await createdResponse.json() as { draftId: string; revision: number; body: string };
+    const approvedResponse = await request(
+      `/api/drafts/${created.draftId}/approve`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: 'draft_http_approve', expectedRevision: created.revision }),
+      },
+      dependencies,
+    );
+    const approved = await approvedResponse.json() as { revision: number; status: string };
+    expect(approved).toMatchObject({ revision: 2, status: 'approved' });
+    const exportResponse = await request(
+      `/api/drafts/${created.draftId}/export`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: 'draft_http_export', expectedRevision: approved.revision }),
+      },
+      dependencies,
+    );
+    const exported = await exportResponse.json() as { content: string; filename: string; draft: { status: string } };
+    expect(exportResponse.status).toBe(200);
+    expect(exported.content).toBe(created.body);
+    expect(exported.filename).toMatch(/\.txt$/u);
+    expect(exported.draft.status).toBe('exported');
   });
 });

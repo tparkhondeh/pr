@@ -73,3 +73,14 @@ PostgreSQL، Proposal انتخاب‌شده و تأیید آن همراه Eviden
 هر نسخه جدید Goal و Positioning را حفظ می‌کند، Pointer جاری را با Optimistic Lock
 جابه‌جا می‌کند و Audit/Outbox را در همان Transaction می‌نویسد. همچنین Approval قبلی
 Workbench منقضی می‌شود تا تصمیم مبتنی بر جهت قدیمی بی‌صدا معتبر باقی نماند.
+
+نمای «پیش‌نویس» تنها پس از تأیید Action محتوایی Workbench فعال می‌شود. کاربر یک
+حافظه تأییدشده و دارای Evidence را انتخاب می‌کند، برای استفاده عمومی همان منبع
+رضایت صریح می‌دهد و Mother Idea را برای یکی از پلتفرم‌های LinkedIn، Instagram، X،
+YouTube، Podcast، Newsletter یا Blog می‌سازد. خروجی با Claim و Evidence قابل‌ردیابی
+است؛ ویرایش، Approval قبلی را باطل و Guard ادعا/فرمت را دوباره اجرا می‌کند و Export
+فقط برای نسخه سبز و تأییدشده مجاز است. تغییر Strategy یا Contest/Revoke/Delete منبع،
+Approval و Export را متوقف می‌کند. API این جریان از `GET /api/drafts/current`،
+`POST /api/drafts`، `PUT /api/drafts/:id`، `POST /api/drafts/:id/approve` و
+`POST /api/drafts/:id/export` تشکیل شده است. انتشار مستقیم در این مرحله عمداً وجود
+ندارد و Export فایل متنی آخرین Human-in-the-Loop است.

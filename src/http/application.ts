@@ -1,5 +1,16 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
+  DraftBlockedError,
+  DraftConflictError,
+  DraftNotFoundError,
+  DraftPermissionError,
+  DraftValidationError,
+  draftChannels,
+  type ContentDraftService,
+  type DraftChannel,
+  type DraftWorkspaceSnapshot,
+} from '../claims/workspace.js';
+import {
   ConversationValidationError,
   MemoryProposalConflictError,
   MemoryProposalNotFoundError,
@@ -28,6 +39,7 @@ export type ReadinessCheck = () =>
 export type ApplicationDependencies = Readonly<{
   workbench?: Pick<WorkbenchService, 'snapshot' | 'approve'>;
   strategy?: Pick<StrategyContextService, 'snapshot' | 'save'>;
+  drafts?: Pick<ContentDraftService, 'snapshot' | 'create' | 'edit' | 'approve' | 'export'>;
   resolveActor?: (request: IncomingMessage) => UserId | undefined;
   tenantId?: TenantId;
   conversation?: Pick<
@@ -87,6 +99,36 @@ export function createRequestHandler(
       return;
     }
 
+    if (request.method === 'GET' && path === '/api/drafts/current') {
+      await handleDraftSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/drafts') {
+      await handleDraftCreate(request, response, dependencies);
+      return;
+    }
+
+    const draftEdit = path.match(/^\/api\/drafts\/([0-9a-f-]{36})$/iu);
+    if (request.method === 'PUT' && draftEdit?.[1]) {
+      await handleDraftEdit(request, response, dependencies, draftEdit[1]);
+      return;
+    }
+
+    const draftTransition = path.match(
+      /^\/api\/drafts\/([0-9a-f-]{36})\/(approve|export)$/iu,
+    );
+    if (request.method === 'POST' && draftTransition?.[1] && draftTransition[2]) {
+      await handleDraftTransition(
+        request,
+        response,
+        dependencies,
+        draftTransition[1],
+        draftTransition[2] as 'approve' | 'export',
+      );
+      return;
+    }
+
     if (request.method === 'POST' && path === '/api/workbench/approval') {
       await handleApproval(request, response, dependencies);
       return;
@@ -125,6 +167,208 @@ export function createRequestHandler(
 
     sendJson(response, 404, { error: 'not_found' });
   };
+}
+
+async function handleDraftSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = draftActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.drafts?.snapshot(
+      actorId,
+      (dependencies.clock ?? (() => new Date()))(),
+    );
+    sendJson(response, 200, snapshot ? serializeDraft(snapshot) : null);
+  } catch (error: unknown) {
+    sendDraftError(response, error);
+  }
+}
+
+async function handleDraftCreate(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = draftActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const sourceProposalId = body['sourceProposalId'];
+    const channel = body['channel'];
+    const narrativeAngle = body['narrativeAngle'];
+    const takeaway = body['takeaway'];
+    const publicDraftingConsent = body['publicDraftingConsent'];
+    if (
+      typeof requestId !== 'string' || typeof sourceProposalId !== 'string' ||
+      !isDraftChannel(channel) || typeof narrativeAngle !== 'string' ||
+      typeof takeaway !== 'string' || typeof publicDraftingConsent !== 'boolean'
+    ) {
+      sendJson(response, 400, { error: 'invalid_draft_input' });
+      return;
+    }
+    const result = await dependencies.drafts?.create({
+      actorId,
+      requestId,
+      sourceProposalId,
+      channel,
+      narrativeAngle,
+      takeaway,
+      publicDraftingConsent,
+      occurredAt: (dependencies.clock ?? (() => new Date()))(),
+    });
+    if (!result) throw new Error('Draft service disappeared.');
+    sendJson(response, 200, { outcome: result.outcome, ...serializeDraft(result.snapshot) });
+  } catch (error: unknown) {
+    sendDraftError(response, error);
+  }
+}
+
+async function handleDraftEdit(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+  draftId: string,
+): Promise<void> {
+  const actorId = draftActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const expectedRevision = body['expectedRevision'];
+    const draftBody = body['body'];
+    if (typeof requestId !== 'string' || typeof expectedRevision !== 'number' || typeof draftBody !== 'string') {
+      sendJson(response, 400, { error: 'invalid_draft_input' });
+      return;
+    }
+    const result = await dependencies.drafts?.edit({
+      actorId,
+      requestId,
+      draftId,
+      expectedRevision,
+      body: draftBody,
+      occurredAt: (dependencies.clock ?? (() => new Date()))(),
+    });
+    if (!result) throw new Error('Draft service disappeared.');
+    sendJson(response, 200, { outcome: result.outcome, ...serializeDraft(result.snapshot) });
+  } catch (error: unknown) {
+    sendDraftError(response, error);
+  }
+}
+
+async function handleDraftTransition(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+  draftId: string,
+  operation: 'approve' | 'export',
+): Promise<void> {
+  const actorId = draftActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const expectedRevision = body['expectedRevision'];
+    if (typeof requestId !== 'string' || typeof expectedRevision !== 'number') {
+      sendJson(response, 400, { error: 'invalid_draft_input' });
+      return;
+    }
+    const command = {
+      actorId,
+      requestId,
+      draftId,
+      expectedRevision,
+      occurredAt: (dependencies.clock ?? (() => new Date()))(),
+    };
+    if (operation === 'approve') {
+      const result = await dependencies.drafts?.approve(command);
+      if (!result) throw new Error('Draft service disappeared.');
+      sendJson(response, 200, { outcome: result.outcome, ...serializeDraft(result.snapshot) });
+      return;
+    }
+    const result = await dependencies.drafts?.export(command);
+    if (!result) throw new Error('Draft service disappeared.');
+    sendJson(response, 200, {
+      outcome: result.outcome,
+      filename: result.filename,
+      mimeType: result.mimeType,
+      content: result.content,
+      draft: serializeDraft(result.snapshot),
+    });
+  } catch (error: unknown) {
+    sendDraftError(response, error);
+  }
+}
+
+function draftActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.drafts) {
+    sendJson(response, 503, { error: 'drafts_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function isDraftChannel(value: unknown): value is DraftChannel {
+  return typeof value === 'string' && draftChannels.includes(value as DraftChannel);
+}
+
+function serializeDraft(snapshot: DraftWorkspaceSnapshot): Record<string, unknown> {
+  return {
+    draftId: snapshot.draftId,
+    claimId: snapshot.claimId,
+    revision: snapshot.revision,
+    strategyRevision: snapshot.strategyRevision,
+    channel: snapshot.channel,
+    body: snapshot.body,
+    status: snapshot.status,
+    guard: snapshot.guard,
+    source: snapshot.source,
+    publicDraftingConsent: snapshot.publicDraftingConsent,
+    sourceAvailable: snapshot.sourceAvailable,
+    staleStrategy: snapshot.staleStrategy,
+    ...(snapshot.approvedAt ? { approvedAt: snapshot.approvedAt.toISOString() } : {}),
+    ...(snapshot.exportedAt ? { exportedAt: snapshot.exportedAt.toISOString() } : {}),
+    updatedAt: snapshot.updatedAt.toISOString(),
+    persistence: snapshot.persistence,
+  };
+}
+
+function sendDraftError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof DraftValidationError) {
+    sendJson(response, 400, {
+      error: error instanceof InvalidJsonBodyError ? error.code : 'invalid_draft_input',
+    });
+    return;
+  }
+  if (error instanceof DraftPermissionError) {
+    sendJson(response, 403, { error: 'draft_permission_denied' });
+    return;
+  }
+  if (error instanceof DraftNotFoundError) {
+    sendJson(response, 404, { error: 'draft_not_found' });
+    return;
+  }
+  if (error instanceof DraftConflictError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  if (error instanceof DraftBlockedError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  sendJson(response, 500, { error: 'draft_failed' });
 }
 
 async function handleStrategySnapshot(
@@ -586,7 +830,7 @@ async function readJsonObject(request: IncomingMessage): Promise<Record<string, 
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
     size += buffer.length;
-    if (size > 16_384) throw new InvalidJsonBodyError('request_too_large');
+    if (size > 32_768) throw new InvalidJsonBodyError('request_too_large');
     chunks.push(buffer);
   }
 

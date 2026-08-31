@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   CircleGauge,
   Clock3,
+  Download,
   FileCheck2,
   Fingerprint,
   History,
@@ -13,6 +14,7 @@ import {
   LoaderCircle,
   MessageCircleMore,
   Network,
+  PencilLine,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -23,7 +25,12 @@ import {
   WorkbenchApiError,
   applyMemoryRight,
   approveWorkbenchAction,
+  approveDraft,
   confirmMemoryProposal,
+  createDraft,
+  editDraft,
+  exportDraft,
+  loadDraftWorkspace,
   loadPersonalMemory,
   loadStrategyContext,
   loadWorkbench,
@@ -31,6 +38,8 @@ import {
   submitConversationTurn,
   type AppliedMemoryRight,
   type ConversationTurnResult,
+  type DraftChannel,
+  type DraftWorkspaceSnapshot,
   type MemoryRightKind,
   type PersonalMemoryRecord,
   type PersonalMemorySnapshot,
@@ -58,7 +67,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'memory' | 'strategy'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'memory' | 'strategy' | 'draft'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -85,6 +94,9 @@ export function App() {
   const [strategySnapshot, setStrategySnapshot] = useState<StrategyContextSnapshot | null>(null);
   const [strategyViewState, setStrategyViewState] = useState<'idle' | 'loading' | 'ready' | 'saving' | 'error'>('idle');
   const [strategyViewError, setStrategyViewError] = useState<string | null>(null);
+  const [draftSnapshot, setDraftSnapshot] = useState<DraftWorkspaceSnapshot | null>(null);
+  const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
+  const [draftViewError, setDraftViewError] = useState<string | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState('loading');
@@ -149,6 +161,80 @@ export function App() {
     } catch (caught: unknown) {
       setStrategyViewError(errorMessage(caught));
       setStrategyViewState('error');
+    }
+  };
+
+  const refreshDraft = useCallback(async (signal?: AbortSignal) => {
+    setDraftViewState('loading');
+    setDraftViewError(null);
+    try {
+      const [draft, memory] = await Promise.all([
+        loadDraftWorkspace(signal),
+        loadPersonalMemory(signal),
+      ]);
+      setDraftSnapshot(draft);
+      setMemorySnapshot(memory);
+      setDraftViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setDraftViewError(errorMessage(caught));
+      setDraftViewState('error');
+    }
+  }, []);
+
+  const createDraftWorkspace = async (input: Readonly<{
+    sourceProposalId: string;
+    channel: DraftChannel;
+    narrativeAngle: string;
+    takeaway: string;
+    publicDraftingConsent: boolean;
+  }>) => {
+    setDraftViewState('mutating');
+    setDraftViewError(null);
+    try {
+      const next = await createDraft({ requestId: `draft_${crypto.randomUUID()}`, ...input });
+      setDraftSnapshot(next);
+      setDraftViewState('ready');
+      await refreshMemory();
+    } catch (caught: unknown) {
+      setDraftViewError(errorMessage(caught));
+      setDraftViewState('error');
+    }
+  };
+
+  const mutateDraft = async (operation: 'edit' | 'approve' | 'export', body?: string) => {
+    if (!draftSnapshot) return;
+    setDraftViewState('mutating');
+    setDraftViewError(null);
+    try {
+      if (operation === 'edit') {
+        const next = await editDraft({
+          draftId: draftSnapshot.draftId,
+          requestId: `draft_edit_${crypto.randomUUID()}`,
+          expectedRevision: draftSnapshot.revision,
+          body: body ?? draftSnapshot.body,
+        });
+        setDraftSnapshot(next);
+      } else if (operation === 'approve') {
+        const next = await approveDraft({
+          draftId: draftSnapshot.draftId,
+          requestId: `draft_approve_${crypto.randomUUID()}`,
+          expectedRevision: draftSnapshot.revision,
+        });
+        setDraftSnapshot(next);
+      } else {
+        const exported = await exportDraft({
+          draftId: draftSnapshot.draftId,
+          requestId: `draft_export_${crypto.randomUUID()}`,
+          expectedRevision: draftSnapshot.revision,
+        });
+        setDraftSnapshot(exported.draft);
+        downloadText(exported.filename, exported.mimeType, exported.content);
+      }
+      setDraftViewState('ready');
+    } catch (caught: unknown) {
+      setDraftViewError(errorMessage(caught));
+      setDraftViewState('error');
     }
   };
 
@@ -274,6 +360,7 @@ export function App() {
     { label: 'امروز', icon: CircleGauge, view: 'today' as const },
     { label: 'حافظه من', icon: Fingerprint, view: 'memory' as const },
     { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
+    { label: 'پیش‌نویس', icon: PencilLine, view: 'draft' as const },
     { label: 'روابط', icon: Network },
     {
       label: 'تأییدها',
@@ -296,6 +383,7 @@ export function App() {
                 setActiveView(view);
                 if (view === 'memory') void refreshMemory();
                 if (view === 'strategy') void refreshStrategy();
+                if (view === 'draft') void refreshDraft();
               }}
               type="button"
             >
@@ -320,6 +408,8 @@ export function App() {
               ? 'حافظه‌ای که شما کنترل می‌کنید.'
               : activeView === 'strategy'
                 ? 'جهت را شما تعیین می‌کنید.'
+                : activeView === 'draft'
+                  ? 'از شاهد تا متن قابل‌دفاع.'
                 : 'حرکت بعدی، نه پست بعدی.'}</h1>
           </div>
           <div className="top-actions">
@@ -347,6 +437,23 @@ export function App() {
             onSave={saveStrategy}
             snapshot={strategySnapshot}
             state={strategyViewState}
+          />
+        ) : activeView === 'draft' ? (
+          <DraftWorkspacePanel
+            error={draftViewError}
+            memory={memorySnapshot}
+            onApprove={() => mutateDraft('approve')}
+            onCreate={createDraftWorkspace}
+            onEdit={(body) => mutateDraft('edit', body)}
+            onExport={() => mutateDraft('export')}
+            onGoToContentAction={() => {
+              setSelected('essay');
+              setActiveView('today');
+            }}
+            onRefresh={() => refreshDraft()}
+            snapshot={draftSnapshot}
+            state={draftViewState}
+            workbench={snapshot}
           />
         ) : (
           <>
@@ -709,6 +816,256 @@ function StrategyPanel({
   );
 }
 
+function DraftWorkspacePanel({
+  error,
+  memory,
+  onApprove,
+  onCreate,
+  onEdit,
+  onExport,
+  onGoToContentAction,
+  onRefresh,
+  snapshot,
+  state,
+  workbench,
+}: Readonly<{
+  error: string | null;
+  memory: PersonalMemorySnapshot | null;
+  onApprove: () => Promise<void>;
+  onCreate: (input: Readonly<{
+    sourceProposalId: string;
+    channel: DraftChannel;
+    narrativeAngle: string;
+    takeaway: string;
+    publicDraftingConsent: boolean;
+  }>) => Promise<void>;
+  onEdit: (body: string) => Promise<void>;
+  onExport: () => Promise<void>;
+  onGoToContentAction: () => void;
+  onRefresh: () => Promise<void>;
+  snapshot: DraftWorkspaceSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
+  workbench: WorkbenchSnapshot;
+}>) {
+  const activeSources = memory?.records.filter(
+    (record) => record.lifecycle.status === 'active' && record.text && record.provenance.evidenceCount > 0,
+  ) ?? [];
+  const contentApproved = workbench.workflow.status === 'approved' &&
+    workbench.workflow.approvedActionId === 'essay';
+  const [sourceProposalId, setSourceProposalId] = useState(activeSources[0]?.proposalId ?? '');
+  const [channel, setChannel] = useState<DraftChannel>('linkedin');
+  const [angle, setAngle] = useState('یک تجربه واقعی که نگاه من به تصمیم‌گیری را تغییر داد');
+  const [takeaway, setTakeaway] = useState('اعتماد با صداقت درباره ابهام ساخته می‌شود، نه با نمایش قطعیت.');
+  const [consent, setConsent] = useState(false);
+  const [body, setBody] = useState(snapshot?.body ?? '');
+
+  useEffect(() => {
+    if (snapshot) setBody(snapshot.body);
+  }, [snapshot]);
+  useEffect(() => {
+    if (!sourceProposalId && activeSources[0]) setSourceProposalId(activeSources[0].proposalId);
+  }, [activeSources, sourceProposalId]);
+
+  if ((state === 'loading' || state === 'idle') && !memory && !snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <LoaderCircle className="spin" size={24} />
+        <h2>در حال آماده‌سازی Draft Studio…</h2>
+        <p>منبع حافظه، Evidence، Claim و وضعیت تأیید دوباره بررسی می‌شوند.</p>
+      </section>
+    );
+  }
+
+  if (!snapshot) {
+    return (
+      <section className="draft-view" aria-label="ساخت پیش‌نویس مبتنی بر شواهد">
+        <header className="draft-head">
+          <div>
+            <p className="overline">Evidence → Claim → Draft</p>
+            <h2>ساخت اولین پیش‌نویس قابل‌ردیابی</h2>
+            <p>فقط یک حافظه فعال و تأییدشده می‌تواند وارد متن شود؛ مجوز استفاده عمومی نیز در همین مرحله جداگانه گرفته می‌شود.</p>
+          </div>
+          <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button">
+            <RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی
+          </button>
+        </header>
+        {!contentApproved ? (
+          <div className="draft-gate">
+            <FileCheck2 size={20} />
+            <div><strong>ابتدا اقدام محتوایی را تأیید کنید</strong><span>ساخت Draft بدون انتخاب انسانیِ Action شروع نمی‌شود.</span></div>
+            <button onClick={onGoToContentAction} type="button">انتخاب اقدام محتوایی</button>
+          </div>
+        ) : null}
+        {activeSources.length === 0 ? (
+          <div className="memory-empty">
+            <Fingerprint size={28} />
+            <h3>منبع قابل‌استفاده‌ای وجود ندارد</h3>
+            <p>ابتدا در گفت‌وگوی امروز یک حافظه را پیشنهاد و سپس صریحاً تأیید کنید.</p>
+          </div>
+        ) : (
+          <form
+            className="draft-create"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!contentApproved || !sourceProposalId || !consent) return;
+              void onCreate({
+                sourceProposalId,
+                channel,
+                narrativeAngle: angle,
+                takeaway,
+                publicDraftingConsent: consent,
+              });
+            }}
+          >
+            <label className="draft-wide">حافظه و شاهد مبنا
+              <select onChange={(event) => { setSourceProposalId(event.target.value); }} value={sourceProposalId}>
+                {activeSources.map((record) => (
+                  <option key={record.proposalId} value={record.proposalId}>
+                    {record.text?.slice(0, 90)} · {record.provenance.evidenceCount} شاهد
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>پلتفرم مقصد
+              <select onChange={(event) => { setChannel(event.target.value as DraftChannel); }} value={channel}>
+                {draftChannelOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            </label>
+            <label>زاویه روایت
+              <input maxLength={500} onChange={(event) => { setAngle(event.target.value); }} value={angle} />
+            </label>
+            <label className="draft-wide">برداشت شخصی یا جمع‌بندی
+              <textarea maxLength={2000} onChange={(event) => { setTakeaway(event.target.value); }} rows={3} value={takeaway} />
+            </label>
+            <label className="draft-consent draft-wide">
+              <input checked={consent} onChange={(event) => { setConsent(event.target.checked); }} type="checkbox" />
+              <span><strong>مجوز صریح برای Public Drafting</strong> فقط همین Assertion و همین کانال برای ساخت Draft قابل استفاده باشد؛ انتشار خودکار انجام نشود.</span>
+            </label>
+            <button className="draft-primary" disabled={!contentApproved || !consent || state === 'mutating'} type="submit">
+              {state === 'mutating' ? <LoaderCircle className="spin" size={17} /> : <PencilLine size={17} />}
+              {state === 'mutating' ? 'در حال ساخت…' : 'ساخت Draft و اجرای Claim Check'}
+            </button>
+          </form>
+        )}
+        {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
+      </section>
+    );
+  }
+
+  const canApprove = snapshot.status === 'awaiting_approval' && snapshot.guard.mayRequestApproval &&
+    snapshot.sourceAvailable && !snapshot.staleStrategy;
+  const canExport = snapshot.status === 'approved' && snapshot.sourceAvailable && !snapshot.staleStrategy;
+  return (
+    <section className="draft-view" aria-label="ویرایش و خروجی پیش‌نویس">
+      <header className="draft-head">
+        <div>
+          <p className="overline">Draft Revision {snapshot.revision} · {draftChannelLabel(snapshot.channel)}</p>
+          <h2>پیش‌نویس مبتنی بر شاهد</h2>
+          <p>هر ویرایش دوباره Claim Check می‌شود و Approval نسخه قبلی را معتبر نگه نمی‌دارد.</p>
+        </div>
+        <span className={`guard-badge ${snapshot.guard.classification}`}>
+          <ShieldCheck size={16} /> {guardLabel(snapshot.guard.classification)}
+        </span>
+      </header>
+      {snapshot.staleStrategy || !snapshot.sourceAvailable ? (
+        <div className="draft-gate danger">
+          <TriangleAlert size={20} />
+          <div>
+            <strong>{snapshot.staleStrategy ? 'استراتژی پس از ساخت Draft تغییر کرده است' : 'منبع حافظه دیگر مجاز یا فعال نیست'}</strong>
+            <span>Approval و Export تا ساخت نسخه تازه از منبع معتبر متوقف هستند.</span>
+          </div>
+        </div>
+      ) : null}
+      <div className="draft-workspace">
+        <div className="draft-editor">
+          <label htmlFor="draft-body">متن قابل‌ویرایش</label>
+          <textarea
+            id="draft-body"
+            maxLength={20000}
+            onChange={(event) => { setBody(event.target.value); }}
+            rows={18}
+            value={body}
+          />
+          <div className="draft-editor-foot">
+            <span>{body.length.toLocaleString('fa-IR')} نویسه</span>
+            <button disabled={state === 'mutating' || body.trim() === snapshot.body} onClick={() => void onEdit(body)} type="button">
+              <FileCheck2 size={16} /> ذخیره و بررسی دوباره
+            </button>
+          </div>
+        </div>
+        <aside className="draft-trace">
+          <p className="overline">Traceability</p>
+          <h3>این متن به چه چیزی متصل است؟</h3>
+          <blockquote>{snapshot.source.statement}</blockquote>
+          <div className="trace-row"><BookOpenText size={15} /><span><b>{snapshot.source.evidenceIds.length}</b> Evidence متصل</span></div>
+          <div className="trace-row"><Fingerprint size={15} /><span>Claim شخصیِ تأییدشده توسط مالک</span></div>
+          <div className="trace-row"><LockKeyhole size={15} /><span>مجوز محدود به {draftChannelLabel(snapshot.channel)}</span></div>
+          {snapshot.guard.violations.length > 0 ? (
+            <ul className="guard-violations">
+              {snapshot.guard.violations.map((violation) => (
+                <li key={`${violation.code}:${violation.claimId}`}><TriangleAlert size={14} /> {guardViolationLabel(violation.code)}</li>
+              ))}
+            </ul>
+          ) : <div className="guard-clean"><Check size={15} /> ادعای بی‌منبع شناسایی نشد.</div>}
+          <div className="draft-actions">
+            <button disabled={!canApprove || state === 'mutating'} onClick={() => void onApprove()} type="button">
+              <Check size={16} /> {snapshot.status === 'approved' ? 'تأیید شده' : 'تأیید انسانی این نسخه'}
+            </button>
+            <button className="export" disabled={!canExport || state === 'mutating'} onClick={() => void onExport()} type="button">
+              <Download size={16} /> {snapshot.status === 'exported' ? 'خروجی گرفته شد' : 'Export فایل متنی'}
+            </button>
+          </div>
+          <small>هیچ Publish یا ارسال بیرونی انجام نمی‌شود.</small>
+        </aside>
+      </div>
+      {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
+    </section>
+  );
+}
+
+const draftChannelOptions: readonly Readonly<{ value: DraftChannel; label: string }>[] = [
+  { value: 'linkedin', label: 'LinkedIn' },
+  { value: 'instagram', label: 'Instagram' },
+  { value: 'x', label: 'X' },
+  { value: 'youtube', label: 'YouTube' },
+  { value: 'podcast', label: 'Podcast' },
+  { value: 'newsletter', label: 'Newsletter' },
+  { value: 'blog', label: 'Blog' },
+];
+
+function draftChannelLabel(value: DraftChannel): string {
+  return draftChannelOptions.find((item) => item.value === value)?.label ?? value;
+}
+
+function guardLabel(value: DraftWorkspaceSnapshot['guard']['classification']): string {
+  if (value === 'green') return 'Green · قابل تأیید';
+  if (value === 'yellow') return 'Yellow · نیازمند توجه';
+  return 'Red · متوقف';
+}
+
+function guardViolationLabel(code: string): string {
+  const labels: Readonly<Record<string, string>> = {
+    claim_extraction_incomplete: 'یک ادعای احتمالی خارج از Claim Registry دیده شد.',
+    missing_evidence_bound_claim: 'متن دیگر Claim متصل به Evidence را در خود ندارد.',
+    channel_format_violation: 'طول یا قالب متن با پلتفرم مقصد سازگار نیست.',
+    missing_claim: 'Claim متن در Registry ثبت نشده است.',
+    unverified_fact: 'یک واقعیت هنوز تأیید نشده است.',
+    disputed_claim: 'Claim مورد اعتراض است و قابل استفاده نیست.',
+    purpose_not_allowed: 'مجوز این Claim برای Public Drafting وجود ندارد.',
+    channel_not_allowed: 'مجوز Claim برای این کانال وجود ندارد.',
+  };
+  return labels[code] ?? 'Claim Check این بخش را نیازمند بررسی می‌داند.';
+}
+
+function downloadText(filename: string, mimeType: string, content: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type: mimeType }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 function lineItems(value: string): readonly string[] {
   return value.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean).slice(0, 8);
 }
@@ -996,6 +1353,15 @@ function errorMessage(error: unknown): string {
     idempotency_mismatch: 'شناسه این ذخیره قبلاً برای محتوای دیگری استفاده شده است.',
     strategy_permission_denied: 'فقط مالک می‌تواند هدف و جایگاه مطلوب را تغییر دهد.',
     strategy_unavailable: 'سرویس استراتژی در دسترس نیست.',
+    drafts_unavailable: 'Draft Studio در دسترس نیست.',
+    invalid_draft_input: 'اطلاعات Draft ناقص یا خارج از محدودیت‌های پلتفرم است.',
+    draft_permission_denied: 'مجوز صریح مالک برای استفاده از این حافظه در Draft وجود ندارد.',
+    draft_not_found: 'این Draft دیگر در Workspace جاری وجود ندارد.',
+    content_action_not_approved: 'ابتدا اقدام محتوایی را در Workbench تأیید کنید.',
+    source_not_available: 'حافظه یا Evidence مبنا حذف، محدود یا مورد اعتراض قرار گرفته است.',
+    guard_failed: 'Claim Check قرمز است و این نسخه قابل تأیید نیست.',
+    strategy_changed: 'استراتژی تغییر کرده است؛ Draft باید با جهت جدید دوباره ساخته شود.',
+    draft_not_approved: 'قبل از Export باید همین Revision را تأیید کنید.',
     invalid_response: 'پاسخ API با قرارداد Workbench هم‌خوان نیست.',
   };
   return messages[error.code] ?? 'در پردازش درخواست خطایی رخ داد.';

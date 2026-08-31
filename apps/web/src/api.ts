@@ -89,6 +89,50 @@ export type StrategyContextSnapshot = EditableStrategyContext & Readonly<{
   outcome?: 'saved' | 'already_saved';
 }>;
 
+export type DraftChannel = 'linkedin' | 'instagram' | 'x' | 'youtube' | 'podcast' | 'newsletter' | 'blog';
+
+export type DraftWorkspaceSnapshot = Readonly<{
+  draftId: string;
+  claimId: string;
+  revision: number;
+  strategyRevision: number;
+  channel: DraftChannel;
+  body: string;
+  status: 'guard_failed' | 'awaiting_approval' | 'approved' | 'exported';
+  guard: Readonly<{
+    classification: 'green' | 'yellow' | 'red';
+    mayRequestApproval: boolean;
+    violations: readonly Readonly<{
+      code: string;
+      severity: 'yellow' | 'red';
+      claimId: string;
+      message: string;
+    }>[];
+  }>;
+  source: Readonly<{
+    proposalId: string;
+    assertionId: string;
+    statement: string;
+    evidenceIds: readonly string[];
+  }>;
+  publicDraftingConsent: true;
+  sourceAvailable: boolean;
+  staleStrategy: boolean;
+  approvedAt?: string;
+  exportedAt?: string;
+  updatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  outcome?: 'applied' | 'already_applied';
+}>;
+
+export type DraftExport = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  filename: string;
+  mimeType: string;
+  content: string;
+  draft: DraftWorkspaceSnapshot;
+}>;
+
 export type ConversationTurnResult = Readonly<{
   assistantMessage: string;
   followUpQuestion: string;
@@ -139,6 +183,7 @@ export type PersonalMemoryRecord = Readonly<{
   confidenceRationale: string;
   provenance: Readonly<{
     evidenceCount: number;
+    evidenceIds: readonly string[];
     sourceTypes: readonly string[];
   }>;
   consent: Readonly<{
@@ -219,6 +264,79 @@ export async function saveStrategyContext(input: Readonly<{
   });
   if (!isStrategyContextSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
   return payload;
+}
+
+export async function loadDraftWorkspace(signal?: AbortSignal): Promise<DraftWorkspaceSnapshot | null> {
+  const payload = await requestJson('/api/drafts/current', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (payload === null) return null;
+  if (!isDraftWorkspaceSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function createDraft(input: Readonly<{
+  requestId: string;
+  sourceProposalId: string;
+  channel: DraftChannel;
+  narrativeAngle: string;
+  takeaway: string;
+  publicDraftingConsent: boolean;
+}>): Promise<DraftWorkspaceSnapshot> {
+  return requestDraft('/api/drafts', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function editDraft(input: Readonly<{
+  draftId: string;
+  requestId: string;
+  expectedRevision: number;
+  body: string;
+}>): Promise<DraftWorkspaceSnapshot> {
+  return requestDraft(`/api/drafts/${encodeURIComponent(input.draftId)}`, {
+    method: 'PUT',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestId: input.requestId,
+      expectedRevision: input.expectedRevision,
+      body: input.body,
+    }),
+  });
+}
+
+export async function approveDraft(input: Readonly<{
+  draftId: string;
+  requestId: string;
+  expectedRevision: number;
+}>): Promise<DraftWorkspaceSnapshot> {
+  return requestDraft(`/api/drafts/${encodeURIComponent(input.draftId)}/approve`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: input.requestId, expectedRevision: input.expectedRevision }),
+  });
+}
+
+export async function exportDraft(input: Readonly<{
+  draftId: string;
+  requestId: string;
+  expectedRevision: number;
+}>): Promise<DraftExport> {
+  const payload = await requestJson(`/api/drafts/${encodeURIComponent(input.draftId)}/export`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: input.requestId, expectedRevision: input.expectedRevision }),
+  });
+  if (!isRecord(payload) || !isDraftWorkspaceSnapshot(payload['draft']) ||
+      typeof payload['filename'] !== 'string' || typeof payload['mimeType'] !== 'string' ||
+      typeof payload['content'] !== 'string' ||
+      (payload['outcome'] !== 'applied' && payload['outcome'] !== 'already_applied')) {
+    throw new WorkbenchApiError(200, 'invalid_response');
+  }
+  return payload as DraftExport;
 }
 
 export async function approveWorkbenchAction(actionId: string): Promise<WorkbenchSnapshot> {
@@ -310,6 +428,12 @@ async function requestWorkbench(url: string, init: RequestInit): Promise<Workben
   return payload;
 }
 
+async function requestDraft(url: string, init: RequestInit): Promise<DraftWorkspaceSnapshot> {
+  const payload = await requestJson(url, init);
+  if (!isDraftWorkspaceSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
 async function requestJson(url: string, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
@@ -371,6 +495,25 @@ function isStrategyContextSnapshot(payload: unknown): payload is StrategyContext
     typeof positioning['differentiation'] === 'string' &&
     Array.isArray(positioning['proofPoints']) && positioning['proofPoints'].every((item) => typeof item === 'string') &&
     typeof positioning['horizon'] === 'string'
+  );
+}
+
+function isDraftWorkspaceSnapshot(payload: unknown): payload is DraftWorkspaceSnapshot {
+  if (!isRecord(payload) || !isRecord(payload['guard']) || !isRecord(payload['source'])) return false;
+  const guard = payload['guard'];
+  const source = payload['source'];
+  return (
+    typeof payload['draftId'] === 'string' && typeof payload['claimId'] === 'string' &&
+    typeof payload['revision'] === 'number' && typeof payload['strategyRevision'] === 'number' &&
+    typeof payload['channel'] === 'string' && typeof payload['body'] === 'string' &&
+    typeof payload['status'] === 'string' &&
+    (guard['classification'] === 'green' || guard['classification'] === 'yellow' || guard['classification'] === 'red') &&
+    typeof guard['mayRequestApproval'] === 'boolean' && Array.isArray(guard['violations']) &&
+    typeof source['proposalId'] === 'string' && typeof source['assertionId'] === 'string' &&
+    typeof source['statement'] === 'string' && Array.isArray(source['evidenceIds']) &&
+    payload['publicDraftingConsent'] === true && typeof payload['sourceAvailable'] === 'boolean' &&
+    typeof payload['staleStrategy'] === 'boolean' && typeof payload['updatedAt'] === 'string' &&
+    (payload['persistence'] === 'memory' || payload['persistence'] === 'postgres' || payload['persistence'] === 'ephemeral')
   );
 }
 
@@ -464,6 +607,7 @@ function isPersonalMemoryRecord(value: unknown): value is PersonalMemoryRecord {
     value['dataClass'] === 'confidential' &&
     typeof value['confidence'] === 'number' &&
     typeof value['provenance']['evidenceCount'] === 'number' &&
+    Array.isArray(value['provenance']['evidenceIds']) &&
     Array.isArray(value['provenance']['sourceTypes']) &&
     typeof value['consent']['personalUnderstanding'] === 'boolean' &&
     (

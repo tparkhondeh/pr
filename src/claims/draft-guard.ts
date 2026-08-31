@@ -28,6 +28,8 @@ export type GuardViolation = Readonly<{
     | 'purpose_not_allowed'
     | 'channel_not_allowed'
     | 'claim_extraction_incomplete'
+    | 'missing_evidence_bound_claim'
+    | 'channel_format_violation'
     | 'projection_disclosure_required';
   severity: 'yellow' | 'red';
   claimId: string;
@@ -54,6 +56,27 @@ export function guardDraft(
         'claim_extraction_incomplete',
         'draft',
         'Claim extraction must complete before approval.',
+      ),
+    );
+  }
+
+  if (draft.claims.length === 0) {
+    violations.push(
+      red(
+        'missing_evidence_bound_claim',
+        'draft',
+        'At least one evidence-bound claim is required before approval.',
+      ),
+    );
+  }
+
+  const channelLimit = channelCharacterLimit(draft.channel);
+  if (channelLimit && draft.body.length > channelLimit) {
+    violations.push(
+      red(
+        'channel_format_violation',
+        'draft',
+        `Draft exceeds the ${String(channelLimit)} character limit for ${draft.channel}.`,
       ),
     );
   }
@@ -111,6 +134,18 @@ export function guardDraft(
     mayRequestApproval: classification !== 'red',
     violations,
   };
+}
+
+function channelCharacterLimit(channel: string): number | undefined {
+  return {
+    linkedin: 3_000,
+    instagram: 2_200,
+    x: 280,
+    youtube: 10_000,
+    podcast: 10_000,
+    newsletter: 15_000,
+    blog: 20_000,
+  }[channel];
 }
 
 function red(code: GuardViolation['code'], claimId: string, message: string): GuardViolation {

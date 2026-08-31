@@ -75,6 +75,25 @@ describe('claim registry and draft guard', () => {
     );
   });
 
+  it('blocks an attractive draft that no longer contains an evidence-bound claim', () => {
+    const registered = claim();
+    const result = guardDraft({ ...draft(registered.id), claims: [] }, [registered], now);
+    expect(result.violations.map((item) => item.code)).toContain(
+      'missing_evidence_bound_claim',
+    );
+    expect(result.mayRequestApproval).toBe(false);
+  });
+
+  it('applies the destination channel length contract', () => {
+    const registered = claim();
+    const result = guardDraft(
+      { ...draft(registered.id), channel: 'x', body: 'الف'.repeat(281) },
+      [registered],
+      now,
+    );
+    expect(result.violations.map((item) => item.code)).toContain('channel_format_violation');
+  });
+
   it('blocks an unverified factual claim', () => {
     const verified = claim();
     const proposed = { ...verified, status: 'proposed' as const, verifiedAt: undefined, verifiedBy: undefined };

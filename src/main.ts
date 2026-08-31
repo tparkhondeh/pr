@@ -1,5 +1,10 @@
 import { createServer } from 'node:http';
 import { loadEnvironment } from './config/environment.js';
+import {
+  ContentDraftService,
+  InMemoryDraftWorkspaceRepository,
+  PostgresDraftWorkspaceRepository,
+} from './claims/workspace.js';
 import { ConversationIntakeService } from './conversation/intake.js';
 import { PostgresConversationMemoryRepository } from './conversation/repository.js';
 import { PostgresRuntime } from './database/postgres.js';
@@ -62,11 +67,25 @@ const workbench = createDefaultWorkbenchService(
   strategy,
 );
 const conversation = new ConversationIntakeService(conversationRepository);
+const draftRepository = postgres && environment.database
+  ? new PostgresDraftWorkspaceRepository(postgres, {
+      tenantId: environment.database.tenantId,
+      ownerUserId: environment.database.ownerUserId,
+    })
+  : new InMemoryDraftWorkspaceRepository();
+const drafts = new ContentDraftService(
+  draftRepository,
+  { tenantId: activeTenant, ownerUserId: owner },
+  conversation,
+  workbench,
+  strategy,
+);
 const requestHandler = createRequestHandler(
   () => postgres?.readiness() ?? { ready: true },
   {
     workbench,
     strategy,
+    drafts,
     conversation,
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity

@@ -42,6 +42,10 @@ const strategyContextMigrationPath = fileURLToPath(
   new URL('../db/migrations/0009_strategy_context.sql', import.meta.url),
 );
 const strategyContextSql = readFileSync(strategyContextMigrationPath, 'utf8');
+const draftWorkspaceMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0010_draft_workspace.sql', import.meta.url),
+);
+const draftWorkspaceSql = readFileSync(draftWorkspaceMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -188,5 +192,17 @@ describe('foundation migration', () => {
     expect(strategyContextSql).toContain('current_positioning_id uuid NOT NULL');
     expect(strategyContextSql).toContain('result_snapshot jsonb');
     expect(strategyContextSql).toContain('ADD COLUMN strategy_revision bigint NOT NULL');
+  });
+
+  it('adds an auditable and idempotent owner draft workspace', () => {
+    defineMigration('0010_draft_workspace', draftWorkspaceSql);
+    expect(draftWorkspaceSql).toContain('CREATE TABLE app.draft_workspace_requests');
+    expect(draftWorkspaceSql).toContain(
+      'ALTER TABLE app.draft_workspace_requests FORCE ROW LEVEL SECURITY',
+    );
+    expect(draftWorkspaceSql).toContain('ADD COLUMN source_assertion_id uuid');
+    expect(draftWorkspaceSql).toContain('ADD COLUMN strategy_revision bigint');
+    expect(draftWorkspaceSql).toContain('ADD COLUMN revision bigint NOT NULL DEFAULT 1');
+    expect(draftWorkspaceSql).toContain("operation IN ('create', 'edit', 'approve', 'export')");
   });
 });

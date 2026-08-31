@@ -64,6 +64,7 @@ export type PersonalMemoryRecord = Readonly<{
   confidenceRationale: string;
   provenance: Readonly<{
     evidenceCount: number;
+    evidenceIds: readonly string[];
     sourceTypes: readonly string[];
   }>;
   consent: MemoryUsePermissions;
@@ -244,6 +245,7 @@ export class InMemoryConversationMemoryRepository implements ConversationMemoryR
       this.#confirmed.set(command.proposalId, {
         ...confirmation,
         assertionId: activeAssertionId,
+        evidenceId: `evidence_${command.requestId}`,
       });
       nextState = {
         ...state,
@@ -320,6 +322,7 @@ export class InMemoryConversationMemoryRepository implements ConversationMemoryR
           : 'Single user self-report; not independently corroborated.',
         provenance: {
           evidenceCount: state.deleted ? 0 : 1,
+          evidenceIds: state.deleted ? [] : [confirmation.evidenceId],
           sourceTypes: state.deleted
             ? []
             : [state.revisionCount > 1 ? 'user_correction' : 'conversation_turn'],
@@ -401,6 +404,7 @@ type PersonalMemoryRow = Readonly<{
   confidence: string | number;
   confidence_rationale: string;
   evidence_count: string | number;
+  evidence_ids: unknown;
   source_types: unknown;
   personal_understanding: boolean;
   brand_usage: boolean;
@@ -842,6 +846,7 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
                 active.epistemic_type, active.data_class, active.confidence,
                 active.confidence_rationale,
                 COALESCE(provenance.evidence_count, 0) AS evidence_count,
+                COALESCE(provenance.evidence_ids, '[]'::jsonb) AS evidence_ids,
                 COALESCE(provenance.source_types, '[]'::jsonb) AS source_types,
                 COALESCE(consent.personal_understanding, false) AS personal_understanding,
                 COALESCE(consent.brand_usage, false) AS brand_usage,
@@ -863,6 +868,8 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
             AND active.id = proposal.active_assertion_id
            LEFT JOIN LATERAL (
              SELECT count(DISTINCT link.evidence_id)::integer AS evidence_count,
+                    jsonb_agg(DISTINCT link.evidence_id::text)
+                      FILTER (WHERE evidence.deleted_at IS NULL) AS evidence_ids,
                     jsonb_agg(DISTINCT evidence.source_type)
                       FILTER (WHERE evidence.source_type IS NOT NULL) AS source_types
                FROM app.assertion_evidence link
@@ -1265,6 +1272,7 @@ function toPersonalMemoryRecord(row: PersonalMemoryRow): PersonalMemoryRecord {
     confidenceRationale: row.confidence_rationale,
     provenance: {
       evidenceCount,
+      evidenceIds: deletedAt ? [] : stringArray(row.evidence_ids, 'Evidence IDs'),
       sourceTypes: stringArray(row.source_types, 'Evidence source types'),
     },
     consent: {

@@ -21,6 +21,8 @@ let strategy = {
   },
 };
 const strategyRequests = new Map();
+let currentDraft = null;
+const draftRequests = new Map();
 const memoryProposals = new Map();
 const memoryRightRequests = new Map();
 
@@ -91,6 +93,128 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/api/strategy') {
       return json(strategy);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/drafts/current') {
+      return json(currentDraft ? draftSnapshot() : null);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/drafts') {
+      const body = await readJson(request);
+      if (!validDraftCreate(body)) return json({ error: 'invalid_draft_input' }, 400);
+      const repeated = repeatedDraftRequest(body.requestId, 'create', body);
+      if (repeated?.error) return json({ error: repeated.error }, 409);
+      if (repeated?.snapshot) {
+        if (approval?.actionId !== 'essay' || approval.strategyRevision !== strategy.revision) {
+          return json({ error: 'content_action_not_approved' }, 409);
+        }
+        if (repeated.snapshot.strategyRevision !== strategy.revision) {
+          return json({ error: 'strategy_changed' }, 409);
+        }
+        if (!usableDraftSource(memoryProposals.get(repeated.snapshot.source.proposalId))) {
+          return json({ error: 'source_not_available' }, 409);
+        }
+        return json({ outcome: 'already_applied', ...repeated.snapshot });
+      }
+      if (approval?.actionId !== 'essay' || approval.strategyRevision !== strategy.revision) {
+        return json({ error: 'content_action_not_approved' }, 409);
+      }
+      const source = memoryProposals.get(body.sourceProposalId);
+      if (!usableDraftSource(source)) return json({ error: 'source_not_available' }, 409);
+      const draftId = crypto.randomUUID();
+      const claimId = crypto.randomUUID();
+      const draftBody = composePlatformDraft(body.channel, body.narrativeAngle.trim(), source.text, body.takeaway.trim());
+      const guard = reviewDraftBody(draftBody, body.channel, source.text, claimId);
+      currentDraft = {
+        draftId,
+        claimId,
+        revision: 1,
+        strategyRevision: strategy.revision,
+        channel: body.channel,
+        body: draftBody,
+        status: guard.mayRequestApproval ? 'awaiting_approval' : 'guard_failed',
+        guard,
+        source: {
+          proposalId: source.id,
+          assertionId: source.activeAssertionId,
+          statement: source.text,
+          evidenceIds: [source.activeEvidenceId ?? `evidence_${source.id.slice('memory_'.length)}`],
+        },
+        publicDraftingConsent: true,
+        updatedAt: new Date().toISOString(),
+      };
+      source.permissions = { ...source.permissions, publicUsage: true };
+      rememberDraftRequest(body.requestId, 'create', body, currentDraft);
+      return json({ outcome: 'applied', ...draftSnapshot() });
+    }
+
+    const draftEdit = url.pathname.match(/^\/api\/drafts\/([0-9a-f-]{36})$/i);
+    if (request.method === 'PUT' && draftEdit?.[1]) {
+      const body = await readJson(request);
+      if (!validDraftMutation(body) || typeof body.body !== 'string' || body.body.trim().length < 20) {
+        return json({ error: 'invalid_draft_input' }, 400);
+      }
+      const repeated = repeatedDraftRequest(body.requestId, 'edit', { ...body, draftId: draftEdit[1] });
+      if (repeated?.error) return json({ error: repeated.error }, 409);
+      if (repeated?.snapshot) return json({ outcome: 'already_applied', ...repeated.snapshot });
+      const gate = draftMutationGate(draftEdit[1], body.expectedRevision);
+      if (gate) return json({ error: gate }, gate === 'draft_not_found' ? 404 : 409);
+      const guard = reviewDraftBody(body.body.trim(), currentDraft.channel, currentDraft.source.statement, currentDraft.claimId);
+      currentDraft = {
+        ...currentDraft,
+        revision: currentDraft.revision + 1,
+        body: body.body.trim(),
+        status: guard.mayRequestApproval ? 'awaiting_approval' : 'guard_failed',
+        guard,
+        approvedAt: undefined,
+        exportedAt: undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      rememberDraftRequest(body.requestId, 'edit', { ...body, draftId: draftEdit[1] }, currentDraft);
+      return json({ outcome: 'applied', ...draftSnapshot() });
+    }
+
+    const draftTransition = url.pathname.match(/^\/api\/drafts\/([0-9a-f-]{36})\/(approve|export)$/i);
+    if (request.method === 'POST' && draftTransition?.[1] && draftTransition[2]) {
+      const body = await readJson(request);
+      if (!validDraftMutation(body)) return json({ error: 'invalid_draft_input' }, 400);
+      const operation = draftTransition[2];
+      const requestValue = { ...body, draftId: draftTransition[1] };
+      const repeated = repeatedDraftRequest(body.requestId, operation, requestValue);
+      if (repeated?.error) return json({ error: repeated.error }, 409);
+      if (repeated?.snapshot) {
+        if (currentDraft?.strategyRevision !== strategy.revision) return json({ error: 'strategy_changed' }, 409);
+        if (!usableDraftSource(memoryProposals.get(currentDraft.source.proposalId))) {
+          return json({ error: 'source_not_available' }, 409);
+        }
+        return operation === 'export'
+          ? json(exportPayload('already_applied', repeated.snapshot))
+          : json({ outcome: 'already_applied', ...repeated.snapshot });
+      }
+      const gate = draftMutationGate(draftTransition[1], body.expectedRevision);
+      if (gate) return json({ error: gate }, gate === 'draft_not_found' ? 404 : 409);
+      if (operation === 'approve') {
+        if (!currentDraft.guard.mayRequestApproval) return json({ error: 'guard_failed' }, 409);
+        currentDraft = {
+          ...currentDraft,
+          revision: currentDraft.revision + 1,
+          status: 'approved',
+          approvedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        rememberDraftRequest(body.requestId, operation, requestValue, currentDraft);
+        return json({ outcome: 'applied', ...draftSnapshot() });
+      }
+      if (currentDraft.status !== 'approved') return json({ error: 'draft_not_approved' }, 409);
+      currentDraft = {
+        ...currentDraft,
+        revision: currentDraft.revision + 1,
+        status: 'exported',
+        exportedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      rememberDraftRequest(body.requestId, operation, requestValue, currentDraft);
+      return json(exportPayload('applied', draftSnapshot()));
     }
 
     if (request.method === 'PUT' && url.pathname === '/api/strategy') {
@@ -277,6 +401,7 @@ export default {
       if (body.operation === 'correct') {
         proposal.text = body.correctedText.trim();
         proposal.activeAssertionId = `assertion_${body.requestId}`;
+        proposal.activeEvidenceId = `evidence_${body.requestId}`;
         proposal.contestedReason = undefined;
         proposal.contestedAt = undefined;
         proposal.revisionCount = (proposal.revisionCount ?? 1) + 1;
@@ -370,6 +495,97 @@ function validStrategyRequest(body) {
   );
 }
 
+const draftChannels = ['linkedin', 'instagram', 'x', 'youtube', 'podcast', 'newsletter', 'blog'];
+
+function validDraftCreate(body) {
+  return (
+    typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) &&
+    typeof body.sourceProposalId === 'string' && draftChannels.includes(body.channel) &&
+    validText(body.narrativeAngle, 3, 500) && validText(body.takeaway, 3, 2000) &&
+    body.publicDraftingConsent === true
+  );
+}
+
+function validDraftMutation(body) {
+  return typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) &&
+    Number.isSafeInteger(body.expectedRevision) && body.expectedRevision >= 1;
+}
+
+function usableDraftSource(source) {
+  return Boolean(source?.confirmedAt && !source.deleted && !source.contestedAt &&
+    !source.permissionsRevoked && typeof source.text === 'string');
+}
+
+function draftSnapshot() {
+  const source = memoryProposals.get(currentDraft.source.proposalId);
+  return {
+    ...currentDraft,
+    persistence: 'ephemeral',
+    sourceAvailable: usableDraftSource(source),
+    staleStrategy: currentDraft.strategyRevision !== strategy.revision,
+  };
+}
+
+function draftMutationGate(draftId, revision) {
+  if (!currentDraft || currentDraft.draftId !== draftId) return 'draft_not_found';
+  if (currentDraft.revision !== revision) return 'revision_changed';
+  if (currentDraft.strategyRevision !== strategy.revision) return 'strategy_changed';
+  if (!usableDraftSource(memoryProposals.get(currentDraft.source.proposalId))) return 'source_not_available';
+  return null;
+}
+
+function repeatedDraftRequest(requestId, operation, value) {
+  const existing = draftRequests.get(requestId);
+  if (!existing) return null;
+  const fingerprint = JSON.stringify({ operation, value });
+  return existing.fingerprint === fingerprint
+    ? { snapshot: existing.snapshot }
+    : { error: 'idempotency_mismatch' };
+}
+
+function rememberDraftRequest(requestId, operation, value, snapshot) {
+  draftRequests.set(requestId, {
+    fingerprint: JSON.stringify({ operation, value }),
+    snapshot: { ...snapshot, persistence: 'ephemeral', sourceAvailable: true, staleStrategy: false },
+  });
+}
+
+function composePlatformDraft(channel, angle, statement, takeaway) {
+  if (channel === 'x') return `${angle}\n\n${statement}\n\nبرداشت من: ${takeaway}`;
+  if (channel === 'youtube') return `Hook\n${angle}\n\nروایت واقعی\n${statement}\n\nجمع‌بندی و دعوت به گفت‌وگو\n${takeaway}`;
+  if (channel === 'podcast') return `آغاز اپیزود\n${angle}\n\nروایت و زمینه\n${statement}\n\nبرداشت شخصی\n${takeaway}`;
+  if (channel === 'newsletter' || channel === 'blog') return `# ${angle}\n\n## روایت\n${statement}\n\n## برداشت من\n${takeaway}`;
+  if (channel === 'instagram') return `${angle}\n\n${statement}\n\nبرداشت من:\n${takeaway}\n\n#روایت_واقعی`;
+  return `${angle}\n\n${statement}\n\nبرداشت من:\n${takeaway}\n\nنظر شما چیست؟`;
+}
+
+function reviewDraftBody(body, channel, statement, claimId) {
+  const remaining = body.split(statement).join('');
+  const violations = [];
+  if (!body.includes(statement)) {
+    violations.push({ code: 'missing_evidence_bound_claim', severity: 'red', claimId: 'draft', message: 'Evidence-bound claim is missing.' });
+  }
+  if (/[0-9۰-۹]|در\s+سال|درآمد|فروش|تعداد|درصد|جایزه|مدرک|دانشگاه|شرکت|بنیان.?گذار|according\s+to|research\s+shows/iu.test(remaining)) {
+    violations.push({ code: 'claim_extraction_incomplete', severity: 'red', claimId: 'draft', message: 'Potential unbound fact detected.' });
+  }
+  const limits = { linkedin: 3000, instagram: 2200, x: 280, youtube: 10000, podcast: 10000, newsletter: 15000, blog: 20000 };
+  if (body.length > limits[channel]) {
+    violations.push({ code: 'channel_format_violation', severity: 'red', claimId, message: 'Channel length exceeded.' });
+  }
+  const classification = violations.length ? 'red' : 'green';
+  return { classification, mayRequestApproval: classification !== 'red', violations };
+}
+
+function exportPayload(outcome, snapshot) {
+  return {
+    outcome,
+    filename: `pr-${snapshot.channel}-draft-v${snapshot.revision}.txt`,
+    mimeType: 'text/plain;charset=utf-8',
+    content: snapshot.body,
+    draft: snapshot,
+  };
+}
+
 function validText(value, min, max) {
   return typeof value === 'string' && value.trim().length >= min && value.trim().length <= max;
 }
@@ -399,6 +615,9 @@ function memoryRecord(proposal) {
       : 'Single user self-report; not independently corroborated.',
     provenance: {
       evidenceCount: proposal.deleted ? 0 : 1,
+      evidenceIds: proposal.deleted
+        ? []
+        : [proposal.activeEvidenceId ?? `evidence_${proposal.id.slice('memory_'.length)}`],
       sourceTypes: proposal.deleted
         ? []
         : [proposal.revisionCount > 1 ? 'user_correction' : 'conversation_turn'],
