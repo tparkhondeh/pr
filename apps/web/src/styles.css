@@ -440,6 +440,47 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
 .spin { animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+.risk-center { display: grid; gap: 16px; }
+.risk-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--line); }
+.risk-summary > div { display: grid; gap: 5px; padding: 16px; background: var(--paper); }
+.risk-summary span { color: var(--muted); font-size: 10px; }
+.risk-summary strong { font: 600 22px Consolas, monospace; }
+.risk-summary .green strong { color: #217a4d; }
+.risk-summary .yellow strong { color: #9b6b00; }
+.risk-summary .red strong { color: #b33b36; }
+.risk-claim-posture { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: center; padding: 15px 18px; border: 1px solid #b7d8c5; border-radius: 5px; background: #eef8f2; color: #315f48; }
+.risk-claim-posture small { grid-column: 2; color: #668174; line-height: 1.6; }
+.risk-assessments { display: grid; gap: 13px; }
+.risk-assessment { overflow: hidden; border: 1px solid var(--line); border-inline-start-width: 4px; border-radius: 5px; background: var(--paper); }
+.risk-assessment.risk-green { border-inline-start-color: #3d9c68; }
+.risk-assessment.risk-yellow { border-inline-start-color: #d3a225; }
+.risk-assessment.risk-red { border-inline-start-color: #c44d47; }
+.risk-assessment > header { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 17px 19px 8px; }
+.risk-assessment > header span { display: grid; gap: 4px; }
+.risk-assessment > header small { color: var(--muted); }
+.risk-assessment > header > strong { font: 700 12px Consolas, monospace; letter-spacing: .08em; }
+.risk-assessment > p { margin: 0; padding: 0 19px 14px; color: var(--muted); line-height: 1.8; }
+.risk-findings { display: grid; gap: 7px; padding: 0 19px 14px; }
+.risk-finding { display: grid; gap: 4px; padding: 11px 13px; border-radius: 4px; background: #f5f6f4; }
+.risk-finding b { font-size: 11px; }
+.risk-finding span { color: #46564e; font-size: 11px; line-height: 1.7; }
+.risk-finding small { color: #738178; line-height: 1.6; }
+.risk-finding.yellow { background: #fff8e6; }
+.risk-finding.red { background: #fff0ee; }
+.risk-finding.green { display: flex; align-items: center; color: #2f7650; background: #edf8f1; }
+.risk-all-checks { margin: 0 19px 15px; color: var(--muted); font-size: 10px; }
+.risk-all-checks summary { cursor: pointer; }
+.risk-all-checks div { display: flex; flex-wrap: wrap; gap: 5px; padding-top: 9px; }
+.risk-all-checks span { padding: 4px 7px; border-radius: 3px; background: #eef0ed; }
+.risk-all-checks span.yellow { background: #fff1c8; }
+.risk-all-checks span.red { background: #ffe0dc; }
+.risk-review-form { display: grid; grid-template-columns: minmax(170px, .5fr) 1fr; gap: 11px; padding: 15px 19px 19px; border-top: 1px solid var(--line); background: #f7f8f6; }
+.risk-review-form label { display: grid; gap: 6px; color: var(--muted); font-size: 10px; }
+.risk-review-form select, .risk-review-form textarea { width: 100%; padding: 9px; color: var(--ink); border: 1px solid var(--line); border-radius: 3px; background: white; font: inherit; resize: vertical; }
+.risk-review-form .claim-attestation { grid-column: 1 / -1; display: flex; flex-direction: row; align-items: flex-start; }
+.risk-review-form button { justify-self: start; display: inline-flex; gap: 7px; align-items: center; padding: 9px 14px; color: white; border: 0; border-radius: 3px; background: var(--forest); cursor: pointer; }
+.risk-crisis-note { display: flex; gap: 8px; align-items: flex-start; margin: 0; padding: 13px 16px; color: #80552f; border: 1px solid #e6c8a8; border-radius: 4px; background: #fff7ed; line-height: 1.7; }
+
 @media (max-width: 980px) {
   .shell { grid-template-columns: 78px minmax(0, 1fr); }
   .rail { padding-inline: 12px; }
@@ -455,6 +496,8 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
   .research-list { grid-template-columns: 1fr; }
   .claim-review-form { grid-template-columns: 1fr; }
   .claim-attestation { grid-column: auto; }
+  .risk-review-form { grid-template-columns: 1fr; }
+  .risk-review-form .claim-attestation { grid-column: auto; }
   .audit-layout { grid-template-columns: 1fr; }
 }
 
@@ -494,6 +537,7 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
   .research-form-head, .research-wide, .research-form > button { grid-column: auto; }
   .claim-summary { grid-template-columns: 1fr 1fr; }
   .claim-proof-grid { grid-template-columns: 1fr 1fr; }
+  .risk-summary { grid-template-columns: 1fr 1fr; }
   .data-rights-actions { align-items: stretch; flex-direction: column; }
   .audit-summary { grid-template-columns: 1fr 1fr; }
   .audit-timeline li > div { grid-template-columns: 1fr; }

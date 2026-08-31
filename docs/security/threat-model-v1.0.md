@@ -53,6 +53,7 @@ Trust Boundaryها:
 | T-12 | rollback به release دارای public bind | P0 | backup + post-deploy listener/public-port smoke | Runbook باید در هر rollback همین smoke را الزام کند |
 | T-13 | پرشدن دیسک و شکست backup/deploy | P1 | بررسی disk و backup قبل از deploy | دیسک فعلی سرور ۹۹٪؛ owner زیرساخت باید cleanup/ظرفیت را مدیریت کند |
 | T-14 | تبدیل Citation به Verified یا ادامه انتشار Claim مورد اعتراض | P0 | Human attestation، append-only review، expected status، Draft propagation و repository re-check | Multi-review/quorum برای Scope پرریسک آینده لازم است |
+| T-15 | Override شدن ریسک اعتباری/حریم خصوصی توسط Utility یا Acknowledgement کهنه | P0 | ۱۵ Risk Check نسخه‌دار، SHA-256 Assessment، Yellow attestation، Red veto، append-only review و approval re-check | مانیتورینگ بحران و Legal escalation واقعی تا Connector و incident drill خارج Scope است |
 
 ## P0 Gate
 

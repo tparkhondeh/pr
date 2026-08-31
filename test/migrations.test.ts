@@ -74,11 +74,25 @@ const claimReviewMigrationPath = fileURLToPath(
   new URL('../db/migrations/0017_claim_review_lifecycle.sql', import.meta.url),
 );
 const claimReviewSql = readFileSync(claimReviewMigrationPath, 'utf8');
+const brandRiskReviewMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0018_brand_risk_reviews.sql', import.meta.url),
+);
+const brandRiskReviewSql = readFileSync(brandRiskReviewMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
     const migration = defineMigration('0001_foundation', sql);
     expect(migration.sha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('adds append-only, tenant-isolated human risk reviews without red override', () => {
+    defineMigration('0018_brand_risk_reviews', brandRiskReviewSql);
+    expect(brandRiskReviewSql).toContain('CREATE TABLE app.risk_reviews');
+    expect(brandRiskReviewSql).toContain('ALTER TABLE app.risk_reviews FORCE ROW LEVEL SECURITY');
+    expect(brandRiskReviewSql).toContain('CREATE POLICY risk_reviews_tenant_isolation');
+    expect(brandRiskReviewSql).toContain("policy_version = 'brand-protection-v1'");
+    expect(brandRiskReviewSql).toContain("expected_level = 'yellow' OR decision <> 'acknowledge'");
+    expect(brandRiskReviewSql).toContain('UNIQUE (tenant_id, owner_user_id, client_ref)');
   });
 
   it('defines the required tenant-owned tables', () => {

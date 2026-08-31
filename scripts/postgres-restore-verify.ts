@@ -15,7 +15,7 @@ try {
   const assets = await client.query<Readonly<{ count: string }>>(
     'SELECT count(*)::text AS count FROM app.assets',
   );
-  if (migrations.rows[0]?.count !== '17') throw new Error('Restored migration journal is incomplete.');
+  if (migrations.rows[0]?.count !== '18') throw new Error('Restored migration journal is incomplete.');
   if (tenants.rows[0]?.count !== '2') throw new Error('Restored tenant fixtures are incomplete.');
   if (assets.rows[0]?.count !== '2') throw new Error('Restored asset fixtures are incomplete.');
   process.stdout.write('PostgreSQL restore verification passed (RPO 0 for the drill snapshot).\n');

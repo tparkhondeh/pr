@@ -25,6 +25,10 @@ import {
   ResearchWorkspaceService,
 } from '../src/research/workspace.js';
 import {
+  BrandProtectionService,
+  InMemoryRiskReviewRepository,
+} from '../src/risk/brand-protection.js';
+import {
   InMemoryStrategyContextRepository,
   StrategyContextService,
   defaultStrategyContext,
@@ -152,6 +156,69 @@ describe('operational endpoints', () => {
         approvedActionId: 'conversation',
         approvedAt: fixedTime.toISOString(),
       },
+    });
+  });
+
+  it('requires a current owner risk acknowledgement before a yellow action approval', async () => {
+    const fixedTime = new Date('2026-08-31T12:06:00.000Z');
+    const owner = userId('owner_primary');
+    const workbench = createDefaultWorkbenchService(
+      () => fixedTime,
+      undefined,
+      { tenantId: 'tenant_primary', ownerUserId: 'owner_primary' },
+      undefined,
+      groundedEvidence(fixedTime),
+    );
+    const risk = new BrandProtectionService(new InMemoryRiskReviewRepository(), {
+      tenantId: tenantId('tenant_primary'),
+      ownerUserId: owner,
+    });
+    const dependencies: ApplicationDependencies = {
+      workbench,
+      risk,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+
+    const blocked = await request('/api/workbench/approval', () => ({ ready: true }), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actionId: 'conversation' }),
+    }, dependencies);
+    expect(blocked.status).toBe(409);
+    await expect(blocked.json()).resolves.toEqual({ error: 'risk_review_required' });
+
+    const riskResponse = await request('/api/risk', () => ({ ready: true }), undefined, dependencies);
+    const riskSnapshot = await riskResponse.json() as {
+      policyVersion: string;
+      assessments: Array<{ actionId: string; level: 'yellow'; assessmentHash: string }>;
+    };
+    const conversationRisk = riskSnapshot.assessments.find((item) => item.actionId === 'conversation');
+    if (!conversationRisk) throw new Error('Expected conversation risk assessment.');
+    expect(riskSnapshot.policyVersion).toBe('brand-protection-v1');
+
+    const review = await request('/api/risk/actions/conversation/reviews', () => ({ ready: true }), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        requestId: 'risk_http_conversation',
+        expectedLevel: conversationRisk.level,
+        expectedAssessmentHash: conversationRisk.assessmentHash,
+        decision: 'acknowledge',
+        rationale: 'حریم شخص ثالث و زمان‌بندی گفت‌وگو را مرور کردم و اطلاعات اضافی را وارد نمی‌کنم.',
+        humanAttestation: true,
+      }),
+    }, dependencies);
+    expect(review.status).toBe(201);
+
+    const approved = await request('/api/workbench/approval', () => ({ ready: true }), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actionId: 'conversation' }),
+    }, dependencies);
+    expect(approved.status).toBe(200);
+    await expect(approved.json()).resolves.toMatchObject({
+      workflow: { status: 'approved', approvedActionId: 'conversation' },
     });
   });
 

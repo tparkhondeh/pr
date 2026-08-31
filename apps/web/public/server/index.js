@@ -38,6 +38,8 @@ const researchSources = new Map();
 const researchRequests = new Map();
 const claimReviews = new Map();
 const claimReviewRequests = new Map();
+const riskReviews = new Map();
+const riskReviewRequests = new Map();
 
 const groundedActions = [
   {
@@ -209,6 +211,47 @@ export default {
       return json({ outcome: 'applied', persistence: 'ephemeral', review }, 201);
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/risk') {
+      return json(await riskSnapshot());
+    }
+
+    const riskReview = url.pathname.match(/^\/api\/risk\/actions\/([^/]+)\/reviews$/);
+    if (request.method === 'POST' && riskReview?.[1]) {
+      const body = await readJson(request);
+      if (!validRiskReview(body)) return json({ error: 'invalid_risk_review' }, 400);
+      const actionId = decodeURIComponent(riskReview[1]);
+      const action = snapshot().actions.find((candidate) => candidate.id === actionId);
+      if (!action) return json({ error: 'risk_action_not_found' }, 404);
+      const assessment = await assessRiskAction(action);
+      if (assessment.level !== body.expectedLevel || assessment.assessmentHash !== body.expectedAssessmentHash) {
+        return json({ error: 'assessment_changed' }, 409);
+      }
+      if (!assessment.reviewableDecisions.includes(body.decision)) {
+        return json({ error: 'invalid_decision' }, 409);
+      }
+      const fingerprint = JSON.stringify({ ...body, actionId });
+      const repeated = riskReviewRequests.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json({ outcome: 'already_applied', persistence: 'ephemeral', review: repeated.review })
+          : json({ error: 'idempotency_mismatch' }, 409);
+      }
+      const review = {
+        reviewId: crypto.randomUUID(), requestId: body.requestId, actionId,
+        assessmentHash: assessment.assessmentHash, expectedLevel: assessment.level,
+        decision: body.decision, rationale: body.rationale.trim(), reviewedAt: new Date().toISOString(),
+      };
+      riskReviews.set(actionId, review);
+      riskReviewRequests.set(body.requestId, { fingerprint, review });
+      recordAudit(`risk.review:${body.requestId}`, {
+        eventType: 'risk.reviewed', resourceType: 'action', resourceId: actionId,
+        purpose: 'strategy_reasoning', decision: body.decision,
+        metadata: { assessmentHash: assessment.assessmentHash, expectedLevel: assessment.level, policyVersion: 'brand-protection-v1' },
+        occurredAt: review.reviewedAt,
+      });
+      return json({ outcome: 'applied', persistence: 'ephemeral', review }, 201);
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/account/activity') {
       return json(auditSnapshot());
     }
@@ -242,6 +285,7 @@ export default {
           draft: currentDraft ? draftSnapshot() : null,
           research: researchSnapshot(),
           claims: claimGovernanceSnapshot(),
+          risk: await riskSnapshot(),
           feedback: feedbackSnapshot(),
           activity,
         },
@@ -638,6 +682,14 @@ export default {
       if (context.strategy.evidenceIds.length === 0 && action.id !== 'wait') {
         return json({ error: 'insufficient_evidence' }, 409);
       }
+      const risk = await assessRiskAction(action);
+      const riskReview = riskReviews.get(action.id);
+      if (risk.level === 'red' || (riskReview && riskReview.assessmentHash === risk.assessmentHash && riskReview.decision !== 'acknowledge')) {
+        return json({ error: 'risk_blocked' }, 409);
+      }
+      if (risk.level === 'yellow' && (!riskReview || riskReview.assessmentHash !== risk.assessmentHash || riskReview.decision !== 'acknowledge')) {
+        return json({ error: 'risk_review_required' }, 409);
+      }
       if (approval && approval.actionId !== action.id) {
         return json({ error: 'different_action_approved' }, 409);
       }
@@ -1023,6 +1075,125 @@ function contextualRationale(action, evidenceCount) {
     return `${String(evidenceCount)} شاهد مجاز در دسترس است؛ این اقدام باید ادراک «${strategy.desiredPositioning.desiredPerception}» را فقط با ادعاهای قابل‌ردیابی پشتیبانی کند.`;
   }
   return `با وجود ${String(evidenceCount)} شاهد مجاز، عدم اقدام نیز نسبت به هدف «${strategy.goal.title}» یک گزینه آگاهانه است؛ کیفیت برند نباید قربانی پرکردن تقویم شود.`;
+}
+
+const riskDimensions = [
+  'consent', 'privacy', 'data_access', 'sensitive_data', 'third_party_privacy',
+  'reputation_risk', 'misinterpretation', 'manipulation', 'defamation',
+  'conflict_of_interest', 'disclosure', 'authenticity', 'security',
+  'public_exposure', 'long_term_consequences',
+];
+
+async function riskSnapshot() {
+  const assessments = await Promise.all(snapshot().actions.map(async (action) => {
+    const assessment = await assessRiskAction(action);
+    return applyRiskReview(assessment, riskReviews.get(action.id));
+  }));
+  const claims = claimGovernanceSnapshot();
+  return {
+    generatedAt: new Date().toISOString(), persistence: 'ephemeral', policyVersion: 'brand-protection-v1',
+    summary: {
+      totalActions: assessments.length,
+      green: assessments.filter((item) => item.level === 'green').length,
+      yellow: assessments.filter((item) => item.level === 'yellow').length,
+      red: assessments.filter((item) => item.level === 'red').length,
+      reviewRequired: assessments.filter((item) => item.gate === 'review_required').length,
+      blocked: assessments.filter((item) => item.gate === 'blocked').length,
+    },
+    claimPosture: {
+      totalClaims: claims.summary.totalClaims, verified: claims.summary.verified,
+      traceBlocked: claims.summary.traceBlocked, publicReady: claims.summary.publicReady,
+      note: 'Claim Governance یک Gate مستقل است؛ Risk acknowledgement هرگز Claim را Verify نمی‌کند.',
+    },
+    assessments,
+  };
+}
+
+async function assessRiskAction(action) {
+  const findings = new Map(riskDimensions.map((dimension) => [dimension, {
+    dimension, level: 'green', code: 'no_material_signal',
+    rationale: 'در داده فعلی نشانه مادی برای این بُعد دیده نشد؛ این نتیجه جایگزین بررسی انسانی نیست.',
+    mitigation: 'در صورت تغییر Context، ارزیابی را دوباره اجرا کنید.',
+  }]));
+  const rank = { green: 0, yellow: 1, red: 2 };
+  const set = (dimension, level, code, rationale, mitigation) => {
+    const current = findings.get(dimension);
+    if (!current || rank[level] >= rank[current.level]) findings.set(dimension, { dimension, level, code, rationale, mitigation });
+  };
+  const text = [action.title, action.rationale, ...(action.risks ?? []), ...(action.prerequisites ?? [])].join(' ');
+  const publicAction = ['content', 'media', 'event'].includes(action.kind);
+  if (publicAction) {
+    set('public_exposure', 'yellow', 'public_action', 'این اقدام برای مخاطب بیرونی قابل مشاهده و بازتفسیر است.', 'دامنه انتشار و مخاطب را محدود و خروجی نهایی را دوباره بازبینی کنید.');
+    set('disclosure', 'yellow', 'disclosure_check', 'منافع، همکاری تجاری یا نقش اشخاص باید پیش از انتشار آشکار شوند.', 'Disclosure لازم را صریح و نزدیک به ادعای مربوط درج کنید.');
+    set('long_term_consequences', 'yellow', 'durable_public_record', 'اثر عمومی می‌تواند خارج از زمینه اولیه باقی بماند.', 'سناریوی بازنشر و برداشت پنج‌ساله را پیش از تأیید مرور کنید.');
+  }
+  if (['private_conversation', 'relationship'].includes(action.kind)) {
+    set('third_party_privacy', 'yellow', 'third_party_context', 'تعامل با فرد دیگر شامل حریم و زمینه انسانی اوست.', 'فقط اطلاعات لازم را استفاده کنید و از افشای گفت‌وگو بدون رضایت بپرهیزید.');
+  }
+  if (action.kind === 'research') {
+    set('data_access', 'yellow', 'external_source_boundary', 'Research ممکن است داده بیرونی یا متعلق به شخص ثالث را وارد کند.', 'منبع، مجوز استفاده و داده حساس را قبل از Import بررسی کنید.');
+  }
+  if (publicAction && action.evidenceState !== 'grounded') {
+    set('consent', 'red', 'missing_evidence_consent', 'اقدام عمومی بدون Evidence مجاز و رضایت قابل‌ردیابی پیشنهاد شده است.', 'ابتدا Evidence را با Purpose و Consent روشن ثبت کنید.');
+    set('authenticity', 'red', 'ungrounded_public_action', 'بدون Evidence، اصالت و نسبت‌دادن تجربه قابل اثبات نیست.', 'اقدام را متوقف و منبع واقعی را متصل کنید.');
+  }
+  if (action.riskLevel === 'high') {
+    set('reputation_risk', 'red', 'high_reputation_risk', 'Risk پایه اقدام در سطح High است و Utility اجازه Override آن را ندارد.', 'اقدام را Hold و برای بررسی انسانی/حقوقی Escalate کنید.');
+  } else if (action.riskLevel === 'medium') {
+    set('reputation_risk', 'yellow', 'material_reputation_risk', 'ریسک اعتباری اقدام مادی است و نیاز به پذیرش آگاهانه دارد.', 'Rationale و پیامد احتمالی را پیش از تأیید ثبت کنید.');
+  }
+  if (/برداشت|ابهام|misinterpret|out of context/i.test(text)) set('misinterpretation', 'yellow', 'misinterpretation_signal', 'شرح اقدام احتمال برداشت نادرست را نشان می‌دهد.', 'زمینه، محدودیت و منظور اصلی را در خروجی روشن کنید.');
+  if (/داده حساس|محرمانه|private|confidential|شماره تماس|آدرس/i.test(text)) set('sensitive_data', 'red', 'sensitive_data_signal', 'اقدام احتمال استفاده از داده حساس یا محرمانه دارد.', 'داده را حذف/ناشناس‌سازی و مجوز دسترسی را جداگانه اثبات کنید.');
+  if (/تهمت|افترا|اتهام|defam|allegation|accus/i.test(text)) set('defamation', 'red', 'defamation_signal', 'محتوا می‌تواند به‌عنوان اتهام یا افترا علیه شخص ثالث فهمیده شود.', 'انتشار را متوقف و بررسی حقوقی و شواهد مستقل انجام دهید.');
+  if (/دستکاری|فریب|manipulat|deceiv/i.test(text)) set('manipulation', 'red', 'manipulation_signal', 'روش اقدام می‌تواند متکی بر فریب یا دستکاری مخاطب باشد.', 'هدف و روش را به تعامل شفاف و غیرتحمیلی بازطراحی کنید.');
+  if (/تعارض منافع|اسپانسر|هدیه|conflict of interest|sponsor/i.test(text)) set('conflict_of_interest', 'yellow', 'conflict_signal', 'احتمال تعارض منافع یا رابطه مادی وجود دارد.', 'رابطه و منفعت مرتبط را پیش از اقدام Disclosure کنید.');
+  if (/رمز|گذرواژه|توکن|secret|password|api.?key/i.test(text)) set('security', 'red', 'secret_exposure_signal', 'شرح اقدام نشانه‌ای از Secret یا credential دارد.', 'Secret را حذف و در صورت افشا فوراً Rotate کنید.');
+  if (/اغراق|exaggerat/i.test(text)) set('authenticity', 'yellow', 'exaggeration_signal', 'شرح اقدام احتمال اغراق یا برداشت بزرگ‌نمایانه را نشان می‌دهد.', 'ادعا را با Trace، محدودیت و زبان دقیق بازنویسی کنید.');
+  if (/ساختگی|جعلی|fake|fabricat/i.test(text)) set('authenticity', 'red', 'fabrication_signal', 'شرح اقدام احتمال جعل هویتی یا تجربه ساختگی را نشان می‌دهد.', 'ادعا را حذف یا فقط با Trace و تأیید انسانی بازنویسی کنید.');
+  const ordered = riskDimensions.map((dimension) => findings.get(dimension));
+  const level = ordered.reduce((highest, finding) => rank[finding.level] > rank[highest] ? finding.level : highest, 'green');
+  const assessmentHash = await sha256Hex(JSON.stringify({
+    policyVersion: 'brand-protection-v1',
+    action: {
+      id: action.id, kind: action.kind, title: action.title, rationale: action.rationale,
+      risks: action.risks, prerequisites: action.prerequisites, evidenceIds: action.evidenceIds,
+      evidenceState: action.evidenceState, riskLevel: action.riskLevel,
+    }, findings: ordered,
+  }));
+  const material = ordered.filter((finding) => finding.level !== 'green').map((finding) => finding.dimension).join('، ');
+  return {
+    actionId: action.id, actionTitle: action.title, actionKind: action.kind,
+    policyVersion: 'brand-protection-v1', assessmentHash, level,
+    gate: level === 'green' ? 'allowed' : level === 'yellow' ? 'review_required' : 'blocked',
+    rationale: level === 'green'
+      ? 'هیچ Signal مادی در قواعد فعلی پیدا نشد؛ اقدام در محدوده فعلی مجاز است.'
+      : level === 'red'
+        ? `حداقل یک مانع Red در ${material} وجود دارد؛ Strategy یا Engagement نمی‌تواند آن را Override کند.`
+        : `ریسک‌های مادی در ${material} وجود دارد و پذیرش آگاهانه مالک پیش از اقدام لازم است.`,
+    findings: ordered,
+    reviewableDecisions: level === 'yellow' ? ['acknowledge', 'hold', 'escalate'] : level === 'red' ? ['hold', 'escalate'] : [],
+  };
+}
+
+function applyRiskReview(assessment, review) {
+  if (!review || review.assessmentHash !== assessment.assessmentHash || review.expectedLevel !== assessment.level) return assessment;
+  return {
+    ...assessment,
+    gate: review.decision === 'acknowledge' && assessment.level === 'yellow' ? 'allowed_with_acknowledgement' : 'blocked',
+    lastReview: review,
+  };
+}
+
+function validRiskReview(body) {
+  return typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) &&
+    ['yellow', 'red'].includes(body.expectedLevel) && typeof body.expectedAssessmentHash === 'string' &&
+    /^[0-9a-f]{64}$/.test(body.expectedAssessmentHash) && ['acknowledge', 'hold', 'escalate'].includes(body.decision) &&
+    validText(body.rationale, 20, 2000) && body.humanAttestation === true;
+}
+
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function distinct(values) {

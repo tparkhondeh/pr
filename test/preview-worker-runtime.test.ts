@@ -130,6 +130,26 @@ describe('private preview worker draft runtime', () => {
     const approvedAsset = await approvedAssetResponse.json() as {
       record: { assetId: string; evidenceId: string };
     };
+    const blockedByRisk = await post('/api/workbench/approval', { actionId: 'essay' });
+    expect(blockedByRisk.status).toBe(409);
+    await expect(blockedByRisk.json()).resolves.toEqual({ error: 'risk_review_required' });
+    const riskResponse = await worker.fetch(new Request('https://preview.example/api/risk'), env);
+    const risk = await riskResponse.json() as {
+      policyVersion: string;
+      assessments: Array<{ actionId: string; level: 'yellow'; assessmentHash: string; findings: unknown[] }>;
+    };
+    const essayRisk = risk.assessments.find((assessment) => assessment.actionId === 'essay');
+    if (!essayRisk) throw new Error('Expected essay risk assessment.');
+    expect(risk.policyVersion).toBe('brand-protection-v1');
+    expect(essayRisk.findings).toHaveLength(15);
+    expect((await post('/api/risk/actions/essay/reviews', {
+      requestId: 'risk_runtime_essay',
+      expectedLevel: essayRisk.level,
+      expectedAssessmentHash: essayRisk.assessmentHash,
+      decision: 'acknowledge',
+      rationale: 'ریسک اعتبار، Disclosure و پیامد بلندمدت این اقدام عمومی را شخصاً مرور کردم.',
+      humanAttestation: true,
+    })).status).toBe(201);
     expect((await post('/api/workbench/approval', { actionId: 'essay' })).status).toBe(200);
 
     const approvedWorkbench = await worker.fetch(
@@ -339,6 +359,7 @@ describe('private preview worker draft runtime', () => {
         assets: { records: Array<{ sourceType: string }> };
         research: { summary: { conflicts: number }; sources: unknown[] };
         claims: { summary: { disputedOrRevoked: number }; claims: unknown[] };
+        risk: { policyVersion: string; assessments: unknown[] };
       };
     };
     expect(accountExportResponse.status).toBe(200);
@@ -349,6 +370,8 @@ describe('private preview worker draft runtime', () => {
     expect(accountExport.data.research.sources).toHaveLength(2);
     expect(accountExport.data.claims.summary.disputedOrRevoked).toBe(1);
     expect(accountExport.data.claims.claims.length).toBeGreaterThanOrEqual(3);
+    expect(accountExport.data.risk).toMatchObject({ policyVersion: 'brand-protection-v1' });
+    expect(accountExport.data.risk.assessments).toHaveLength(3);
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

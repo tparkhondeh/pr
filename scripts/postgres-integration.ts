@@ -8,6 +8,13 @@ import {
 import type { SqlQueryResult } from '../src/database/sql.js';
 import { PostgresRuntime } from '../src/database/postgres.js';
 import { defineMigration } from '../src/kernel/migrations.js';
+import { tenantId, userId } from '../src/kernel/identity.js';
+import {
+  BrandProtectionService,
+  PostgresRiskReviewRepository,
+  assessAction,
+} from '../src/risk/brand-protection.js';
+import type { WorkbenchAction } from '../src/workbench/workbench.js';
 
 const tenantA = '11111111-1111-4111-8111-111111111111';
 const tenantB = '22222222-2222-4222-8222-222222222222';
@@ -48,12 +55,49 @@ async function main(): Promise<void> {
     await seedIsolationFixtures(client);
     await verifyTenantPolicies(client);
     await verifyRuntimeIsolation(client);
+    await verifyBrandRiskPersistence();
     await verifyRuntimeReadiness(connectionString);
     process.stdout.write(
       `PostgreSQL integration passed (${String(migrations.length)} migrations, RLS enforced).\n`,
     );
   } finally {
     await client.end();
+  }
+}
+
+async function verifyBrandRiskPersistence(): Promise<void> {
+  const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
+  const owner = userId(userA);
+  const context = { tenantId: tenantId(tenantA), ownerUserId: owner };
+  const service = new BrandProtectionService(
+    new PostgresRiskReviewRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
+    context,
+  );
+  const action: WorkbenchAction = {
+    id: 'integration_public_action', kind: 'content', title: 'یادداشت مستند Integration',
+    rationale: 'یک اقدام عمومی مستند که پیامدهای اعتباری آن باید بازبینی شود.',
+    benefits: ['اعتماد'], risks: ['برداشت نادرست'], prerequisites: ['Claim Check'],
+    evidenceIds: ['integration-evidence'], evidenceCount: 1, confidence: 0.8,
+    riskLevel: 'medium', attentionCostMinutes: 20, energyCost: 2, feasible: true,
+    utilityScore: 70, opportunityCost: 0, rank: 1, evidenceState: 'grounded',
+    evidenceSourceTypes: ['text_asset'], interaction: 'approve',
+  };
+  const assessment = assessAction(action);
+  try {
+    await service.review({
+      actorId: owner, action, requestId: 'risk_integration_review',
+      expectedLevel: assessment.level, expectedAssessmentHash: assessment.assessmentHash,
+      decision: 'acknowledge',
+      rationale: 'Risk Review پایگاه داده با Assessment نسخه‌دار و Attestation انسانی تأیید شد.',
+      humanAttestation: true, reviewedAt: new Date('2026-08-31T22:45:00.000Z'),
+    });
+    await service.authorizeAction(owner, action);
+    const snapshot = await service.snapshot(owner, [action], null, new Date('2026-08-31T22:46:00.000Z'));
+    if (snapshot.assessments[0]?.gate !== 'allowed_with_acknowledgement') {
+      throw new Error('Persisted risk acknowledgement was not effective.');
+    }
+  } finally {
+    await runtime.close();
   }
 }
 

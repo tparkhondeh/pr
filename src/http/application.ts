@@ -56,6 +56,17 @@ import {
 } from '../feedback/workspace.js';
 import type { TenantId, UserId } from '../kernel/identity.js';
 import {
+  BrandProtectionBlockedError,
+  BrandProtectionConflictError,
+  BrandProtectionNotFoundError,
+  BrandProtectionPermissionError,
+  BrandProtectionValidationError,
+  type BrandProtectionService,
+  type BrandProtectionSnapshot,
+  type RiskLevel,
+  type RiskReviewDecision,
+} from '../risk/brand-protection.js';
+import {
   ResearchConflictError,
   ResearchPermissionError,
   ResearchValidationError,
@@ -103,6 +114,7 @@ export type ApplicationDependencies = Readonly<{
   learning?: Pick<FeedbackLearningService, 'snapshot' | 'rejectDraft' | 'decide'>;
   research?: Pick<ResearchWorkspaceService, 'snapshot' | 'importSource'>;
   claims?: Pick<ClaimGovernanceService, 'snapshot' | 'review'>;
+  risk?: Pick<BrandProtectionService, 'snapshot' | 'review' | 'authorizeAction'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -200,6 +212,17 @@ export function createRequestHandler(
     const claimReview = path.match(/^\/api\/claims\/([0-9a-f-]{36})\/reviews$/iu);
     if (request.method === 'POST' && claimReview?.[1]) {
       await handleClaimReview(request, response, dependencies, claimReview[1]);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/risk') {
+      await handleRiskSnapshot(request, response, dependencies);
+      return;
+    }
+
+    const riskReview = path.match(/^\/api\/risk\/actions\/([^/]+)\/reviews$/u);
+    if (request.method === 'POST' && riskReview?.[1]) {
+      await handleRiskReview(request, response, dependencies, decodeURIComponent(riskReview[1]));
       return;
     }
 
@@ -800,6 +823,172 @@ function isClaimDecision(value: unknown): value is ClaimReviewDecision {
   return typeof value === 'string' && ['verify', 'dispute', 'revoke'].includes(value);
 }
 
+async function handleRiskSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = riskActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const generatedAt = now(dependencies);
+    const workbench = await dependencies.workbench?.snapshot();
+    if (!workbench) throw new Error('Workbench disappeared during risk assessment.');
+    const claims = dependencies.claims
+      ? await dependencies.claims.snapshot(actorId, generatedAt)
+      : null;
+    const snapshot = await dependencies.risk?.snapshot(actorId, workbench.actions, claims, generatedAt);
+    if (!snapshot) throw new Error('Brand protection disappeared.');
+    sendJson(response, 200, serializeRiskSnapshot(snapshot));
+  } catch (error: unknown) {
+    sendRiskError(response, error);
+  }
+}
+
+async function handleRiskReview(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+  actionId: string,
+): Promise<void> {
+  const actorId = riskActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const expectedLevel = body['expectedLevel'];
+    const expectedAssessmentHash = body['expectedAssessmentHash'];
+    const decision = body['decision'];
+    const rationale = body['rationale'];
+    const humanAttestation = body['humanAttestation'];
+    if (
+      typeof requestId !== 'string' || !isRiskLevel(expectedLevel) ||
+      typeof expectedAssessmentHash !== 'string' || !/^[0-9a-f]{64}$/u.test(expectedAssessmentHash) ||
+      !isRiskDecision(decision) || typeof rationale !== 'string' ||
+      typeof humanAttestation !== 'boolean'
+    ) {
+      sendJson(response, 400, { error: 'invalid_risk_review' });
+      return;
+    }
+    const workbench = await dependencies.workbench?.snapshot();
+    const action = workbench?.actions.find((candidate) => candidate.id === actionId);
+    if (!action) throw new BrandProtectionNotFoundError('Action not found for risk review.');
+    const result = await dependencies.risk?.review({
+      actorId,
+      action,
+      requestId,
+      expectedLevel,
+      expectedAssessmentHash,
+      decision,
+      rationale,
+      humanAttestation,
+      reviewedAt: now(dependencies),
+    });
+    if (!result) throw new Error('Brand protection disappeared.');
+    if (result.outcome === 'applied') {
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `risk.review:${requestId}`,
+        eventType: 'risk.reviewed',
+        resourceType: 'action',
+        resourceId: actionId,
+        purpose: 'strategy_reasoning',
+        decision,
+        metadata: {
+          assessmentHash: result.review.assessmentHash,
+          expectedLevel: result.review.expectedLevel,
+          policyVersion: 'brand-protection-v1',
+        },
+        occurredAt: result.review.reviewedAt,
+      });
+    }
+    sendJson(response, result.outcome === 'applied' ? 201 : 200, {
+      outcome: result.outcome,
+      persistence: result.persistence,
+      review: {
+        reviewId: result.review.reviewId,
+        requestId: result.review.requestId,
+        actionId: result.review.actionId,
+        assessmentHash: result.review.assessmentHash,
+        expectedLevel: result.review.expectedLevel,
+        decision: result.review.decision,
+        rationale: result.review.rationale,
+        reviewedAt: result.review.reviewedAt.toISOString(),
+      },
+    });
+  } catch (error: unknown) {
+    sendRiskError(response, error);
+  }
+}
+
+function riskActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.risk || !dependencies.workbench) {
+    sendJson(response, 503, { error: 'risk_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function serializeRiskSnapshot(snapshot: BrandProtectionSnapshot): Record<string, unknown> {
+  return {
+    generatedAt: snapshot.generatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    policyVersion: snapshot.policyVersion,
+    summary: snapshot.summary,
+    claimPosture: snapshot.claimPosture,
+    assessments: snapshot.assessments.map((assessment) => ({
+      ...assessment,
+      ...(assessment.lastReview ? {
+        lastReview: {
+          ...assessment.lastReview,
+          reviewedAt: assessment.lastReview.reviewedAt.toISOString(),
+        },
+      } : {}),
+    })),
+  };
+}
+
+function sendRiskError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof BrandProtectionValidationError) {
+    sendJson(response, 400, { error: 'invalid_risk_review' });
+    return;
+  }
+  if (error instanceof BrandProtectionPermissionError) {
+    sendJson(response, 403, { error: 'risk_permission_denied' });
+    return;
+  }
+  if (error instanceof BrandProtectionNotFoundError) {
+    sendJson(response, 404, { error: 'risk_action_not_found' });
+    return;
+  }
+  if (error instanceof BrandProtectionConflictError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  if (error instanceof BrandProtectionBlockedError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  sendJson(response, 500, { error: 'risk_failed' });
+}
+
+function isRiskLevel(value: unknown): value is RiskLevel {
+  return value === 'green' || value === 'yellow' || value === 'red';
+}
+
+function isRiskDecision(value: unknown): value is RiskReviewDecision {
+  return value === 'acknowledge' || value === 'hold' || value === 'escalate';
+}
+
 async function handleAuditTrail(
   request: IncomingMessage,
   response: ServerResponse,
@@ -849,6 +1038,9 @@ async function handleAccountExport(
       dependencies.auditTrail?.snapshot(actorId, exportedAt),
     ]);
     if (!activity) throw new Error('Audit trail disappeared.');
+    const risk = dependencies.risk
+      ? await dependencies.risk.snapshot(actorId, workbench.actions, claims, exportedAt)
+      : null;
     await dependencies.auditTrail?.record({
       actorId,
       requestId: `account.export:${crypto.randomUUID()}`,
@@ -875,6 +1067,7 @@ async function handleAccountExport(
           assets: serializeTextAssetSnapshot(assets),
           research: research ? serializeResearchSnapshot(research) : null,
           claims: claims ? serializeClaimSnapshot(claims) : null,
+          risk: risk ? serializeRiskSnapshot(risk) : null,
           draft: draft ? serializeDraft(draft) : null,
           feedback: serializeFeedback(feedback),
           activity: serializeAuditTrail(activity),
@@ -1947,6 +2140,12 @@ async function handleApproval(
       return;
     }
     const occurredAt = now(dependencies);
+    if (dependencies.risk) {
+      const current = await dependencies.workbench.snapshot();
+      const action = current.actions.find((candidate) => candidate.id === actionId);
+      if (!action) throw new WorkbenchActionNotFoundError(actionId);
+      await dependencies.risk.authorizeAction(actorId, action);
+    }
     const snapshot = await dependencies.workbench.approve(
       actionId,
       actorId,
@@ -1975,6 +2174,14 @@ async function handleApproval(
     }
     if (error instanceof WorkbenchApprovalConflictError) {
       sendJson(response, 409, { error: error.reason });
+      return;
+    }
+    if (error instanceof BrandProtectionBlockedError) {
+      sendJson(response, 409, { error: error.reason });
+      return;
+    }
+    if (error instanceof BrandProtectionPermissionError) {
+      sendJson(response, 403, { error: 'risk_permission_denied' });
       return;
     }
     sendJson(response, 500, { error: 'approval_failed' });

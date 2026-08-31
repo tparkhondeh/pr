@@ -37,6 +37,11 @@ import {
   ResearchWorkspaceService,
 } from './research/workspace.js';
 import {
+  BrandProtectionService,
+  InMemoryRiskReviewRepository,
+  PostgresRiskReviewRepository,
+} from './risk/brand-protection.js';
+import {
   InMemoryStrategyContextRepository,
   PostgresStrategyContextRepository,
   StrategyContextService,
@@ -164,6 +169,15 @@ const claims = new ClaimGovernanceService(
   { tenantId: activeTenant, ownerUserId: owner },
   { drafts, research },
 );
+const risk = new BrandProtectionService(
+  postgres && environment.database
+    ? new PostgresRiskReviewRepository(postgres, {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+      })
+    : new InMemoryRiskReviewRepository(),
+  { tenantId: activeTenant, ownerUserId: owner },
+);
 const requestHandler = createRequestHandler(
   async () => ({
     ...(postgres ? await postgres.readiness() : { ready: true }),
@@ -180,6 +194,7 @@ const requestHandler = createRequestHandler(
     assets,
     research,
     claims,
+    risk,
     ...(!postgres ? { mutationAuditTrail: auditTrail } : {}),
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity

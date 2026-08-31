@@ -219,6 +219,72 @@ export type ClaimReviewResult = Readonly<{
   review: ClaimReviewRecord;
 }>;
 
+export type RiskLevel = 'green' | 'yellow' | 'red';
+export type RiskReviewDecision = 'acknowledge' | 'hold' | 'escalate';
+export type RiskDimension = 'consent' | 'privacy' | 'data_access' | 'sensitive_data' |
+  'third_party_privacy' | 'reputation_risk' | 'misinterpretation' | 'manipulation' |
+  'defamation' | 'conflict_of_interest' | 'disclosure' | 'authenticity' | 'security' |
+  'public_exposure' | 'long_term_consequences';
+
+export type RiskReviewRecord = Readonly<{
+  reviewId: string;
+  requestId: string;
+  actionId: string;
+  assessmentHash: string;
+  expectedLevel: RiskLevel;
+  decision: RiskReviewDecision;
+  rationale: string;
+  reviewedAt: string;
+}>;
+
+export type ActionRiskAssessment = Readonly<{
+  actionId: string;
+  actionTitle: string;
+  actionKind: WorkbenchAction['kind'];
+  policyVersion: 'brand-protection-v1';
+  assessmentHash: string;
+  level: RiskLevel;
+  gate: 'allowed' | 'review_required' | 'allowed_with_acknowledgement' | 'blocked';
+  rationale: string;
+  findings: readonly Readonly<{
+    dimension: RiskDimension;
+    level: RiskLevel;
+    code: string;
+    rationale: string;
+    mitigation: string;
+  }>[];
+  reviewableDecisions: readonly RiskReviewDecision[];
+  lastReview?: RiskReviewRecord;
+}>;
+
+export type BrandProtectionSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  policyVersion: 'brand-protection-v1';
+  summary: Readonly<{
+    totalActions: number;
+    green: number;
+    yellow: number;
+    red: number;
+    reviewRequired: number;
+    blocked: number;
+  }>;
+  claimPosture: Readonly<{
+    totalClaims: number;
+    verified: number;
+    traceBlocked: number;
+    publicReady: number;
+    note: string;
+  }>;
+  assessments: readonly ActionRiskAssessment[];
+}>;
+
+export type RiskReviewResult = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  review: RiskReviewRecord;
+}>;
+
 export type DraftChannel = 'linkedin' | 'instagram' | 'x' | 'youtube' | 'podcast' | 'newsletter' | 'blog';
 export type DraftSourceKind = 'memory' | 'text_asset';
 
@@ -502,6 +568,7 @@ export type AccountDataExport = Readonly<{
     assets: TextAssetSnapshot;
     research: ResearchWorkspaceSnapshot | null;
     claims: ClaimGovernanceSnapshot | null;
+    risk: BrandProtectionSnapshot | null;
     draft: DraftWorkspaceSnapshot | null;
     feedback: FeedbackLearningSnapshot;
     activity: AuditTrailSnapshot;
@@ -614,6 +681,37 @@ export async function reviewClaim(input: Readonly<{
     !isPersistence(payload['persistence']) || !isClaimReviewRecord(payload['review'])
   ) throw new WorkbenchApiError(200, 'invalid_response');
   return payload as ClaimReviewResult;
+}
+
+export async function loadRisk(signal?: AbortSignal): Promise<BrandProtectionSnapshot> {
+  const payload = await requestJson('/api/risk', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isBrandProtectionSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function reviewRisk(input: Readonly<{
+  actionId: string;
+  requestId: string;
+  expectedLevel: RiskLevel;
+  expectedAssessmentHash: string;
+  decision: RiskReviewDecision;
+  rationale: string;
+  humanAttestation: boolean;
+}>): Promise<RiskReviewResult> {
+  const payload = await requestJson(`/api/risk/actions/${encodeURIComponent(input.actionId)}/reviews`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (
+    !isRecord(payload) ||
+    (payload['outcome'] !== 'applied' && payload['outcome'] !== 'already_applied') ||
+    !isPersistence(payload['persistence']) || !isRiskReviewRecord(payload['review'])
+  ) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload as RiskReviewResult;
 }
 
 export async function importTextAsset(input: Readonly<{
@@ -1122,6 +1220,62 @@ function isClaimTraceStatus(value: unknown): value is ClaimTraceStatus {
     value === 'unverified_source' || value === 'contradicted' || value === 'conflicted';
 }
 
+function isBrandProtectionSnapshot(payload: unknown): payload is BrandProtectionSnapshot {
+  if (
+    !isRecord(payload) || payload['policyVersion'] !== 'brand-protection-v1' ||
+    !isRecord(payload['summary']) || !isRecord(payload['claimPosture']) ||
+    !Array.isArray(payload['assessments'])
+  ) return false;
+  const summary = payload['summary'];
+  const claims = payload['claimPosture'];
+  return (
+    typeof payload['generatedAt'] === 'string' && isPersistence(payload['persistence']) &&
+    typeof summary['totalActions'] === 'number' && typeof summary['green'] === 'number' &&
+    typeof summary['yellow'] === 'number' && typeof summary['red'] === 'number' &&
+    typeof summary['reviewRequired'] === 'number' && typeof summary['blocked'] === 'number' &&
+    typeof claims['totalClaims'] === 'number' && typeof claims['verified'] === 'number' &&
+    typeof claims['traceBlocked'] === 'number' && typeof claims['publicReady'] === 'number' &&
+    typeof claims['note'] === 'string' && payload['assessments'].every(isActionRiskAssessment)
+  );
+}
+
+function isActionRiskAssessment(value: unknown): value is ActionRiskAssessment {
+  return (
+    isRecord(value) && typeof value['actionId'] === 'string' &&
+    typeof value['actionTitle'] === 'string' && typeof value['actionKind'] === 'string' &&
+    value['policyVersion'] === 'brand-protection-v1' &&
+    typeof value['assessmentHash'] === 'string' && isRiskLevel(value['level']) &&
+    (value['gate'] === 'allowed' || value['gate'] === 'review_required' ||
+      value['gate'] === 'allowed_with_acknowledgement' || value['gate'] === 'blocked') &&
+    typeof value['rationale'] === 'string' && Array.isArray(value['findings']) &&
+    value['findings'].every(isRiskFinding) && Array.isArray(value['reviewableDecisions']) &&
+    value['reviewableDecisions'].every(isRiskReviewDecision) &&
+    (value['lastReview'] === undefined || isRiskReviewRecord(value['lastReview']))
+  );
+}
+
+function isRiskFinding(value: unknown): boolean {
+  return isRecord(value) && typeof value['dimension'] === 'string' &&
+    isRiskLevel(value['level']) && typeof value['code'] === 'string' &&
+    typeof value['rationale'] === 'string' && typeof value['mitigation'] === 'string';
+}
+
+function isRiskReviewRecord(value: unknown): value is RiskReviewRecord {
+  return isRecord(value) && typeof value['reviewId'] === 'string' &&
+    typeof value['requestId'] === 'string' && typeof value['actionId'] === 'string' &&
+    typeof value['assessmentHash'] === 'string' && isRiskLevel(value['expectedLevel']) &&
+    isRiskReviewDecision(value['decision']) && typeof value['rationale'] === 'string' &&
+    typeof value['reviewedAt'] === 'string';
+}
+
+function isRiskLevel(value: unknown): value is RiskLevel {
+  return value === 'green' || value === 'yellow' || value === 'red';
+}
+
+function isRiskReviewDecision(value: unknown): value is RiskReviewDecision {
+  return value === 'acknowledge' || value === 'hold' || value === 'escalate';
+}
+
 function isDraftWorkspaceSnapshot(payload: unknown): payload is DraftWorkspaceSnapshot {
   if (!isRecord(payload) || !isRecord(payload['guard']) || !isRecord(payload['source']) || !isRecord(payload['adaptation'])) return false;
   const guard = payload['guard'];
@@ -1214,6 +1368,7 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     isPersonalMemorySnapshot(data['memory']) && isTextAssetSnapshot(data['assets']) &&
     (data['research'] === null || isResearchWorkspaceSnapshot(data['research'])) &&
     (data['claims'] === null || isClaimGovernanceSnapshot(data['claims'])) &&
+    (data['risk'] === null || isBrandProtectionSnapshot(data['risk'])) &&
     (data['draft'] === null || isDraftWorkspaceSnapshot(data['draft'])) &&
     isFeedbackLearningSnapshot(data['feedback']) && isAuditTrailSnapshot(data['activity'])
   );

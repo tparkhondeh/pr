@@ -39,6 +39,7 @@ import {
   importTextAsset,
   importResearchSource,
   reviewClaim,
+  reviewRisk,
   decideLearnedPreference,
   loadDraftWorkspace,
   loadDraftSources,
@@ -48,6 +49,7 @@ import {
   loadPersonalMemory,
   loadResearch,
   loadClaims,
+  loadRisk,
   loadStrategyContext,
   loadWorkbench,
   rejectDraftFeedback,
@@ -70,6 +72,8 @@ import {
   type ResearchWorkspaceSnapshot,
   type ClaimGovernanceSnapshot,
   type ClaimReviewDecision,
+  type BrandProtectionSnapshot,
+  type RiskReviewDecision,
   type EditableStrategyContext,
   type StrategyContextSnapshot,
   type TextAssetRightOperation,
@@ -95,7 +99,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -129,6 +133,9 @@ export function App() {
   const [claimSnapshot, setClaimSnapshot] = useState<ClaimGovernanceSnapshot | null>(null);
   const [claimViewState, setClaimViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [claimViewError, setClaimViewError] = useState<string | null>(null);
+  const [riskSnapshot, setRiskSnapshot] = useState<BrandProtectionSnapshot | null>(null);
+  const [riskViewState, setRiskViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
+  const [riskViewError, setRiskViewError] = useState<string | null>(null);
   const [draftSnapshot, setDraftSnapshot] = useState<DraftWorkspaceSnapshot | null>(null);
   const [draftSources, setDraftSources] = useState<DraftSourceSnapshot | null>(null);
   const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
@@ -322,6 +329,38 @@ export function App() {
     } catch (caught: unknown) {
       setClaimViewError(errorMessage(caught));
       setClaimViewState('error');
+    }
+  };
+
+  const refreshRisk = useCallback(async (signal?: AbortSignal) => {
+    setRiskViewState('loading');
+    setRiskViewError(null);
+    try {
+      setRiskSnapshot(await loadRisk(signal));
+      setRiskViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setRiskViewError(errorMessage(caught));
+      setRiskViewState('error');
+    }
+  }, []);
+
+  const submitRiskReview = async (input: Readonly<{
+    actionId: string;
+    expectedLevel: 'green' | 'yellow' | 'red';
+    expectedAssessmentHash: string;
+    decision: RiskReviewDecision;
+    rationale: string;
+    humanAttestation: boolean;
+  }>) => {
+    setRiskViewState('mutating');
+    setRiskViewError(null);
+    try {
+      await reviewRisk({ requestId: `risk_review_${crypto.randomUUID()}`, ...input });
+      await Promise.all([refreshRisk(), refreshAudit()]);
+    } catch (caught: unknown) {
+      setRiskViewError(errorMessage(caught));
+      setRiskViewState('error');
     }
   };
 
@@ -537,6 +576,10 @@ export function App() {
     } catch (caught: unknown) {
       setError(errorMessage(caught));
       setState('ready');
+      if (caught instanceof WorkbenchApiError && (caught.code === 'risk_review_required' || caught.code === 'risk_blocked')) {
+        setActiveView('risk');
+        await refreshRisk();
+      }
     }
   };
 
@@ -646,6 +689,14 @@ export function App() {
       view: 'claims' as const,
       badge: claimSnapshot?.summary.traceBlocked ? String(claimSnapshot.summary.traceBlocked) : undefined,
     },
+    {
+      label: 'حفاظت برند',
+      icon: LockKeyhole,
+      view: 'risk' as const,
+      badge: riskSnapshot?.summary.blocked || riskSnapshot?.summary.reviewRequired
+        ? String(riskSnapshot.summary.blocked + riskSnapshot.summary.reviewRequired)
+        : undefined,
+    },
     { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
     { label: 'پیش‌نویس', icon: PencilLine, view: 'draft' as const },
     {
@@ -679,6 +730,7 @@ export function App() {
                 if (view === 'memory') void refreshMemory();
                 if (view === 'research') void refreshResearch();
                 if (view === 'claims') void refreshClaims();
+                if (view === 'risk') void refreshRisk();
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
                 if (view === 'learning') void refreshFeedback();
@@ -709,6 +761,8 @@ export function App() {
                 ? 'منبع بیرونی، جدا از حافظه شخصی.'
               : activeView === 'claims'
                 ? 'هیچ ادعایی بدون Trace عمومی نشود.'
+              : activeView === 'risk'
+                ? 'ریسک باید قبل از اقدام دیده و پذیرفته شود.'
               : activeView === 'intake'
                 ? 'اولین شاهد واقعی را وارد کنید.'
               : activeView === 'strategy'
@@ -762,6 +816,14 @@ export function App() {
             onReview={submitClaimReview}
             snapshot={claimSnapshot}
             state={claimViewState}
+          />
+        ) : activeView === 'risk' ? (
+          <BrandProtectionPanel
+            error={riskViewError}
+            onRefresh={() => refreshRisk()}
+            onReview={submitRiskReview}
+            snapshot={riskSnapshot}
+            state={riskViewState}
           />
         ) : activeView === 'strategy' ? (
           <StrategyPanel
@@ -1849,6 +1911,142 @@ function researchFreshnessLabel(freshness: ResearchWorkspaceSnapshot['sources'][
   return { fresh: 'تازه', aging: 'نزدیک بازبینی', stale: 'کهنه' }[freshness];
 }
 
+function BrandProtectionPanel({
+  error,
+  onRefresh,
+  onReview,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onRefresh: () => Promise<void>;
+  onReview: (input: Readonly<{
+    actionId: string;
+    expectedLevel: 'green' | 'yellow' | 'red';
+    expectedAssessmentHash: string;
+    decision: RiskReviewDecision;
+    rationale: string;
+    humanAttestation: boolean;
+  }>) => Promise<void>;
+  snapshot: BrandProtectionSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
+}>) {
+  if ((state === 'idle' || state === 'loading') && !snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><LoaderCircle className="spin" size={24} /><h2>در حال اجرای Risk Check…</h2><p>۱۵ بُعد اخلاق، حریم خصوصی و حفاظت برند بررسی می‌شوند.</p></section>;
+  }
+  if (!snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><TriangleAlert size={25} /><h2>Risk Engine در دسترس نیست</h2><p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p><button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button></section>;
+  }
+  return (
+    <section className="risk-center" aria-label="حفاظت اخلاقی و اعتباری برند">
+      <header className="draft-head">
+        <div>
+          <p className="overline">Ethics · Privacy · Risk · Brand Protection</p>
+          <h2>ریسک قبل از Utility حق وتو دارد</h2>
+          <p>Green مجاز است؛ Yellow فقط با پذیرش آگاهانه مالک ادامه می‌یابد؛ Red در این نسخه قابل Override نیست و فقط Hold یا Escalate می‌شود.</p>
+        </div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button"><RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> ارزیابی دوباره</button>
+      </header>
+      <div className="risk-summary">
+        <div><span>کل اقدام‌ها</span><strong>{snapshot.summary.totalActions}</strong></div>
+        <div className="green"><span>Green</span><strong>{snapshot.summary.green}</strong></div>
+        <div className="yellow"><span>Yellow</span><strong>{snapshot.summary.yellow}</strong></div>
+        <div className="red"><span>Red</span><strong>{snapshot.summary.red}</strong></div>
+        <div><span>نیازمند Review</span><strong>{snapshot.summary.reviewRequired}</strong></div>
+      </div>
+      <div className="risk-claim-posture">
+        <ShieldCheck size={20} />
+        <span><b>Claim Gate مستقل:</b> {snapshot.claimPosture.publicReady} آماده عمومی از {snapshot.claimPosture.totalClaims} Claim · {snapshot.claimPosture.traceBlocked} Trace مسدود</span>
+        <small>{snapshot.claimPosture.note}</small>
+      </div>
+      <div className="risk-assessments">
+        {snapshot.assessments.map((assessment) => (
+          <RiskAssessmentCard assessment={assessment} disabled={state === 'mutating'} key={assessment.actionId} onReview={onReview} />
+        ))}
+      </div>
+      <p className="risk-crisis-note"><TriangleAlert size={17} /> Negative Signal Detection و مانیتورینگ بحران هنوز خودکار نیست؛ Signal حساس باید Hold و برای Human/Legal Review Escalate شود.</p>
+      {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
+    </section>
+  );
+}
+
+function RiskAssessmentCard({
+  assessment,
+  disabled,
+  onReview,
+}: Readonly<{
+  assessment: BrandProtectionSnapshot['assessments'][number];
+  disabled: boolean;
+  onReview: (input: Readonly<{
+    actionId: string;
+    expectedLevel: 'green' | 'yellow' | 'red';
+    expectedAssessmentHash: string;
+    decision: RiskReviewDecision;
+    rationale: string;
+    humanAttestation: boolean;
+  }>) => Promise<void>;
+}>) {
+  const [decision, setDecision] = useState<RiskReviewDecision>(assessment.reviewableDecisions[0] ?? 'hold');
+  const [rationale, setRationale] = useState('');
+  const [attested, setAttested] = useState(false);
+  const activeDecision = assessment.reviewableDecisions.includes(decision)
+    ? decision
+    : (assessment.reviewableDecisions[0] ?? 'hold');
+  const material = assessment.findings.filter((finding) => finding.level !== 'green');
+  return (
+    <article className={`risk-assessment risk-${assessment.level}`}>
+      <header><span><b>{assessment.actionTitle}</b><small>{kindLabels[assessment.actionKind]} · {riskGateLabel(assessment.gate)}</small></span><strong>{assessment.level.toUpperCase()}</strong></header>
+      <p>{assessment.rationale}</p>
+      <div className="risk-findings">
+        {material.length === 0 ? <span className="risk-finding green"><ShieldCheck size={15} /> تمام ۱۵ بُعد بدون Signal مادی</span> : material.map((finding) => (
+          <div className={`risk-finding ${finding.level}`} key={finding.dimension}>
+            <b>{riskDimensionLabel(finding.dimension)}</b>
+            <span>{finding.rationale}</span>
+            <small>کنترل: {finding.mitigation}</small>
+          </div>
+        ))}
+      </div>
+      <details className="risk-all-checks"><summary>نمایش همه ۱۵ Risk Check</summary><div>{assessment.findings.map((finding) => <span className={finding.level} key={finding.dimension}>{riskDimensionLabel(finding.dimension)} · {finding.level}</span>)}</div></details>
+      {assessment.lastReview ? <p className="claim-last-review">آخرین تصمیم: {riskDecisionLabel(assessment.lastReview.decision)} · {formatDate(assessment.lastReview.reviewedAt)} — {assessment.lastReview.rationale}</p> : null}
+      {assessment.reviewableDecisions.length > 0 ? (
+        <form className="risk-review-form" onSubmit={(event) => {
+          event.preventDefault();
+          void onReview({
+            actionId: assessment.actionId,
+            expectedLevel: assessment.level,
+            expectedAssessmentHash: assessment.assessmentHash,
+            decision: activeDecision,
+            rationale,
+            humanAttestation: attested,
+          });
+        }}>
+          <label>تصمیم انسانی<select onChange={(event) => { setDecision(event.target.value as RiskReviewDecision); setAttested(false); }} value={activeDecision}>{assessment.reviewableDecisions.map((item) => <option key={item} value={item}>{riskDecisionLabel(item)}</option>)}</select></label>
+          <label>Rationale قابل Audit<textarea maxLength={2000} minLength={20} onChange={(event) => { setRationale(event.target.value); }} required rows={2} value={rationale} /></label>
+          <label className="claim-attestation"><input checked={attested} onChange={(event) => { setAttested(event.target.checked); }} required type="checkbox" /> همه Findingها، Context، حریم اشخاص ثالث و پیامد بلندمدت را شخصاً مرور کرده‌ام.</label>
+          <button disabled={disabled} type="submit">{disabled ? <LoaderCircle className="spin" size={16} /> : <FileCheck2 size={16} />} ثبت تصمیم</button>
+        </form>
+      ) : null}
+    </article>
+  );
+}
+
+function riskGateLabel(gate: BrandProtectionSnapshot['assessments'][number]['gate']): string {
+  return { allowed: 'مجاز', review_required: 'نیازمند پذیرش مالک', allowed_with_acknowledgement: 'پذیرفته‌شده با آگاهی', blocked: 'مسدود' }[gate];
+}
+
+function riskDecisionLabel(decision: RiskReviewDecision): string {
+  return { acknowledge: 'پذیرش آگاهانه', hold: 'توقف', escalate: 'ارجاع برای بررسی بیشتر' }[decision];
+}
+
+function riskDimensionLabel(dimension: BrandProtectionSnapshot['assessments'][number]['findings'][number]['dimension']): string {
+  return {
+    consent: 'رضایت', privacy: 'حریم خصوصی', data_access: 'دسترسی داده', sensitive_data: 'داده حساس',
+    third_party_privacy: 'حریم شخص ثالث', reputation_risk: 'ریسک اعتبار', misinterpretation: 'برداشت نادرست',
+    manipulation: 'دستکاری', defamation: 'افترا', conflict_of_interest: 'تعارض منافع', disclosure: 'افشای رابطه',
+    authenticity: 'اصالت', security: 'امنیت', public_exposure: 'مواجهه عمومی', long_term_consequences: 'پیامد بلندمدت',
+  }[dimension];
+}
+
 function DataRightsPanel({
   error,
   onExport,
@@ -2568,6 +2766,15 @@ function errorMessage(error: unknown): string {
     invalid_transition: 'این تغییر وضعیت Claim مجاز نیست.',
     claim_review_failed: 'بازبینی Claim کامل نشد.',
     claim_not_verified: 'Claim فعال دیگر Verified نیست؛ Approval و Export متوقف شد.',
+    risk_unavailable: 'Risk Engine در دسترس نیست و اقدام حساس به‌صورت Fail-closed متوقف شد.',
+    risk_review_required: 'این اقدام Yellow است؛ ابتدا Risk Check را شخصاً مرور و ثبت کنید.',
+    risk_blocked: 'این اقدام Red یا متوقف‌شده است و در MVP قابل Override نیست.',
+    invalid_risk_review: 'تصمیم، Attestation، Rationale یا Snapshot ارزیابی معتبر نیست.',
+    risk_permission_denied: 'فقط مالک می‌تواند Risk Review ثبت کند.',
+    risk_action_not_found: 'اقدام مربوط به این Risk Review دیگر در Snapshot جاری نیست.',
+    assessment_changed: 'ارزیابی ریسک تغییر کرده است؛ نسخه تازه را دوباره مرور کنید.',
+    invalid_decision: 'این تصمیم برای سطح فعلی ریسک مجاز نیست.',
+    risk_failed: 'ارزیابی یا ثبت تصمیم ریسک کامل نشد.',
     drafts_unavailable: 'Draft Studio در دسترس نیست.',
     invalid_draft_input: 'اطلاعات Draft ناقص یا خارج از محدودیت‌های پلتفرم است.',
     draft_permission_denied: 'مجوز صریح مالک برای استفاده از این حافظه در Draft وجود ندارد.',
