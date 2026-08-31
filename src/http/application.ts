@@ -8,6 +8,14 @@ import {
 import type { ConversationIntakeService } from '../conversation/intake.js';
 import type { TenantId, UserId } from '../kernel/identity.js';
 import {
+  StrategyContextConflictError,
+  StrategyContextPermissionError,
+  StrategyContextValidationError,
+  type EditableStrategyContext,
+  type StrategyContextService,
+  type StrategyContextSnapshot,
+} from '../strategy/context.js';
+import {
   WorkbenchActionNotFoundError,
   WorkbenchApprovalConflictError,
   type WorkbenchService,
@@ -19,6 +27,7 @@ export type ReadinessCheck = () =>
 
 export type ApplicationDependencies = Readonly<{
   workbench?: Pick<WorkbenchService, 'snapshot' | 'approve'>;
+  strategy?: Pick<StrategyContextService, 'snapshot' | 'save'>;
   resolveActor?: (request: IncomingMessage) => UserId | undefined;
   tenantId?: TenantId;
   conversation?: Pick<
@@ -68,6 +77,16 @@ export function createRequestHandler(
       return;
     }
 
+    if (request.method === 'GET' && path === '/api/strategy') {
+      await handleStrategySnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'PUT' && path === '/api/strategy') {
+      await handleStrategySave(request, response, dependencies);
+      return;
+    }
+
     if (request.method === 'POST' && path === '/api/workbench/approval') {
       await handleApproval(request, response, dependencies);
       return;
@@ -106,6 +125,137 @@ export function createRequestHandler(
 
     sendJson(response, 404, { error: 'not_found' });
   };
+}
+
+async function handleStrategySnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.strategy) {
+    sendJson(response, 503, { error: 'strategy_unavailable' });
+    return;
+  }
+  try {
+    sendJson(response, 200, serializeStrategy(await dependencies.strategy.snapshot(actorId)));
+  } catch (error: unknown) {
+    sendStrategyError(response, error);
+  }
+}
+
+async function handleStrategySave(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.strategy) {
+    sendJson(response, 503, { error: 'strategy_unavailable' });
+    return;
+  }
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const expectedRevision = body['expectedRevision'];
+    const value = parseEditableStrategy(body['value']);
+    if (typeof requestId !== 'string' || typeof expectedRevision !== 'number' || !value) {
+      sendJson(response, 400, { error: 'invalid_strategy_context' });
+      return;
+    }
+    const result = await dependencies.strategy.save({
+      actorId,
+      requestId,
+      expectedRevision,
+      value,
+      occurredAt: (dependencies.clock ?? (() => new Date()))(),
+    });
+    sendJson(response, 200, { outcome: result.outcome, ...serializeStrategy(result.snapshot) });
+  } catch (error: unknown) {
+    sendStrategyError(response, error);
+  }
+}
+
+function parseEditableStrategy(value: unknown): EditableStrategyContext | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const goalValue = record['goal'];
+  const positioningValue = record['desiredPositioning'];
+  if (!goalValue || typeof goalValue !== 'object' || Array.isArray(goalValue)) return null;
+  if (!positioningValue || typeof positioningValue !== 'object' || Array.isArray(positioningValue)) return null;
+  const goal = goalValue as Record<string, unknown>;
+  const positioning = positioningValue as Record<string, unknown>;
+  if (
+    typeof goal['title'] !== 'string' ||
+    typeof goal['outcome'] !== 'string' ||
+    typeof goal['priority'] !== 'number' ||
+    ![1, 2, 3, 4, 5].includes(goal['priority']) ||
+    !isStringArray(goal['successMetrics']) ||
+    typeof goal['horizon'] !== 'string' ||
+    typeof positioning['audience'] !== 'string' ||
+    typeof positioning['desiredPerception'] !== 'string' ||
+    typeof positioning['differentiation'] !== 'string' ||
+    !isStringArray(positioning['proofPoints']) ||
+    typeof positioning['horizon'] !== 'string'
+  ) return null;
+  return {
+    goal: {
+      title: goal['title'],
+      outcome: goal['outcome'],
+      priority: goal['priority'] as 1 | 2 | 3 | 4 | 5,
+      successMetrics: goal['successMetrics'],
+      horizon: goal['horizon'],
+    },
+    desiredPositioning: {
+      audience: positioning['audience'],
+      desiredPerception: positioning['desiredPerception'],
+      differentiation: positioning['differentiation'],
+      proofPoints: positioning['proofPoints'],
+      horizon: positioning['horizon'],
+    },
+  };
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function serializeStrategy(snapshot: StrategyContextSnapshot): Record<string, unknown> {
+  return {
+    revision: snapshot.revision,
+    updatedAt: snapshot.updatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    goalId: snapshot.goalId,
+    positioningId: snapshot.positioningId,
+    goal: snapshot.goal,
+    desiredPositioning: snapshot.desiredPositioning,
+  };
+}
+
+function sendStrategyError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof StrategyContextValidationError) {
+    sendJson(response, 400, {
+      error: error instanceof InvalidJsonBodyError ? error.code : 'invalid_strategy_context',
+    });
+    return;
+  }
+  if (error instanceof StrategyContextPermissionError) {
+    sendJson(response, 403, { error: 'strategy_permission_denied' });
+    return;
+  }
+  if (error instanceof StrategyContextConflictError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  sendJson(response, 500, { error: 'strategy_failed' });
 }
 
 async function handleMemorySnapshot(

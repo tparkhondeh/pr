@@ -1,6 +1,12 @@
 import { tenantId, userId, type UserId } from '../kernel/identity.js';
 import { evidenceId } from '../memory/personal-memory.js';
 import {
+  InMemoryStrategyContextRepository,
+  StrategyContextService,
+  defaultStrategyContext,
+  type StrategyContextSnapshot,
+} from '../strategy/context.js';
+import {
   rankStrategicOptions,
   validateGoal,
   type AttentionBudget,
@@ -53,6 +59,7 @@ export type WorkbenchSnapshot = Readonly<{
   }>;
   goal: Readonly<{
     id: string;
+    revision: number;
     title: string;
     outcome: string;
     successMetrics: readonly string[];
@@ -89,20 +96,22 @@ export class WorkbenchApprovalConflictError extends Error {
 }
 
 export class WorkbenchService {
-  readonly #goal: Goal;
   readonly #rankedOptions: readonly RankedOption[];
   readonly #attentionBudget: AttentionBudget;
   readonly #profile: WorkbenchSnapshot['profile'];
   readonly #clock: () => Date;
   readonly #awaitingWorkflow: WorkflowState;
   readonly #approvalRepository: WorkbenchApprovalRepository;
+  readonly #strategyContext: Pick<StrategyContextService, 'snapshot'>;
+  readonly #ownerUserId: UserId;
 
   public constructor(
     seed: WorkbenchSeed,
     clock: () => Date = () => new Date(),
     approvalRepository: WorkbenchApprovalRepository = new InMemoryWorkbenchApprovalRepository(),
+    strategyContext?: Pick<StrategyContextService, 'snapshot'>,
   ) {
-    this.#goal = validateGoal(seed.goal);
+    validateGoal(seed.goal);
     this.#rankedOptions = rankStrategicOptions(
       seed.goal.tenantId,
       seed.options,
@@ -113,6 +122,14 @@ export class WorkbenchService {
     this.#profile = seed.profile;
     this.#clock = clock;
     this.#approvalRepository = approvalRepository;
+    this.#ownerUserId = seed.goal.ownerUserId;
+    this.#strategyContext = strategyContext ?? new StrategyContextService(
+      new InMemoryStrategyContextRepository(
+        defaultStrategyContext(seed.goal.tenantId, seed.goal.ownerUserId, clock()),
+        approvalRepository,
+      ),
+      { tenantId: seed.goal.tenantId, ownerUserId: seed.goal.ownerUserId },
+    );
     this.#awaitingWorkflow = evolveWorkflow(createWorkflow('workbench_today'), {
       id: 'workbench_today:approval_requested',
       type: 'approval_requested',
@@ -120,19 +137,21 @@ export class WorkbenchService {
   }
 
   public async snapshot(): Promise<WorkbenchSnapshot> {
-    const approval = await this.#approvalRepository.find();
+    const strategy = await this.#strategyContext.snapshot(this.#ownerUserId);
+    const approval = await this.#approvalRepository.find(strategy.revision);
     return {
       generatedAt: this.#clock().toISOString(),
       runtime: { source: 'node_api', persistence: this.#approvalRepository.persistence },
       profile: this.#profile,
       goal: {
-        id: this.#goal.id,
-        title: this.#goal.title,
-        outcome: this.#goal.outcome,
-        successMetrics: this.#goal.successMetrics,
+        id: strategy.goalId,
+        revision: strategy.revision,
+        title: strategy.goal.title,
+        outcome: strategy.goal.outcome,
+        successMetrics: strategy.goal.successMetrics,
       },
       attentionBudget: this.#attentionBudget,
-      actions: this.#rankedOptions.map(toWorkbenchAction),
+      actions: this.#rankedOptions.map((option) => toWorkbenchAction(option, strategy)),
       workflow: {
         id: this.#awaitingWorkflow.id,
         status: approval ? 'approved' : this.#awaitingWorkflow.status,
@@ -148,6 +167,7 @@ export class WorkbenchService {
     actorId: UserId,
     occurredAt: Date,
   ): Promise<WorkbenchSnapshot> {
+    const strategy = await this.#strategyContext.snapshot(this.#ownerUserId);
     const option = this.#rankedOptions.find((candidate) => candidate.id === actionId);
     if (!option) throw new WorkbenchActionNotFoundError(actionId);
     if (!option.feasible) throw new WorkbenchApprovalConflictError('action_not_feasible');
@@ -163,6 +183,7 @@ export class WorkbenchService {
       actorUserId: actorId,
       occurredAt,
       expectedRevision: this.#awaitingWorkflow.revision,
+      strategyRevision: strategy.revision,
     });
     if (result.outcome === 'conflict') {
       throw new WorkbenchApprovalConflictError('different_action_approved');
@@ -178,6 +199,7 @@ export function createDefaultWorkbenchService(
     tenantId: 'tenant_primary',
     ownerUserId: 'owner_primary',
   },
+  strategyContext?: Pick<StrategyContextService, 'snapshot'>,
 ): WorkbenchService {
   const tenant = tenantId(identity.tenantId);
   const owner = userId(identity.ownerUserId);
@@ -266,15 +288,19 @@ export function createDefaultWorkbenchService(
     },
     clock,
     approvalRepository,
+    strategyContext,
   );
 }
 
-function toWorkbenchAction(option: RankedOption): WorkbenchAction {
+function toWorkbenchAction(
+  option: RankedOption,
+  strategy: StrategyContextSnapshot,
+): WorkbenchAction {
   return {
     id: option.id,
     kind: option.kind,
     title: option.title,
-    rationale: option.rationale,
+    rationale: contextualRationale(option, strategy),
     benefits: option.benefits,
     risks: option.risks,
     prerequisites: option.prerequisites,
@@ -288,6 +314,19 @@ function toWorkbenchAction(option: RankedOption): WorkbenchAction {
     opportunityCost: option.feasible ? round(option.opportunityCost) : null,
     rank: option.rank,
   };
+}
+
+function contextualRationale(
+  option: RankedOption,
+  strategy: StrategyContextSnapshot,
+): string {
+  if (option.kind === 'private_conversation') {
+    return `برای هدف «${strategy.goal.title}»، یک تعامل عمیق با ${strategy.desiredPositioning.audience} از چند انتشار عمومی ارزشمندتر است.`;
+  }
+  if (option.kind === 'content') {
+    return `این اقدام باید ادراک «${strategy.desiredPositioning.desiredPerception}» را با تجربه و ادعاهای قابل‌ردیابی پشتیبانی کند.`;
+  }
+  return `عدم اقدام نیز نسبت به هدف «${strategy.goal.title}» یک گزینه آگاهانه است؛ کیفیت برند نباید قربانی پرکردن تقویم شود.`;
 }
 
 function round(value: number): number {

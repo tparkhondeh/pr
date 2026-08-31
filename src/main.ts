@@ -5,7 +5,16 @@ import { PostgresConversationMemoryRepository } from './conversation/repository.
 import { PostgresRuntime } from './database/postgres.js';
 import { createRequestHandler } from './http/application.js';
 import { tenantId, userId } from './kernel/identity.js';
-import { PostgresWorkbenchApprovalRepository } from './workbench/approval-repository.js';
+import {
+  InMemoryStrategyContextRepository,
+  PostgresStrategyContextRepository,
+  StrategyContextService,
+  defaultStrategyContext,
+} from './strategy/context.js';
+import {
+  InMemoryWorkbenchApprovalRepository,
+  PostgresWorkbenchApprovalRepository,
+} from './workbench/approval-repository.js';
 import { createDefaultWorkbenchService } from './workbench/workbench.js';
 
 const environment = loadEnvironment();
@@ -18,7 +27,7 @@ const approvalRepository = postgres && environment.database
       ownerUserId: environment.database.ownerUserId,
       workflowId: 'workbench_today',
     })
-  : undefined;
+  : new InMemoryWorkbenchApprovalRepository();
 const conversationRepository = postgres && environment.database
   ? new PostgresConversationMemoryRepository(postgres, {
       tenantId: environment.database.tenantId,
@@ -27,27 +36,42 @@ const conversationRepository = postgres && environment.database
   : undefined;
 const ownerUserId = environment.database?.ownerUserId ?? 'owner_primary';
 const activeTenantId = environment.database?.tenantId ?? 'tenant_primary';
+const activeTenant = tenantId(activeTenantId);
+const owner = userId(ownerUserId);
+const fallbackStrategy = defaultStrategyContext(activeTenant, owner);
+const strategyRepository = postgres && environment.database
+  ? new PostgresStrategyContextRepository(
+      postgres,
+      {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+        workflowId: 'workbench_today',
+      },
+      fallbackStrategy,
+    )
+  : new InMemoryStrategyContextRepository(fallbackStrategy, approvalRepository);
+const strategy = new StrategyContextService(strategyRepository, {
+  tenantId: activeTenant,
+  ownerUserId: owner,
+});
 
 const workbench = createDefaultWorkbenchService(
   () => new Date(),
   approvalRepository,
-  environment.database
-    ? {
-        tenantId: environment.database.tenantId,
-        ownerUserId: environment.database.ownerUserId,
-      }
-    : undefined,
+  { tenantId: activeTenantId, ownerUserId },
+  strategy,
 );
 const conversation = new ConversationIntakeService(conversationRepository);
 const requestHandler = createRequestHandler(
   () => postgres?.readiness() ?? { ready: true },
   {
     workbench,
+    strategy,
     conversation,
-    tenantId: tenantId(activeTenantId),
+    tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity
     // before allowing any multi-user or public deployment.
-    resolveActor: () => userId(ownerUserId),
+    resolveActor: () => owner,
   },
 );
 const server = createServer((request, response) => {

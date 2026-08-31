@@ -38,6 +38,10 @@ const memoryRightsMigrationPath = fileURLToPath(
   new URL('../db/migrations/0008_memory_rights.sql', import.meta.url),
 );
 const memoryRightsSql = readFileSync(memoryRightsMigrationPath, 'utf8');
+const strategyContextMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0009_strategy_context.sql', import.meta.url),
+);
+const strategyContextSql = readFileSync(strategyContextMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -169,5 +173,20 @@ describe('foundation migration', () => {
     expect(memoryRightsSql.indexOf('SET active_assertion_id = assertion_id')).toBeLessThan(
       memoryRightsSql.indexOf('memory_proposals_confirmed_active_assertion'),
     );
+  });
+
+  it('adds versioned owner strategy context and binds approvals to its revision', () => {
+    defineMigration('0009_strategy_context', strategyContextSql);
+    for (const table of ['strategy_context_states', 'strategy_context_requests']) {
+      expect(strategyContextSql).toContain(`CREATE TABLE app.${table}`);
+      expect(strategyContextSql).toContain(
+        `ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`,
+      );
+      expect(strategyContextSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
+    expect(strategyContextSql).toContain('current_goal_id uuid NOT NULL');
+    expect(strategyContextSql).toContain('current_positioning_id uuid NOT NULL');
+    expect(strategyContextSql).toContain('result_snapshot jsonb');
+    expect(strategyContextSql).toContain('ADD COLUMN strategy_revision bigint NOT NULL');
   });
 });

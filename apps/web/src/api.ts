@@ -37,6 +37,7 @@ export type WorkbenchSnapshot = Readonly<{
   }>;
   goal: Readonly<{
     id: string;
+    revision: number;
     title: string;
     outcome: string;
     successMetrics: readonly string[];
@@ -60,6 +61,32 @@ export type WorkbenchSnapshot = Readonly<{
     approvedActionId?: string;
     approvedAt?: string;
   }>;
+}>;
+
+export type EditableStrategyContext = Readonly<{
+  goal: Readonly<{
+    title: string;
+    outcome: string;
+    priority: 1 | 2 | 3 | 4 | 5;
+    successMetrics: readonly string[];
+    horizon: string;
+  }>;
+  desiredPositioning: Readonly<{
+    audience: string;
+    desiredPerception: string;
+    differentiation: string;
+    proofPoints: readonly string[];
+    horizon: string;
+  }>;
+}>;
+
+export type StrategyContextSnapshot = EditableStrategyContext & Readonly<{
+  revision: number;
+  updatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  goalId: string;
+  positioningId: string;
+  outcome?: 'saved' | 'already_saved';
 }>;
 
 export type ConversationTurnResult = Readonly<{
@@ -168,6 +195,29 @@ export async function loadPersonalMemory(signal?: AbortSignal): Promise<Personal
   if (!isPersonalMemorySnapshot(payload)) {
     throw new WorkbenchApiError(200, 'invalid_response');
   }
+  return payload;
+}
+
+export async function loadStrategyContext(signal?: AbortSignal): Promise<StrategyContextSnapshot> {
+  const payload = await requestJson('/api/strategy', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isStrategyContextSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function saveStrategyContext(input: Readonly<{
+  requestId: string;
+  expectedRevision: number;
+  value: EditableStrategyContext;
+}>): Promise<StrategyContextSnapshot> {
+  const payload = await requestJson('/api/strategy', {
+    method: 'PUT',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!isStrategyContextSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
   return payload;
 }
 
@@ -296,6 +346,31 @@ function isWorkbenchSnapshot(payload: unknown): payload is WorkbenchSnapshot {
     typeof workflow['status'] === 'string' &&
     isRecord(runtime) &&
     typeof runtime['source'] === 'string'
+  );
+}
+
+function isStrategyContextSnapshot(payload: unknown): payload is StrategyContextSnapshot {
+  if (!isRecord(payload) || !isRecord(payload['goal']) || !isRecord(payload['desiredPositioning'])) {
+    return false;
+  }
+  const goal = payload['goal'];
+  const positioning = payload['desiredPositioning'];
+  return (
+    typeof payload['revision'] === 'number' &&
+    typeof payload['updatedAt'] === 'string' &&
+    (payload['persistence'] === 'memory' || payload['persistence'] === 'postgres' || payload['persistence'] === 'ephemeral') &&
+    typeof payload['goalId'] === 'string' &&
+    typeof payload['positioningId'] === 'string' &&
+    typeof goal['title'] === 'string' &&
+    typeof goal['outcome'] === 'string' &&
+    typeof goal['priority'] === 'number' &&
+    Array.isArray(goal['successMetrics']) && goal['successMetrics'].every((item) => typeof item === 'string') &&
+    typeof goal['horizon'] === 'string' &&
+    typeof positioning['audience'] === 'string' &&
+    typeof positioning['desiredPerception'] === 'string' &&
+    typeof positioning['differentiation'] === 'string' &&
+    Array.isArray(positioning['proofPoints']) && positioning['proofPoints'].every((item) => typeof item === 'string') &&
+    typeof positioning['horizon'] === 'string'
   );
 }
 

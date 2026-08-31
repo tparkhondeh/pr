@@ -1,4 +1,26 @@
 let approval = null;
+let strategy = {
+  revision: 1,
+  updatedAt: new Date(0).toISOString(),
+  persistence: 'ephemeral',
+  goalId: '00000000-0000-4000-8000-000000000301',
+  positioningId: '00000000-0000-4000-8000-000000000302',
+  goal: {
+    title: 'تقویت جایگاه «مشاور قابل‌اعتماد»',
+    outcome: 'ایجاد تعامل‌های عمیق و قابل‌ردیابی با ذی‌نفعان اصلی',
+    priority: 5,
+    successMetrics: ['کیفیت تعامل', 'فرصت‌های ایجادشده', 'تغییر ادراک'],
+    horizon: 'سه ماه آینده',
+  },
+  desiredPositioning: {
+    audience: 'بنیان‌گذاران و تصمیم‌گیران کسب‌وکار',
+    desiredPerception: 'مشاوری قابل‌اعتماد، عمیق و صادق در شرایط ابهام',
+    differentiation: 'ترکیب قضاوت انسانی، شواهد قابل‌ردیابی و پرهیز از نمایش‌گری',
+    proofPoints: ['کیفیت گفت‌وگوهای خصوصی', 'تصمیم‌های مستند', 'روایت‌های مبتنی بر تجربه واقعی'],
+    horizon: 'سه ماه آینده',
+  },
+};
+const strategyRequests = new Map();
 const memoryProposals = new Map();
 const memoryRightRequests = new Map();
 
@@ -67,6 +89,39 @@ export default {
       return json(snapshot());
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/strategy') {
+      return json(strategy);
+    }
+
+    if (request.method === 'PUT' && url.pathname === '/api/strategy') {
+      const body = await readJson(request);
+      if (!validStrategyRequest(body)) return json({ error: 'invalid_strategy_context' }, 400);
+      const fingerprint = JSON.stringify({
+        expectedRevision: body.expectedRevision,
+        value: body.value,
+      });
+      const existing = strategyRequests.get(body.requestId);
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) return json({ error: 'idempotency_mismatch' }, 409);
+        return json({ outcome: 'already_saved', ...existing.snapshot });
+      }
+      if (body.expectedRevision !== strategy.revision) {
+        return json({ error: 'revision_changed' }, 409);
+      }
+      const revision = strategy.revision + 1;
+      strategy = {
+        ...body.value,
+        revision,
+        updatedAt: new Date().toISOString(),
+        persistence: 'ephemeral',
+        goalId: `goal_revision_${revision}`,
+        positioningId: `positioning_revision_${revision}`,
+      };
+      approval = null;
+      strategyRequests.set(body.requestId, { fingerprint, snapshot: strategy });
+      return json({ outcome: 'saved', ...strategy });
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/memory') {
       const records = [...memoryProposals.values()]
         .filter((proposal) => proposal.confirmedAt)
@@ -100,7 +155,11 @@ export default {
       if (approval && approval.actionId !== action.id) {
         return json({ error: 'different_action_approved' }, 409);
       }
-      approval ??= { actionId: action.id, approvedAt: new Date().toISOString() };
+      approval ??= {
+        actionId: action.id,
+        approvedAt: new Date().toISOString(),
+        strategyRevision: strategy.revision,
+      };
       return json(snapshot());
     }
 
@@ -262,13 +321,14 @@ function snapshot() {
     runtime: { source: 'preview_worker', persistence: 'ephemeral' },
     profile: { maturityPercent: 32, evidenceCount: 4, openContradictions: 1 },
     goal: {
-      id: 'goal_trusted_advisor',
-      title: 'تقویت جایگاه «مشاور قابل‌اعتماد»',
-      outcome: 'ایجاد تعامل‌های عمیق و قابل‌ردیابی با ذی‌نفعان اصلی',
-      successMetrics: ['کیفیت تعامل', 'فرصت‌های ایجادشده', 'تغییر ادراک'],
+      id: strategy.goalId,
+      revision: strategy.revision,
+      title: strategy.goal.title,
+      outcome: strategy.goal.outcome,
+      successMetrics: strategy.goal.successMetrics,
     },
     attentionBudget: { availableMinutes: 150, maximumEnergyCost: 3 },
-    actions,
+    actions: actions.map((action) => ({ ...action, rationale: contextualRationale(action) })),
     workflow: {
       id: 'workbench_today',
       status: approval ? 'approved' : 'awaiting_approval',
@@ -278,6 +338,45 @@ function snapshot() {
         : {}),
     },
   };
+}
+
+function contextualRationale(action) {
+  if (action.kind === 'private_conversation') {
+    return `برای هدف «${strategy.goal.title}»، یک تعامل عمیق با ${strategy.desiredPositioning.audience} از چند انتشار عمومی ارزشمندتر است.`;
+  }
+  if (action.kind === 'content') {
+    return `این اقدام باید ادراک «${strategy.desiredPositioning.desiredPerception}» را با تجربه و ادعاهای قابل‌ردیابی پشتیبانی کند.`;
+  }
+  return `عدم اقدام نیز نسبت به هدف «${strategy.goal.title}» یک گزینه آگاهانه است؛ کیفیت برند نباید قربانی پرکردن تقویم شود.`;
+}
+
+function validStrategyRequest(body) {
+  const goal = body?.value?.goal;
+  const positioning = body?.value?.desiredPositioning;
+  return (
+    typeof body?.requestId === 'string' &&
+    /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) &&
+    Number.isSafeInteger(body.expectedRevision) && body.expectedRevision >= 1 &&
+    validText(goal?.title, 3, 240) &&
+    validText(goal?.outcome, 3, 2000) &&
+    [1, 2, 3, 4, 5].includes(goal?.priority) &&
+    validStringList(goal?.successMetrics, 1, 8, 3, 240) &&
+    validText(goal?.horizon, 3, 120) &&
+    validText(positioning?.audience, 3, 500) &&
+    validText(positioning?.desiredPerception, 3, 1000) &&
+    validText(positioning?.differentiation, 3, 1000) &&
+    validStringList(positioning?.proofPoints, 1, 8, 3, 500) &&
+    validText(positioning?.horizon, 3, 120)
+  );
+}
+
+function validText(value, min, max) {
+  return typeof value === 'string' && value.trim().length >= min && value.trim().length <= max;
+}
+
+function validStringList(value, minItems, maxItems, minLength, maxLength) {
+  return Array.isArray(value) && value.length >= minItems && value.length <= maxItems &&
+    value.every((item) => validText(item, minLength, maxLength));
 }
 
 function memoryRecord(proposal) {

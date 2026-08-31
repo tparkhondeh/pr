@@ -6,6 +6,12 @@ import {
   type ApplicationDependencies,
 } from '../src/http/application.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
+import {
+  InMemoryStrategyContextRepository,
+  StrategyContextService,
+  defaultStrategyContext,
+} from '../src/strategy/context.js';
+import { InMemoryWorkbenchApprovalRepository } from '../src/workbench/approval-repository.js';
 import { createDefaultWorkbenchService } from '../src/workbench/workbench.js';
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -373,5 +379,78 @@ describe('operational endpoints', () => {
     });
     expect(JSON.stringify(payload)).not.toContain('tenant_primary');
     expect(JSON.stringify(payload)).not.toContain('این متن پس از حذف');
+  });
+
+  it('saves an owner strategy version and makes stale workbench approval expire', async () => {
+    const fixedTime = new Date('2026-08-31T17:00:00.000Z');
+    const activeTenant = tenantId('tenant_primary');
+    const owner = userId('owner_primary');
+    const approval = new InMemoryWorkbenchApprovalRepository();
+    const strategy = new StrategyContextService(
+      new InMemoryStrategyContextRepository(
+        defaultStrategyContext(activeTenant, owner),
+        approval,
+      ),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    const workbench = createDefaultWorkbenchService(
+      () => fixedTime,
+      approval,
+      { tenantId: activeTenant, ownerUserId: owner },
+      strategy,
+    );
+    const dependencies: ApplicationDependencies = {
+      workbench,
+      strategy,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+    await workbench.approve('conversation', owner, fixedTime);
+
+    const before = await request('/api/strategy', () => ({ ready: true }), undefined, dependencies);
+    expect(before.status).toBe(200);
+    const current = await before.json() as Record<string, unknown>;
+    expect(current['revision']).toBe(1);
+
+    const response = await request(
+      '/api/strategy',
+      () => ({ ready: true }),
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'strategy_http_update',
+          expectedRevision: 1,
+          value: {
+            goal: {
+              title: 'مرجع تصمیم‌گیری قابل‌اعتماد',
+              outcome: 'سه گفت‌وگوی عمیق با تصمیم‌گیران منتخب',
+              priority: 5,
+              successMetrics: ['کیفیت تعامل'],
+              horizon: 'سه ماه آینده',
+            },
+            desiredPositioning: {
+              audience: 'مدیران ارشد',
+              desiredPerception: 'دقیق، صادق و قابل‌اعتماد',
+              differentiation: 'شواهد قابل‌ردیابی به‌جای نمایش‌گری',
+              proofPoints: ['تصمیم‌های مستند'],
+              horizon: 'سه ماه آینده',
+            },
+          },
+        }),
+      },
+      dependencies,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      outcome: 'saved',
+      revision: 2,
+      goal: { title: 'مرجع تصمیم‌گیری قابل‌اعتماد' },
+    });
+    const workbenchAfter = await workbench.snapshot();
+    expect(workbenchAfter.goal).toMatchObject({ revision: 2, title: 'مرجع تصمیم‌گیری قابل‌اعتماد' });
+    expect(workbenchAfter.workflow.status).toBe('awaiting_approval');
+    expect(workbenchAfter.workflow).not.toHaveProperty('approvedActionId');
   });
 });

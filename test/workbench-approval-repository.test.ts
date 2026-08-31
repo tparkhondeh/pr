@@ -42,6 +42,7 @@ const context = {
 const approvedRow = {
   workflow_id: context.workflowId,
   revision: '2',
+  strategy_revision: '1',
   approved_action_ref: 'conversation',
   approved_by: context.ownerUserId,
   approved_at: '2026-08-31T12:00:00.000Z',

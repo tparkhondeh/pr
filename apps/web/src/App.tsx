@@ -18,20 +18,24 @@ import {
   Sparkles,
   TriangleAlert,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type SyntheticEvent } from 'react';
 import {
   WorkbenchApiError,
   applyMemoryRight,
   approveWorkbenchAction,
   confirmMemoryProposal,
   loadPersonalMemory,
+  loadStrategyContext,
   loadWorkbench,
+  saveStrategyContext,
   submitConversationTurn,
   type AppliedMemoryRight,
   type ConversationTurnResult,
   type MemoryRightKind,
   type PersonalMemoryRecord,
   type PersonalMemorySnapshot,
+  type EditableStrategyContext,
+  type StrategyContextSnapshot,
   type WorkbenchAction,
   type WorkbenchSnapshot,
 } from './api';
@@ -54,7 +58,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'memory'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'memory' | 'strategy'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +82,9 @@ export function App() {
   const [memorySnapshot, setMemorySnapshot] = useState<PersonalMemorySnapshot | null>(null);
   const [memoryViewState, setMemoryViewState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [memoryViewError, setMemoryViewError] = useState<string | null>(null);
+  const [strategySnapshot, setStrategySnapshot] = useState<StrategyContextSnapshot | null>(null);
+  const [strategyViewState, setStrategyViewState] = useState<'idle' | 'loading' | 'ready' | 'saving' | 'error'>('idle');
+  const [strategyViewError, setStrategyViewError] = useState<string | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState('loading');
@@ -111,6 +118,39 @@ export function App() {
       setMemoryViewState('error');
     }
   }, []);
+
+  const refreshStrategy = useCallback(async (signal?: AbortSignal) => {
+    setStrategyViewState('loading');
+    setStrategyViewError(null);
+    try {
+      const next = await loadStrategyContext(signal);
+      setStrategySnapshot(next);
+      setStrategyViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setStrategyViewError(errorMessage(caught));
+      setStrategyViewState('error');
+    }
+  }, []);
+
+  const saveStrategy = async (value: EditableStrategyContext) => {
+    if (!strategySnapshot || strategyViewState === 'saving') return;
+    setStrategyViewState('saving');
+    setStrategyViewError(null);
+    try {
+      const next = await saveStrategyContext({
+        requestId: `strategy_${crypto.randomUUID()}`,
+        expectedRevision: strategySnapshot.revision,
+        value,
+      });
+      setStrategySnapshot(next);
+      setStrategyViewState('ready');
+      await refresh();
+    } catch (caught: unknown) {
+      setStrategyViewError(errorMessage(caught));
+      setStrategyViewState('error');
+    }
+  };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -233,7 +273,7 @@ export function App() {
   const nav = [
     { label: 'امروز', icon: CircleGauge, view: 'today' as const },
     { label: 'حافظه من', icon: Fingerprint, view: 'memory' as const },
-    { label: 'استراتژی', icon: Lightbulb },
+    { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
     { label: 'روابط', icon: Network },
     {
       label: 'تأییدها',
@@ -255,6 +295,7 @@ export function App() {
                 if (!view) return;
                 setActiveView(view);
                 if (view === 'memory') void refreshMemory();
+                if (view === 'strategy') void refreshStrategy();
               }}
               type="button"
             >
@@ -275,7 +316,11 @@ export function App() {
         <header className="topbar">
           <div>
             <span className="date">{formatDate(snapshot.generatedAt)}</span>
-            <h1>{activeView === 'memory' ? 'حافظه‌ای که شما کنترل می‌کنید.' : 'حرکت بعدی، نه پست بعدی.'}</h1>
+            <h1>{activeView === 'memory'
+              ? 'حافظه‌ای که شما کنترل می‌کنید.'
+              : activeView === 'strategy'
+                ? 'جهت را شما تعیین می‌کنید.'
+                : 'حرکت بعدی، نه پست بعدی.'}</h1>
           </div>
           <div className="top-actions">
             <span className="system-state">
@@ -293,6 +338,15 @@ export function App() {
             onRefresh={() => refreshMemory()}
             snapshot={memorySnapshot}
             state={memoryViewState}
+          />
+        ) : activeView === 'strategy' ? (
+          <StrategyPanel
+            error={strategyViewError}
+            key={strategySnapshot?.revision ?? 'empty'}
+            onRefresh={() => refreshStrategy()}
+            onSave={saveStrategy}
+            snapshot={strategySnapshot}
+            state={strategyViewState}
           />
         ) : (
           <>
@@ -510,6 +564,153 @@ export function App() {
       </main>
     </div>
   );
+}
+
+function StrategyPanel({
+  error,
+  onRefresh,
+  onSave,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onRefresh: () => Promise<void>;
+  onSave: (value: EditableStrategyContext) => Promise<void>;
+  snapshot: StrategyContextSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'saving' | 'error';
+}>) {
+  const [goalTitle, setGoalTitle] = useState(snapshot?.goal.title ?? '');
+  const [goalOutcome, setGoalOutcome] = useState(snapshot?.goal.outcome ?? '');
+  const [priority, setPriority] = useState<1 | 2 | 3 | 4 | 5>(snapshot?.goal.priority ?? 3);
+  const [goalHorizon, setGoalHorizon] = useState(snapshot?.goal.horizon ?? '');
+  const [metrics, setMetrics] = useState(snapshot?.goal.successMetrics.join('\n') ?? '');
+  const [audience, setAudience] = useState(snapshot?.desiredPositioning.audience ?? '');
+  const [desiredPerception, setDesiredPerception] = useState(snapshot?.desiredPositioning.desiredPerception ?? '');
+  const [differentiation, setDifferentiation] = useState(snapshot?.desiredPositioning.differentiation ?? '');
+  const [proofPoints, setProofPoints] = useState(snapshot?.desiredPositioning.proofPoints.join('\n') ?? '');
+  const [positioningHorizon, setPositioningHorizon] = useState(snapshot?.desiredPositioning.horizon ?? '');
+
+  if ((state === 'loading' || state === 'idle') && !snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <LoaderCircle className="spin" size={24} />
+        <h2>در حال بازیابی جهت استراتژیک…</h2>
+        <p>Goal و Desired Positioning مالک از یک Snapshot نسخه‌دار خوانده می‌شوند.</p>
+      </section>
+    );
+  }
+  if (!snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <TriangleAlert size={25} />
+        <h2>زمینه استراتژیک در دسترس نیست</h2>
+        <p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p>
+        <button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button>
+      </section>
+    );
+  }
+
+  const submit = (event: SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const successMetrics = lineItems(metrics);
+    const positioningProofPoints = lineItems(proofPoints);
+    if (
+      goalTitle.trim().length < 3 || goalOutcome.trim().length < 3 ||
+      goalHorizon.trim().length < 3 || successMetrics.length === 0 ||
+      audience.trim().length < 3 || desiredPerception.trim().length < 3 ||
+      differentiation.trim().length < 3 || positioningProofPoints.length === 0 ||
+      positioningHorizon.trim().length < 3
+    ) return;
+    void onSave({
+      goal: {
+        title: goalTitle.trim(),
+        outcome: goalOutcome.trim(),
+        priority,
+        successMetrics,
+        horizon: goalHorizon.trim(),
+      },
+      desiredPositioning: {
+        audience: audience.trim(),
+        desiredPerception: desiredPerception.trim(),
+        differentiation: differentiation.trim(),
+        proofPoints: positioningProofPoints,
+        horizon: positioningHorizon.trim(),
+      },
+    });
+  };
+
+  return (
+    <section className="strategy-view" aria-label="هدف و جایگاه مطلوب">
+      <header className="strategy-head">
+        <div>
+          <p className="overline">Strategy Context · نسخه {snapshot.revision}</p>
+          <h2>هدف و جایگاه مطلوب</h2>
+          <p>این اطلاعات مستقیماً تصمیم‌های Workbench را جهت می‌دهند و هر ویرایش با نسخه جدید ثبت می‌شود.</p>
+        </div>
+        <span className="strategy-persistence"><History size={15} /> {persistenceLabel(snapshot.persistence)}</span>
+      </header>
+
+      <form className="strategy-form" onSubmit={submit}>
+        <fieldset>
+          <legend>۱ · هدف مالک</legend>
+          <label className="strategy-wide">عنوان هدف
+            <input maxLength={240} onChange={(event) => { setGoalTitle(event.target.value); }} value={goalTitle} />
+          </label>
+          <label className="strategy-wide">نتیجه قابل‌مشاهده
+            <textarea maxLength={2000} onChange={(event) => { setGoalOutcome(event.target.value); }} rows={3} value={goalOutcome} />
+          </label>
+          <label>افق زمانی
+            <input maxLength={120} onChange={(event) => { setGoalHorizon(event.target.value); }} value={goalHorizon} />
+          </label>
+          <label>اولویت
+            <select onChange={(event) => { setPriority(Number(event.target.value) as 1 | 2 | 3 | 4 | 5); }} value={priority}>
+              <option value={5}>۵ · حیاتی</option><option value={4}>۴ · بالا</option>
+              <option value={3}>۳ · متوسط</option><option value={2}>۲ · پایین</option><option value={1}>۱ · حداقل</option>
+            </select>
+          </label>
+          <label className="strategy-wide">معیارهای موفقیت · هر مورد در یک خط
+            <textarea maxLength={2000} onChange={(event) => { setMetrics(event.target.value); }} rows={4} value={metrics} />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>۲ · Desired Positioning</legend>
+          <label>مخاطب یا ذی‌نفع اصلی
+            <input maxLength={500} onChange={(event) => { setAudience(event.target.value); }} value={audience} />
+          </label>
+          <label>افق جایگاه
+            <input maxLength={120} onChange={(event) => { setPositioningHorizon(event.target.value); }} value={positioningHorizon} />
+          </label>
+          <label className="strategy-wide">می‌خواهید چگونه درک شوید؟
+            <textarea maxLength={1000} onChange={(event) => { setDesiredPerception(event.target.value); }} rows={3} value={desiredPerception} />
+          </label>
+          <label className="strategy-wide">تمایز معنادار
+            <textarea maxLength={1000} onChange={(event) => { setDifferentiation(event.target.value); }} rows={3} value={differentiation} />
+          </label>
+          <label className="strategy-wide">نقاط اثبات · هر مورد در یک خط
+            <textarea maxLength={2500} onChange={(event) => { setProofPoints(event.target.value); }} rows={4} value={proofPoints} />
+          </label>
+        </fieldset>
+
+        <div className="strategy-savebar">
+          <div>
+            <ShieldCheck size={17} />
+            <span>با ذخیره، تأیید اقدام قبلی منقضی می‌شود تا تصمیم تازه دوباره به‌صورت انسانی تأیید شود.</span>
+          </div>
+          <button disabled={state === 'saving'} type="submit">
+            {state === 'saving' ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}
+            {state === 'saving' ? 'در حال ثبت نسخه…' : 'ثبت نسخه جدید'}
+          </button>
+        </div>
+        {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
+      </form>
+      <small className="memory-footnote">آخرین تغییر: {formatDate(snapshot.updatedAt)} · هیچ انتشار یا اقدام بیرونی با این ذخیره انجام نمی‌شود.</small>
+    </section>
+  );
+}
+
+function lineItems(value: string): readonly string[] {
+  return value.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean).slice(0, 8);
 }
 
 function PersonalMemoryPanel({
@@ -790,6 +991,11 @@ function errorMessage(error: unknown): string {
     memory_proposal_conflict: 'این پیشنهاد حافظه قبلاً با وضعیت دیگری ثبت شده است.',
     memory_proposal_not_found: 'پیشنهاد حافظه دیگر در دسترس نیست.',
     invalid_memory_right: 'نوع درخواست، دلیل یا متن اصلاح حافظه معتبر نیست.',
+    invalid_strategy_context: 'هدف یا جایگاه مطلوب ناقص است؛ فیلدها و موارد هر خط را بررسی کنید.',
+    revision_changed: 'این استراتژی در جای دیگری تغییر کرده است؛ نسخه تازه را دریافت و دوباره ویرایش کنید.',
+    idempotency_mismatch: 'شناسه این ذخیره قبلاً برای محتوای دیگری استفاده شده است.',
+    strategy_permission_denied: 'فقط مالک می‌تواند هدف و جایگاه مطلوب را تغییر دهد.',
+    strategy_unavailable: 'سرویس استراتژی در دسترس نیست.',
     invalid_response: 'پاسخ API با قرارداد Workbench هم‌خوان نیست.',
   };
   return messages[error.code] ?? 'در پردازش درخواست خطایی رخ داد.';

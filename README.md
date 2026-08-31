@@ -66,3 +66,10 @@ PostgreSQL، Proposal انتخاب‌شده و تأیید آن همراه Eviden
 جاری، Epistemic Type، Data Class، Confidence، Provenance، تعداد Revision و Consent
 فعال را نشان می‌دهد. رکوردهای Contest/Revoke/Delete پنهان نمی‌شوند، اما محتوای
 رکورد حذف‌شده و Evidence حذف‌شده هرگز در Snapshot API بازگردانده نمی‌شود.
+
+نمای «استراتژی» Goal و Desired Positioning مالک را از `GET /api/strategy` می‌خواند
+و با `PUT /api/strategy` به‌صورت نسخه‌دار و idempotent ذخیره می‌کند. تغییر شامل هدف،
+نتیجه، معیارهای موفقیت، افق، مخاطب، ادراک مطلوب، تمایز و نقاط اثبات است. در PostgreSQL
+هر نسخه جدید Goal و Positioning را حفظ می‌کند، Pointer جاری را با Optimistic Lock
+جابه‌جا می‌کند و Audit/Outbox را در همان Transaction می‌نویسد. همچنین Approval قبلی
+Workbench منقضی می‌شود تا تصمیم مبتنی بر جهت قدیمی بی‌صدا معتبر باقی نماند.

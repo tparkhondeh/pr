@@ -3,6 +3,7 @@ import type { SqlTransaction, SqlTransactionRunner } from '../database/sql.js';
 export type WorkbenchApprovalRecord = Readonly<{
   workflowId: string;
   revision: number;
+  strategyRevision: number;
   actionId: string;
   approvedBy: string;
   approvedAt: Date;
@@ -13,6 +14,7 @@ export type WorkbenchApprovalCommand = Readonly<{
   actorUserId: string;
   occurredAt: Date;
   expectedRevision: number;
+  strategyRevision?: number;
 }>;
 
 export type WorkbenchApprovalResult =
@@ -21,8 +23,9 @@ export type WorkbenchApprovalResult =
 
 export interface WorkbenchApprovalRepository {
   readonly persistence: 'memory' | 'postgres';
-  find(): Promise<WorkbenchApprovalRecord | null>;
+  find(strategyRevision?: number): Promise<WorkbenchApprovalRecord | null>;
   approve(command: WorkbenchApprovalCommand): Promise<WorkbenchApprovalResult>;
+  invalidate(strategyRevision: number, occurredAt: Date): Promise<void>;
 }
 
 export class InMemoryWorkbenchApprovalRepository implements WorkbenchApprovalRepository {
@@ -31,11 +34,17 @@ export class InMemoryWorkbenchApprovalRepository implements WorkbenchApprovalRep
 
   public constructor(private readonly workflowId = 'workbench_today') {}
 
-  public find(): Promise<WorkbenchApprovalRecord | null> {
-    return Promise.resolve(this.#record);
+  public find(strategyRevision = 1): Promise<WorkbenchApprovalRecord | null> {
+    return Promise.resolve(
+      this.#record?.strategyRevision === strategyRevision ? this.#record : null,
+    );
   }
 
   public approve(command: WorkbenchApprovalCommand): Promise<WorkbenchApprovalResult> {
+    const strategyRevision = command.strategyRevision ?? 1;
+    if (this.#record && this.#record.strategyRevision !== strategyRevision) {
+      this.#record = null;
+    }
     if (this.#record) {
       return Promise.resolve(
         this.#record.actionId === command.actionId
@@ -46,17 +55,25 @@ export class InMemoryWorkbenchApprovalRepository implements WorkbenchApprovalRep
     this.#record = {
       workflowId: this.workflowId,
       revision: command.expectedRevision + 1,
+      strategyRevision,
       actionId: command.actionId,
       approvedBy: command.actorUserId,
       approvedAt: command.occurredAt,
     };
     return Promise.resolve({ outcome: 'approved', record: this.#record });
   }
+
+  public invalidate(strategyRevision: number, occurredAt: Date): Promise<void> {
+    void occurredAt;
+    if (this.#record && this.#record.strategyRevision < strategyRevision) this.#record = null;
+    return Promise.resolve();
+  }
 }
 
 type ApprovalRow = Readonly<{
   workflow_id: string;
   revision: string | number;
+  strategy_revision: string | number;
   approved_action_ref: string;
   approved_by: string;
   approved_at: Date | string;
@@ -74,17 +91,18 @@ export class PostgresWorkbenchApprovalRepository implements WorkbenchApprovalRep
     }>,
   ) {}
 
-  public find(): Promise<WorkbenchApprovalRecord | null> {
+  public find(strategyRevision = 1): Promise<WorkbenchApprovalRecord | null> {
     return this.runner.transaction(async (transaction) => {
       await setTenantContext(transaction, this.context.tenantId);
       const result = await transaction.query<ApprovalRow>(
-        `SELECT workflow_id, revision, approved_action_ref, approved_by, approved_at
+        `SELECT workflow_id, revision, strategy_revision, approved_action_ref, approved_by, approved_at
            FROM app.workbench_states
           WHERE tenant_id = $1
             AND owner_user_id = $2
             AND workflow_id = $3
+            AND strategy_revision = $4
             AND status = 'approved'`,
-        [this.context.tenantId, this.context.ownerUserId, this.context.workflowId],
+        [this.context.tenantId, this.context.ownerUserId, this.context.workflowId, strategyRevision],
       );
       return result.rows[0] ? toRecord(result.rows[0]) : null;
     });
@@ -92,17 +110,20 @@ export class PostgresWorkbenchApprovalRepository implements WorkbenchApprovalRep
 
   public approve(command: WorkbenchApprovalCommand): Promise<WorkbenchApprovalResult> {
     return this.runner.transaction(async (transaction) => {
+      const strategyRevision = command.strategyRevision ?? 1;
       await setTenantContext(transaction, this.context.tenantId);
       await transaction.query(
         `INSERT INTO app.workbench_states (
-           tenant_id, owner_user_id, workflow_id, definition_version, revision, status
-         ) VALUES ($1, $2, $3, 1, $4, 'awaiting_approval')
+           tenant_id, owner_user_id, workflow_id, definition_version, revision,
+           strategy_revision, status
+         ) VALUES ($1, $2, $3, 1, $4, $5, 'awaiting_approval')
          ON CONFLICT (tenant_id, owner_user_id, workflow_id) DO NOTHING`,
         [
           this.context.tenantId,
           this.context.ownerUserId,
           this.context.workflowId,
           command.expectedRevision,
+          strategyRevision,
         ],
       );
 
@@ -119,7 +140,8 @@ export class PostgresWorkbenchApprovalRepository implements WorkbenchApprovalRep
             AND workflow_id = $3
             AND status = 'awaiting_approval'
             AND revision = $7
-        RETURNING workflow_id, revision, approved_action_ref, approved_by, approved_at`,
+            AND strategy_revision = $8
+        RETURNING workflow_id, revision, strategy_revision, approved_action_ref, approved_by, approved_at`,
         [
           this.context.tenantId,
           this.context.ownerUserId,
@@ -128,6 +150,7 @@ export class PostgresWorkbenchApprovalRepository implements WorkbenchApprovalRep
           command.actorUserId,
           command.occurredAt,
           command.expectedRevision,
+          strategyRevision,
         ],
       );
 
@@ -138,23 +161,46 @@ export class PostgresWorkbenchApprovalRepository implements WorkbenchApprovalRep
         return { outcome: 'approved', record };
       }
 
-      const existing = await this.findWithin(transaction);
-      if (!existing) throw new Error('Workbench approval lost an optimistic-lock race.');
+      const existing = await this.findWithin(transaction, strategyRevision);
+      if (!existing) throw new Error('Workbench approval strategy changed during approval.');
       return existing.actionId === command.actionId
         ? { outcome: 'already_approved', record: existing }
         : { outcome: 'conflict', record: existing };
     });
   }
 
-  private async findWithin(transaction: SqlTransaction): Promise<WorkbenchApprovalRecord | null> {
+  public invalidate(strategyRevision: number, occurredAt: Date): Promise<void> {
+    return this.runner.transaction(async (transaction) => {
+      await setTenantContext(transaction, this.context.tenantId);
+      await transaction.query(
+        `UPDATE app.workbench_states
+            SET revision = 1,
+                strategy_revision = $4,
+                status = 'awaiting_approval',
+                approved_action_ref = NULL,
+                approved_by = NULL,
+                approved_at = NULL,
+                updated_at = $5
+          WHERE tenant_id = $1 AND owner_user_id = $2 AND workflow_id = $3
+            AND strategy_revision < $4`,
+        [this.context.tenantId, this.context.ownerUserId, this.context.workflowId, strategyRevision, occurredAt],
+      );
+    });
+  }
+
+  private async findWithin(
+    transaction: SqlTransaction,
+    strategyRevision: number,
+  ): Promise<WorkbenchApprovalRecord | null> {
     const result = await transaction.query<ApprovalRow>(
-      `SELECT workflow_id, revision, approved_action_ref, approved_by, approved_at
+      `SELECT workflow_id, revision, strategy_revision, approved_action_ref, approved_by, approved_at
          FROM app.workbench_states
         WHERE tenant_id = $1
           AND owner_user_id = $2
           AND workflow_id = $3
+          AND strategy_revision = $4
           AND status = 'approved'`,
-      [this.context.tenantId, this.context.ownerUserId, this.context.workflowId],
+      [this.context.tenantId, this.context.ownerUserId, this.context.workflowId, strategyRevision],
     );
     return result.rows[0] ? toRecord(result.rows[0]) : null;
   }
@@ -200,15 +246,23 @@ async function setTenantContext(
 
 function toRecord(row: ApprovalRow): WorkbenchApprovalRecord {
   const revision = typeof row.revision === 'number' ? row.revision : Number(row.revision);
+  const strategyRevision = typeof row.strategy_revision === 'number'
+    ? row.strategy_revision
+    : Number(row.strategy_revision);
   const approvedAt = row.approved_at instanceof Date
     ? row.approved_at
     : new Date(row.approved_at);
-  if (!Number.isSafeInteger(revision) || revision < 1 || Number.isNaN(approvedAt.getTime())) {
+  if (
+    !Number.isSafeInteger(revision) || revision < 1 ||
+    !Number.isSafeInteger(strategyRevision) || strategyRevision < 1 ||
+    Number.isNaN(approvedAt.getTime())
+  ) {
     throw new Error('Invalid workbench approval row.');
   }
   return {
     workflowId: row.workflow_id,
     revision,
+    strategyRevision,
     actionId: row.approved_action_ref,
     approvedBy: row.approved_by,
     approvedAt,
