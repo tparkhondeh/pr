@@ -157,6 +157,15 @@ Conflict باز نشان می‌دهد. ثبت منبع هرگز Claim را خو
 [`docs/architecture/research-layer-v1.0.md`](docs/architecture/research-layer-v1.0.md)
 تعریف شده است.
 
+نمای «دفتر ادعاها» Claimهای ساخته‌شده از Draft و Research را با Statement دقیق، Evidence،
+Source Ref، Purpose، Channel، دسته حساس و Trace Status نشان می‌دهد. Citation-ready هیچ Claimی
+را خودکار Verified نمی‌کند؛ تصمیم `verify` فقط با Human Attestation و Rationale ثبت می‌شود و
+`dispute` یا `revoke` مسیر Edit/Approval/Export Draft متصل را Fail-closed متوقف می‌کند. Reviewها
+در `app.claim_reviews` به‌صورت append-only، idempotent، tenant-isolated و همراه Audit/Outbox
+ثبت می‌شوند. APIهای این بخش `GET /api/claims` و `POST /api/claims/:id/reviews` هستند. جزئیات
+در [`docs/architecture/claim-governance-v1.0.md`](docs/architecture/claim-governance-v1.0.md)
+ثبت شده است.
+
 هر ذخیره ویرایش Draft به Feedback Engine متصل است. سیستم فقط تغییرهای مادی و
 توضیح‌پذیر مانند کوتاه‌کردن متن/تیتر، کاهش میان‌تیتر یا حذف پرسش پایانی را به‌عنوان
 Signal ثبت می‌کند. یک Edit یا Reject منفرد Voice Model را تغییر نمی‌دهد؛ پس از دست‌کم

@@ -7,7 +7,8 @@ import type { TenantId, UserId } from '../kernel/identity.js';
 import { evidenceId } from '../memory/personal-memory.js';
 import type { StrategyContextService } from '../strategy/context.js';
 import type { WorkbenchService, WorkbenchSnapshot } from '../workbench/workbench.js';
-import { proposeClaim, verifyClaim, type Claim } from './claim-registry.js';
+import { proposeClaim, verifyClaim, type Claim, type ClaimStatus } from './claim-registry.js';
+import type { ClaimGovernanceRepository } from './governance.js';
 import { guardDraft, type DraftGuardResult, type GuardViolation } from './draft-guard.js';
 import {
   composePlatformDraft,
@@ -124,6 +125,7 @@ export class DraftBlockedError extends Error {
       | 'source_not_authorized_for_action'
       | 'guard_failed'
       | 'strategy_changed'
+      | 'claim_not_verified'
       | 'draft_not_approved',
   ) {
     super(`Draft blocked: ${reason}`);
@@ -147,6 +149,7 @@ export class ContentDraftService {
     private readonly strategy: Pick<StrategyContextService, 'snapshot'>,
     private readonly learning?: Pick<FeedbackLearningService, 'recordDraftEdit' | 'appliedPreferences'>,
     private readonly assets?: Pick<TextAssetIntakeService, 'snapshot'>,
+    private readonly claimPolicy?: Pick<ClaimGovernanceRepository, 'effectiveStatus'>,
   ) {}
 
   public async sources(actorId: UserId, at: Date): Promise<DraftSourceSnapshot> {
@@ -292,6 +295,13 @@ export class ContentDraftService {
     const current = await this.requiredCurrent(input.draftId);
     const strategy = await this.strategy.snapshot(input.actorId);
     if (strategy.revision !== current.strategyRevision) throw new DraftBlockedError('strategy_changed');
+    const claimStatus = await this.claimPolicy?.effectiveStatus(
+      this.identity.tenantId,
+      input.actorId,
+      current.claimId,
+      'verified' satisfies ClaimStatus,
+    ) ?? 'verified';
+    if (claimStatus !== 'verified') throw new DraftBlockedError('claim_not_verified');
     const source = await this.findSource(
       input.actorId,
       current.source.kind,
@@ -368,6 +378,13 @@ export class ContentDraftService {
     }
     const strategy = await this.strategy.snapshot(input.actorId);
     if (strategy.revision !== current.strategyRevision) throw new DraftBlockedError('strategy_changed');
+    const claimStatus = await this.claimPolicy?.effectiveStatus(
+      this.identity.tenantId,
+      input.actorId,
+      current.claimId,
+      'verified' satisfies ClaimStatus,
+    ) ?? 'verified';
+    if (claimStatus !== 'verified') throw new DraftBlockedError('claim_not_verified');
     const source = await this.findSource(
       input.actorId,
       current.source.kind,
@@ -687,6 +704,7 @@ export class PostgresDraftWorkspaceRepository implements DraftWorkspaceRepositor
             AND draft.id = $3 AND draft.revision = $4
             AND draft.status = 'awaiting_approval'
             AND COALESCE(draft.guard_result->>'classification', 'red') <> 'red'
+            AND (SELECT claim_status FROM claim_context) = 'verified'
          RETURNING ${draftReturningColumns()}`,
         [this.context.tenantId, this.context.ownerUserId, command.draftId, command.expectedRevision, command.occurredAt],
       );
@@ -705,6 +723,7 @@ export class PostgresDraftWorkspaceRepository implements DraftWorkspaceRepositor
            exported_at = $5, updated_at = $5
           WHERE draft.tenant_id = $1 AND draft.owner_user_id = $2
             AND draft.id = $3 AND draft.revision = $4 AND draft.status = 'approved'
+            AND (SELECT claim_status FROM claim_context) = 'verified'
          RETURNING ${draftReturningColumns()}`,
         [this.context.tenantId, this.context.ownerUserId, command.draftId, command.expectedRevision, command.occurredAt],
       );
@@ -904,13 +923,13 @@ function draftSelectColumns(): string {
 
 function draftUpdateCte(): string {
   return `WITH claim_context AS (
-    SELECT draft_claim.draft_id, claim.id AS claim_id, claim.statement,
+    SELECT draft_claim.draft_id, claim.id AS claim_id, claim.statement, claim.status AS claim_status,
            COALESCE(jsonb_agg(link.evidence_id::text), '[]'::jsonb) AS evidence_ids
       FROM app.draft_claims draft_claim
       JOIN app.claims claim ON claim.tenant_id = draft_claim.tenant_id AND claim.id = draft_claim.claim_id
       LEFT JOIN app.claim_evidence link ON link.tenant_id = claim.tenant_id AND link.claim_id = claim.id
      WHERE draft_claim.tenant_id = $1 AND draft_claim.draft_id = $3
-     GROUP BY draft_claim.draft_id, claim.id, claim.statement
+     GROUP BY draft_claim.draft_id, claim.id, claim.statement, claim.status
   )`;
 }
 

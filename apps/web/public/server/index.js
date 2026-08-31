@@ -36,6 +36,8 @@ const retiredAssetContentHashes = new Set();
 const textAssets = new Map();
 const researchSources = new Map();
 const researchRequests = new Map();
+const claimReviews = new Map();
+const claimReviewRequests = new Map();
 
 const groundedActions = [
   {
@@ -158,6 +160,55 @@ export default {
       return json({ outcome: 'applied', persistence: 'ephemeral', record }, 201);
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/claims') {
+      return json(claimGovernanceSnapshot());
+    }
+
+    const claimReview = url.pathname.match(/^\/api\/claims\/([0-9a-f-]{36})\/reviews$/i);
+    if (request.method === 'POST' && claimReview?.[1]) {
+      const body = await readJson(request);
+      if (!validClaimReview(body)) return json({ error: 'invalid_claim_review' }, 400);
+      const fingerprint = JSON.stringify({ ...body, claimId: claimReview[1] });
+      const repeated = claimReviewRequests.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json({ outcome: 'already_applied', persistence: 'ephemeral', review: repeated.review })
+          : json({ error: 'idempotency_mismatch' }, 409);
+      }
+      const claim = claimGovernanceSnapshot().claims.find((candidate) => candidate.claimId === claimReview[1]);
+      if (!claim) return json({ error: 'claim_not_found' }, 404);
+      if (claim.status !== body.expectedStatus) return json({ error: 'status_changed' }, 409);
+      const resultingStatus = claimTransition(body.expectedStatus, body.decision);
+      if (!resultingStatus) return json({ error: 'invalid_transition' }, 422);
+      if (body.decision === 'verify' && !body.humanAttestation) {
+        return json({ error: 'attestation_required' }, 422);
+      }
+      if (body.decision === 'verify' && claim.traceStatus !== 'complete') {
+        return json({ error: 'trace_incomplete' }, 422);
+      }
+      const reviewedAt = new Date().toISOString();
+      const review = {
+        reviewId: crypto.randomUUID(), requestId: body.requestId, claimId: claim.claimId,
+        decision: body.decision, previousStatus: body.expectedStatus, resultingStatus,
+        rationale: body.rationale.trim(),
+        traceSnapshot: {
+          categories: claim.categories, traceStatus: claim.traceStatus,
+          traceRationale: claim.traceRationale, evidenceIds: claim.evidenceIds,
+          sourceRefs: claim.sourceRefs, humanAttestation: body.humanAttestation,
+        },
+        reviewedAt,
+      };
+      claimReviews.set(claim.claimId, review);
+      claimReviewRequests.set(body.requestId, { fingerprint, review });
+      recordAudit(`claim.review:${body.requestId}`, {
+        eventType: 'claim.reviewed', resourceType: 'claim', resourceId: claim.claimId,
+        purpose: 'public_drafting', decision: body.decision,
+        metadata: { requestId: body.requestId, previousStatus: body.expectedStatus, resultingStatus },
+        occurredAt: reviewedAt,
+      });
+      return json({ outcome: 'applied', persistence: 'ephemeral', review }, 201);
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/account/activity') {
       return json(auditSnapshot());
     }
@@ -190,6 +241,7 @@ export default {
           assets: assetSnapshot(),
           draft: currentDraft ? draftSnapshot() : null,
           research: researchSnapshot(),
+          claims: claimGovernanceSnapshot(),
           feedback: feedbackSnapshot(),
           activity,
         },
@@ -482,6 +534,9 @@ export default {
       if (repeated?.error) return json({ error: repeated.error }, 409);
       if (repeated?.snapshot) {
         if (currentDraft?.strategyRevision !== strategy.revision) return json({ error: 'strategy_changed' }, 409);
+        if (currentDraft && governedClaimStatus(currentDraft.claimId, 'verified') !== 'verified') {
+          return json({ error: 'claim_not_verified' }, 409);
+        }
         const repeatedSource = resolveDraftSource(currentDraft.source.kind, currentDraft.source.ref);
         if (!repeatedSource) {
           return json({ error: 'source_not_available' }, 409);
@@ -1076,6 +1131,106 @@ function researchSnapshot() {
   };
 }
 
+function validClaimReview(body) {
+  return typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) &&
+    ['proposed', 'verified', 'disputed', 'expired', 'revoked'].includes(body.expectedStatus) &&
+    ['verify', 'dispute', 'revoke'].includes(body.decision) &&
+    validText(body.rationale, 20, 2000) && typeof body.humanAttestation === 'boolean';
+}
+
+function claimTransition(status, decision) {
+  if (decision === 'verify' && status === 'proposed') return 'verified';
+  if (decision === 'dispute' && (status === 'proposed' || status === 'verified')) return 'disputed';
+  if (decision === 'revoke' && (status === 'proposed' || status === 'verified' || status === 'disputed')) return 'revoked';
+  return null;
+}
+
+function governedClaimStatus(claimId, fallback) {
+  return claimReviews.get(claimId)?.resultingStatus ?? fallback;
+}
+
+function claimGovernanceSnapshot() {
+  const researchClaims = researchSnapshot().sources.map((source) => {
+    const traceStatus = source.factCheckStatus === 'citation_ready'
+      ? 'complete'
+      : source.factCheckStatus === 'conflicted'
+        ? 'conflicted'
+        : source.factCheckStatus === 'contradicted'
+          ? 'contradicted'
+          : source.quality === 'unverified' ? 'unverified_source' : 'stale';
+    const traceRationale = {
+      complete: 'Source، Citation، Evidence و Freshness برای بازبینی انسانی حاضرند.',
+      conflicted: 'برای Statement یکسان، منبع حامی و ناقض هم‌زمان وجود دارد.',
+      contradicted: 'این Source ادعا را نقض می‌کند و نمی‌تواند مبنای Verify باشد.',
+      unverified_source: 'کیفیت Source هنوز تأیید نشده است.',
+      stale: 'Source از پنجره تازگی تعریف‌شده عبور کرده است.',
+    }[traceStatus];
+    return governedClaim({
+      claimId: source.claimId, statement: source.statement, kind: 'external_fact',
+      status: 'proposed', dataClass: 'public', evidenceIds: [source.evidenceId],
+      sourceRefs: [source.url], allowedPurposes: ['external_research'], allowedChannels: [],
+      validFrom: source.publishedAt, createdAt: source.accessedAt,
+      categories: classifyClaim(source.statement), traceStatus, traceRationale,
+      research: {
+        sourceId: source.sourceId, title: source.title, publisher: source.publisher,
+        url: source.url, quality: source.quality, stance: source.stance,
+        publishedAt: source.publishedAt, accessedAt: source.accessedAt, maxAgeDays: source.maxAgeDays,
+      },
+    });
+  });
+  const draftClaims = currentDraft ? [governedClaim({
+    claimId: currentDraft.claimId, statement: currentDraft.source.statement,
+    kind: 'personal_fact', status: 'verified', dataClass: 'confidential',
+    evidenceIds: currentDraft.source.evidenceIds, sourceRefs: [],
+    allowedPurposes: ['public_drafting'], allowedChannels: [currentDraft.channel],
+    validFrom: currentDraft.updatedAt, createdAt: currentDraft.updatedAt,
+    categories: classifyClaim(currentDraft.source.statement), traceStatus: 'complete',
+    traceRationale: 'Evidence داخلی و Provenance ادعا موجود است.',
+  })] : [];
+  const claims = [...researchClaims, ...draftClaims].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  return {
+    generatedAt: new Date().toISOString(), persistence: 'ephemeral',
+    summary: {
+      totalClaims: claims.length,
+      verified: claims.filter((claim) => claim.status === 'verified').length,
+      proposed: claims.filter((claim) => claim.status === 'proposed').length,
+      disputedOrRevoked: claims.filter((claim) => claim.status === 'disputed' || claim.status === 'revoked').length,
+      traceBlocked: claims.filter((claim) => claim.traceStatus !== 'complete').length,
+      publicReady: claims.filter((claim) => claim.canUsePublicly).length,
+    },
+    claims,
+  };
+}
+
+function governedClaim(claim) {
+  const lastReview = claimReviews.get(claim.claimId);
+  const status = lastReview?.resultingStatus ?? claim.status;
+  const canUsePublicly = status === 'verified' && claim.traceStatus === 'complete' &&
+    claim.allowedPurposes.includes('public_drafting') && claim.allowedChannels.length > 0;
+  const reviewableDecisions = status === 'proposed'
+    ? (claim.traceStatus === 'complete' ? ['verify', 'dispute', 'revoke'] : ['dispute', 'revoke'])
+    : status === 'verified' ? ['dispute', 'revoke'] : status === 'disputed' ? ['revoke'] : [];
+  const riskLevel = status !== 'verified' || claim.traceStatus !== 'complete'
+    ? 'red'
+    : claim.categories.some((category) => category !== 'general') ? 'yellow' : 'green';
+  return { ...claim, status, riskLevel, canUsePublicly, reviewableDecisions, ...(lastReview ? { lastReview } : {}) };
+}
+
+function classifyClaim(statement) {
+  const rules = [
+    ['company', /شرکت|کسب.?و.?کار|استارتاپ|business|company/iu],
+    ['revenue', /درآمد|فروش|سود|گردش مالی|revenue|sales|profit/iu],
+    ['experience', /سابقه|سال تجربه|تجربه کاری|experience|worked/iu],
+    ['education', /تحصیل|مدرک|دانشگاه|دانشکده|degree|university|education/iu],
+    ['numeric', /[0-9۰-۹]|درصد|٪|percent/iu],
+    ['award', /جایزه|رتبه|برنده|افتخار|award|winner/iu],
+    ['third_party', /او|ایشان|آنها|مشتری|همکار|مدیر|he|she|they|client/iu],
+    ['research', /تحقیق|پژوهش|مطالعه|گزارش|research|study|report/iu],
+  ];
+  const values = rules.filter(([, expression]) => expression.test(statement)).map(([category]) => category);
+  return values.length ? values : ['general'];
+}
+
 const draftChannels = ['linkedin', 'instagram', 'x', 'youtube', 'podcast', 'newsletter', 'blog'];
 const platformAdaptationProfileVersion = 'platform-adaptation-v1';
 const platformProfiles = {
@@ -1213,6 +1368,7 @@ function draftMutationGate(draftId, revision) {
   if (!currentDraft || currentDraft.draftId !== draftId) return 'draft_not_found';
   if (currentDraft.revision !== revision) return 'revision_changed';
   if (currentDraft.strategyRevision !== strategy.revision) return 'strategy_changed';
+  if (governedClaimStatus(currentDraft.claimId, 'verified') !== 'verified') return 'claim_not_verified';
   const source = resolveDraftSource(currentDraft.source.kind, currentDraft.source.ref);
   if (!source) return 'source_not_available';
   if (!sourceAuthorizedForContentAction(source)) return 'source_not_authorized_for_action';

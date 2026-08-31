@@ -70,6 +70,10 @@ const researchWorkspaceMigrationPath = fileURLToPath(
   new URL('../db/migrations/0016_research_workspace.sql', import.meta.url),
 );
 const researchWorkspaceSql = readFileSync(researchWorkspaceMigrationPath, 'utf8');
+const claimReviewMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0017_claim_review_lifecycle.sql', import.meta.url),
+);
+const claimReviewSql = readFileSync(claimReviewMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -283,5 +287,15 @@ describe('foundation migration', () => {
     expect(researchWorkspaceSql).toContain("stance IN ('supports', 'contradicts')");
     expect(researchWorkspaceSql).toContain('ALTER TABLE app.research_sources FORCE ROW LEVEL SECURITY');
     expect(researchWorkspaceSql).toContain('CREATE POLICY research_sources_tenant_isolation');
+  });
+
+  it('adds an append-only, tenant-isolated human claim review lifecycle', () => {
+    defineMigration('0017_claim_review_lifecycle', claimReviewSql);
+    expect(claimReviewSql).toContain('CREATE TABLE app.claim_reviews');
+    expect(claimReviewSql).toContain("decision IN ('verify', 'dispute', 'revoke')");
+    expect(claimReviewSql).toContain('UNIQUE (tenant_id, owner_user_id, client_ref)');
+    expect(claimReviewSql).toContain('trace_snapshot jsonb NOT NULL');
+    expect(claimReviewSql).toContain('ALTER TABLE app.claim_reviews FORCE ROW LEVEL SECURITY');
+    expect(claimReviewSql).toContain('CREATE POLICY claim_reviews_tenant_isolation');
   });
 });

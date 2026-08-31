@@ -74,6 +74,33 @@ describe('private preview worker draft runtime', () => {
         { factCheckStatus: 'conflicted', usableForPublicClaim: false },
       ],
     });
+    const claimsBeforeResponse = await worker.fetch(
+      new Request('https://preview.example/api/claims'),
+      env,
+    );
+    const claimsBefore = await claimsBeforeResponse.json() as {
+      summary: { totalClaims: number; traceBlocked: number };
+      claims: Array<{ claimId: string; status: string; traceStatus: string }>;
+    };
+    expect(claimsBefore.summary).toMatchObject({ totalClaims: 2, traceBlocked: 2 });
+    const conflictedClaim = claimsBefore.claims[0];
+    if (!conflictedClaim) throw new Error('Expected a conflicted claim.');
+    const blockedVerification = await post(`/api/claims/${conflictedClaim.claimId}/reviews`, {
+      requestId: 'claim_runtime_verify_blocked',
+      expectedStatus: 'proposed',
+      decision: 'verify',
+      rationale: 'این Review باید به‌دلیل تعارض دو Source از Verify خودکار جلوگیری کند.',
+      humanAttestation: true,
+    });
+    expect(blockedVerification.status).toBe(422);
+    await expect(blockedVerification.json()).resolves.toEqual({ error: 'trace_incomplete' });
+    expect((await post(`/api/claims/${conflictedClaim.claimId}/reviews`, {
+      requestId: 'claim_runtime_dispute',
+      expectedStatus: 'proposed',
+      decision: 'dispute',
+      rationale: 'این Claim تا حل تعارض منابع نباید وارد هیچ خروجی عمومی شود.',
+      humanAttestation: false,
+    })).status).toBe(201);
 
     const turn = await post('/api/conversations/turns', {
       conversationId: 'conversation_runtime',
@@ -311,6 +338,7 @@ describe('private preview worker draft runtime', () => {
         memory: { records: Array<{ consent: { personalUnderstanding: boolean } }> };
         assets: { records: Array<{ sourceType: string }> };
         research: { summary: { conflicts: number }; sources: unknown[] };
+        claims: { summary: { disputedOrRevoked: number }; claims: unknown[] };
       };
     };
     expect(accountExportResponse.status).toBe(200);
@@ -319,6 +347,8 @@ describe('private preview worker draft runtime', () => {
     expect(accountExport.data.assets.records[0]?.sourceType).toBe('text_asset');
     expect(accountExport.data.research).toMatchObject({ summary: { conflicts: 1 } });
     expect(accountExport.data.research.sources).toHaveLength(2);
+    expect(accountExport.data.claims.summary.disputedOrRevoked).toBe(1);
+    expect(accountExport.data.claims.claims.length).toBeGreaterThanOrEqual(3);
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

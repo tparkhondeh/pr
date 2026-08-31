@@ -149,6 +149,76 @@ export type ResearchWorkspaceSnapshot = Readonly<{
   sources: readonly ResearchSource[];
 }>;
 
+export type ClaimStatus = 'proposed' | 'verified' | 'disputed' | 'expired' | 'revoked';
+export type ClaimReviewDecision = 'verify' | 'dispute' | 'revoke';
+export type ClaimTraceStatus = 'complete' | 'incomplete' | 'stale' | 'unverified_source' | 'contradicted' | 'conflicted';
+export type ClaimTraceCategory = 'company' | 'revenue' | 'experience' | 'education' | 'numeric' | 'award' | 'third_party' | 'research' | 'general';
+
+export type ClaimReviewRecord = Readonly<{
+  reviewId: string;
+  requestId: string;
+  claimId: string;
+  decision: ClaimReviewDecision;
+  previousStatus: ClaimStatus;
+  resultingStatus: ClaimStatus;
+  rationale: string;
+  traceSnapshot: Readonly<Record<string, unknown>>;
+  reviewedAt: string;
+}>;
+
+export type GovernedClaim = Readonly<{
+  claimId: string;
+  statement: string;
+  kind: 'personal_fact' | 'external_fact' | 'opinion' | 'projection';
+  status: ClaimStatus;
+  dataClass: 'public' | 'internal' | 'confidential' | 'restricted';
+  evidenceIds: readonly string[];
+  sourceRefs: readonly string[];
+  allowedPurposes: readonly string[];
+  allowedChannels: readonly string[];
+  validFrom: string;
+  validUntil?: string;
+  createdAt: string;
+  categories: readonly ClaimTraceCategory[];
+  traceStatus: ClaimTraceStatus;
+  traceRationale: string;
+  riskLevel: 'green' | 'yellow' | 'red';
+  canUsePublicly: boolean;
+  reviewableDecisions: readonly ClaimReviewDecision[];
+  research?: Readonly<{
+    sourceId: string;
+    title: string;
+    publisher: string;
+    url: string;
+    quality: ResearchSourceQuality;
+    stance: ResearchSourceStance;
+    publishedAt: string;
+    accessedAt: string;
+    maxAgeDays: number;
+  }>;
+  lastReview?: ClaimReviewRecord;
+}>;
+
+export type ClaimGovernanceSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  summary: Readonly<{
+    totalClaims: number;
+    verified: number;
+    proposed: number;
+    disputedOrRevoked: number;
+    traceBlocked: number;
+    publicReady: number;
+  }>;
+  claims: readonly GovernedClaim[];
+}>;
+
+export type ClaimReviewResult = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  review: ClaimReviewRecord;
+}>;
+
 export type DraftChannel = 'linkedin' | 'instagram' | 'x' | 'youtube' | 'podcast' | 'newsletter' | 'blog';
 export type DraftSourceKind = 'memory' | 'text_asset';
 
@@ -431,6 +501,7 @@ export type AccountDataExport = Readonly<{
     memory: PersonalMemorySnapshot;
     assets: TextAssetSnapshot;
     research: ResearchWorkspaceSnapshot | null;
+    claims: ClaimGovernanceSnapshot | null;
     draft: DraftWorkspaceSnapshot | null;
     feedback: FeedbackLearningSnapshot;
     activity: AuditTrailSnapshot;
@@ -507,6 +578,42 @@ export async function importResearchSource(input: Readonly<{
     throw new WorkbenchApiError(200, 'invalid_response');
   }
   return payload as ResearchImportResult;
+}
+
+export async function loadClaims(signal?: AbortSignal): Promise<ClaimGovernanceSnapshot> {
+  const payload = await requestJson('/api/claims', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isClaimGovernanceSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function reviewClaim(input: Readonly<{
+  claimId: string;
+  requestId: string;
+  expectedStatus: ClaimStatus;
+  decision: ClaimReviewDecision;
+  rationale: string;
+  humanAttestation: boolean;
+}>): Promise<ClaimReviewResult> {
+  const payload = await requestJson(`/api/claims/${encodeURIComponent(input.claimId)}/reviews`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestId: input.requestId,
+      expectedStatus: input.expectedStatus,
+      decision: input.decision,
+      rationale: input.rationale,
+      humanAttestation: input.humanAttestation,
+    }),
+  });
+  if (
+    !isRecord(payload) ||
+    (payload['outcome'] !== 'applied' && payload['outcome'] !== 'already_applied') ||
+    !isPersistence(payload['persistence']) || !isClaimReviewRecord(payload['review'])
+  ) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload as ClaimReviewResult;
 }
 
 export async function importTextAsset(input: Readonly<{
@@ -958,6 +1065,63 @@ function isResearchSourceRecord(value: unknown): value is ResearchSourceRecord {
   );
 }
 
+function isClaimGovernanceSnapshot(payload: unknown): payload is ClaimGovernanceSnapshot {
+  if (!isRecord(payload) || !isRecord(payload['summary']) || !Array.isArray(payload['claims'])) return false;
+  const summary = payload['summary'];
+  return (
+    typeof payload['generatedAt'] === 'string' && isPersistence(payload['persistence']) &&
+    typeof summary['totalClaims'] === 'number' && typeof summary['verified'] === 'number' &&
+    typeof summary['proposed'] === 'number' && typeof summary['disputedOrRevoked'] === 'number' &&
+    typeof summary['traceBlocked'] === 'number' && typeof summary['publicReady'] === 'number' &&
+    payload['claims'].every(isGovernedClaim)
+  );
+}
+
+function isGovernedClaim(value: unknown): value is GovernedClaim {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value['claimId'] === 'string' && typeof value['statement'] === 'string' &&
+    isClaimStatus(value['status']) &&
+    (value['kind'] === 'personal_fact' || value['kind'] === 'external_fact' ||
+      value['kind'] === 'opinion' || value['kind'] === 'projection') &&
+    typeof value['dataClass'] === 'string' && Array.isArray(value['evidenceIds']) &&
+    value['evidenceIds'].every((item) => typeof item === 'string') &&
+    Array.isArray(value['sourceRefs']) && value['sourceRefs'].every((item) => typeof item === 'string') &&
+    Array.isArray(value['allowedPurposes']) && Array.isArray(value['allowedChannels']) &&
+    typeof value['validFrom'] === 'string' && typeof value['createdAt'] === 'string' &&
+    Array.isArray(value['categories']) && value['categories'].every((item) => typeof item === 'string') &&
+    isClaimTraceStatus(value['traceStatus']) && typeof value['traceRationale'] === 'string' &&
+    (value['riskLevel'] === 'green' || value['riskLevel'] === 'yellow' || value['riskLevel'] === 'red') &&
+    typeof value['canUsePublicly'] === 'boolean' && Array.isArray(value['reviewableDecisions']) &&
+    value['reviewableDecisions'].every(isClaimDecision) &&
+    (value['lastReview'] === undefined || isClaimReviewRecord(value['lastReview']))
+  );
+}
+
+function isClaimReviewRecord(value: unknown): value is ClaimReviewRecord {
+  return (
+    isRecord(value) && typeof value['reviewId'] === 'string' && typeof value['requestId'] === 'string' &&
+    typeof value['claimId'] === 'string' && isClaimDecision(value['decision']) &&
+    isClaimStatus(value['previousStatus']) && isClaimStatus(value['resultingStatus']) &&
+    typeof value['rationale'] === 'string' && isRecord(value['traceSnapshot']) &&
+    typeof value['reviewedAt'] === 'string'
+  );
+}
+
+function isClaimStatus(value: unknown): value is ClaimStatus {
+  return value === 'proposed' || value === 'verified' || value === 'disputed' ||
+    value === 'expired' || value === 'revoked';
+}
+
+function isClaimDecision(value: unknown): value is ClaimReviewDecision {
+  return value === 'verify' || value === 'dispute' || value === 'revoke';
+}
+
+function isClaimTraceStatus(value: unknown): value is ClaimTraceStatus {
+  return value === 'complete' || value === 'incomplete' || value === 'stale' ||
+    value === 'unverified_source' || value === 'contradicted' || value === 'conflicted';
+}
+
 function isDraftWorkspaceSnapshot(payload: unknown): payload is DraftWorkspaceSnapshot {
   if (!isRecord(payload) || !isRecord(payload['guard']) || !isRecord(payload['source']) || !isRecord(payload['adaptation'])) return false;
   const guard = payload['guard'];
@@ -1049,6 +1213,7 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     isWorkbenchSnapshot(data['workbench']) && isStrategyContextSnapshot(data['strategy']) &&
     isPersonalMemorySnapshot(data['memory']) && isTextAssetSnapshot(data['assets']) &&
     (data['research'] === null || isResearchWorkspaceSnapshot(data['research'])) &&
+    (data['claims'] === null || isClaimGovernanceSnapshot(data['claims'])) &&
     (data['draft'] === null || isDraftWorkspaceSnapshot(data['draft'])) &&
     isFeedbackLearningSnapshot(data['feedback']) && isAuditTrailSnapshot(data['activity'])
   );

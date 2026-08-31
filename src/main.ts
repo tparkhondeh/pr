@@ -15,6 +15,11 @@ import {
   InMemoryDraftWorkspaceRepository,
   PostgresDraftWorkspaceRepository,
 } from './claims/workspace.js';
+import {
+  ClaimGovernanceService,
+  InMemoryClaimGovernanceRepository,
+  PostgresClaimGovernanceRepository,
+} from './claims/governance.js';
 import { ConversationIntakeService } from './conversation/intake.js';
 import { PostgresConversationMemoryRepository } from './conversation/repository.js';
 import { PostgresRuntime } from './database/postgres.js';
@@ -138,6 +143,12 @@ const research = new ResearchWorkspaceService(
     : new InMemoryResearchWorkspaceRepository(),
   { tenantId: activeTenant, ownerUserId: owner },
 );
+const claimRepository = postgres && environment.database
+  ? new PostgresClaimGovernanceRepository(postgres, {
+      tenantId: environment.database.tenantId,
+      ownerUserId: environment.database.ownerUserId,
+    })
+  : new InMemoryClaimGovernanceRepository();
 const drafts = new ContentDraftService(
   draftRepository,
   { tenantId: activeTenant, ownerUserId: owner },
@@ -146,6 +157,12 @@ const drafts = new ContentDraftService(
   strategy,
   learning,
   assets,
+  claimRepository,
+);
+const claims = new ClaimGovernanceService(
+  claimRepository,
+  { tenantId: activeTenant, ownerUserId: owner },
+  { drafts, research },
 );
 const requestHandler = createRequestHandler(
   async () => ({
@@ -162,6 +179,7 @@ const requestHandler = createRequestHandler(
     auditTrail,
     assets,
     research,
+    claims,
     ...(!postgres ? { mutationAuditTrail: auditTrail } : {}),
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity

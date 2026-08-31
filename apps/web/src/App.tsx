@@ -38,6 +38,7 @@ import {
   exportDraft,
   importTextAsset,
   importResearchSource,
+  reviewClaim,
   decideLearnedPreference,
   loadDraftWorkspace,
   loadDraftSources,
@@ -46,6 +47,7 @@ import {
   loadOnboarding,
   loadPersonalMemory,
   loadResearch,
+  loadClaims,
   loadStrategyContext,
   loadWorkbench,
   rejectDraftFeedback,
@@ -66,6 +68,8 @@ import {
   type ResearchSourceQuality,
   type ResearchSourceStance,
   type ResearchWorkspaceSnapshot,
+  type ClaimGovernanceSnapshot,
+  type ClaimReviewDecision,
   type EditableStrategyContext,
   type StrategyContextSnapshot,
   type TextAssetRightOperation,
@@ -91,7 +95,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +126,9 @@ export function App() {
   const [researchSnapshot, setResearchSnapshot] = useState<ResearchWorkspaceSnapshot | null>(null);
   const [researchViewState, setResearchViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [researchViewError, setResearchViewError] = useState<string | null>(null);
+  const [claimSnapshot, setClaimSnapshot] = useState<ClaimGovernanceSnapshot | null>(null);
+  const [claimViewState, setClaimViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
+  const [claimViewError, setClaimViewError] = useState<string | null>(null);
   const [draftSnapshot, setDraftSnapshot] = useState<DraftWorkspaceSnapshot | null>(null);
   const [draftSources, setDraftSources] = useState<DraftSourceSnapshot | null>(null);
   const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
@@ -284,6 +291,37 @@ export function App() {
     } catch (caught: unknown) {
       setResearchViewError(errorMessage(caught));
       setResearchViewState('error');
+    }
+  };
+
+  const refreshClaims = useCallback(async (signal?: AbortSignal) => {
+    setClaimViewState('loading');
+    setClaimViewError(null);
+    try {
+      setClaimSnapshot(await loadClaims(signal));
+      setClaimViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setClaimViewError(errorMessage(caught));
+      setClaimViewState('error');
+    }
+  }, []);
+
+  const submitClaimReview = async (input: Readonly<{
+    claimId: string;
+    expectedStatus: ClaimGovernanceSnapshot['claims'][number]['status'];
+    decision: ClaimReviewDecision;
+    rationale: string;
+    humanAttestation: boolean;
+  }>) => {
+    setClaimViewState('mutating');
+    setClaimViewError(null);
+    try {
+      await reviewClaim({ requestId: `claim_review_${crypto.randomUUID()}`, ...input });
+      await Promise.all([refreshClaims(), refreshDraft(), refreshAudit()]);
+    } catch (caught: unknown) {
+      setClaimViewError(errorMessage(caught));
+      setClaimViewState('error');
     }
   };
 
@@ -602,6 +640,12 @@ export function App() {
       view: 'research' as const,
       badge: researchSnapshot?.summary.conflicts ? String(researchSnapshot.summary.conflicts) : undefined,
     },
+    {
+      label: 'دفتر ادعاها',
+      icon: ShieldCheck,
+      view: 'claims' as const,
+      badge: claimSnapshot?.summary.traceBlocked ? String(claimSnapshot.summary.traceBlocked) : undefined,
+    },
     { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
     { label: 'پیش‌نویس', icon: PencilLine, view: 'draft' as const },
     {
@@ -634,6 +678,7 @@ export function App() {
                 if (view === 'intake') void refreshOnboarding();
                 if (view === 'memory') void refreshMemory();
                 if (view === 'research') void refreshResearch();
+                if (view === 'claims') void refreshClaims();
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
                 if (view === 'learning') void refreshFeedback();
@@ -662,6 +707,8 @@ export function App() {
               ? 'حافظه‌ای که شما کنترل می‌کنید.'
               : activeView === 'research'
                 ? 'منبع بیرونی، جدا از حافظه شخصی.'
+              : activeView === 'claims'
+                ? 'هیچ ادعایی بدون Trace عمومی نشود.'
               : activeView === 'intake'
                 ? 'اولین شاهد واقعی را وارد کنید.'
               : activeView === 'strategy'
@@ -707,6 +754,14 @@ export function App() {
             onRefresh={() => refreshResearch()}
             snapshot={researchSnapshot}
             state={researchViewState}
+          />
+        ) : activeView === 'claims' ? (
+          <ClaimGovernancePanel
+            error={claimViewError}
+            onRefresh={() => refreshClaims()}
+            onReview={submitClaimReview}
+            snapshot={claimSnapshot}
+            state={claimViewState}
           />
         ) : activeView === 'strategy' ? (
           <StrategyPanel
@@ -1643,6 +1698,144 @@ function researchFactStatusLabel(status: ResearchWorkspaceSnapshot['sources'][nu
   }[status];
 }
 
+function ClaimGovernancePanel({
+  error,
+  onRefresh,
+  onReview,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onRefresh: () => Promise<void>;
+  onReview: (input: Readonly<{
+    claimId: string;
+    expectedStatus: ClaimGovernanceSnapshot['claims'][number]['status'];
+    decision: ClaimReviewDecision;
+    rationale: string;
+    humanAttestation: boolean;
+  }>) => Promise<void>;
+  snapshot: ClaimGovernanceSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
+}>) {
+  if ((state === 'idle' || state === 'loading') && !snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><LoaderCircle className="spin" size={24} /><h2>در حال بازیابی Claim Registry…</h2><p>Evidence، Source و Review انسانی کنار هم خوانده می‌شوند.</p></section>;
+  }
+  if (!snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><TriangleAlert size={25} /><h2>دفتر ادعاها در دسترس نیست</h2><p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p><button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button></section>;
+  }
+  return (
+    <section className="claim-view" aria-label="مدیریت Fact و Claim">
+      <header className="draft-head">
+        <div>
+          <p className="overline">Fact & Claim Management · Human Review</p>
+          <h2>دفتر ادعاهای قابل‌ردیابی</h2>
+          <p>Citation فقط Trace را کامل می‌کند؛ Verify نیازمند بازبینی و Attestation صریح شماست. Verify نیز به‌تنهایی مجوز انتشار ایجاد نمی‌کند.</p>
+        </div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button"><RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی</button>
+      </header>
+      <div className="claim-summary">
+        <div><span>کل Claimها</span><strong>{snapshot.summary.totalClaims}</strong></div>
+        <div><span>Verified</span><strong>{snapshot.summary.verified}</strong></div>
+        <div><span>Proposed</span><strong>{snapshot.summary.proposed}</strong></div>
+        <div className={snapshot.summary.traceBlocked ? 'danger' : undefined}><span>Trace مسدود</span><strong>{snapshot.summary.traceBlocked}</strong></div>
+        <div><span>آماده استفاده عمومی</span><strong>{snapshot.summary.publicReady}</strong></div>
+      </div>
+      <div className="claim-list">
+        {snapshot.claims.length === 0 ? (
+          <div className="learning-empty"><ShieldCheck size={25} /><p>هنوز Claim ثبت نشده است. با ایجاد Draft مستند یا ثبت Research Source، Claim اینجا ظاهر می‌شود.</p></div>
+        ) : snapshot.claims.map((claim) => (
+          <ClaimReviewCard claim={claim} disabled={state === 'mutating'} key={claim.claimId} onReview={onReview} />
+        ))}
+      </div>
+      {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
+    </section>
+  );
+}
+
+function ClaimReviewCard({
+  claim,
+  disabled,
+  onReview,
+}: Readonly<{
+  claim: ClaimGovernanceSnapshot['claims'][number];
+  disabled: boolean;
+  onReview: (input: Readonly<{
+    claimId: string;
+    expectedStatus: ClaimGovernanceSnapshot['claims'][number]['status'];
+    decision: ClaimReviewDecision;
+    rationale: string;
+    humanAttestation: boolean;
+  }>) => Promise<void>;
+}>) {
+  const [decision, setDecision] = useState<ClaimReviewDecision>(claim.reviewableDecisions[0] ?? 'dispute');
+  const [rationale, setRationale] = useState('');
+  const [attested, setAttested] = useState(false);
+  const activeDecision = claim.reviewableDecisions.includes(decision)
+    ? decision
+    : (claim.reviewableDecisions[0] ?? 'dispute');
+  return (
+    <article className={`claim-card risk-${claim.riskLevel}`}>
+      <div className="claim-card-head">
+        <span><b>{claimStatusLabel(claim.status)}</b><small>{claimKindLabel(claim.kind)} · {claimTraceLabel(claim.traceStatus)}</small></span>
+        <strong>{claim.riskLevel.toUpperCase()}</strong>
+      </div>
+      <blockquote>{claim.statement}</blockquote>
+      <div className="claim-tags">
+        {claim.categories.map((category) => <span key={category}>{claimCategoryLabel(category)}</span>)}
+      </div>
+      <p className="claim-trace"><Network size={16} /> {claim.traceRationale}</p>
+      <div className="claim-proof-grid">
+        <span>Evidence <b>{claim.evidenceIds.length}</b></span>
+        <span>Source Ref <b>{claim.sourceRefs.length}</b></span>
+        <span>Purpose <b>{claim.allowedPurposes.length}</b></span>
+        <span>Channel <b>{claim.allowedChannels.length}</b></span>
+      </div>
+      {claim.research ? <a className="claim-source" href={claim.research.url} rel="noreferrer" target="_blank">{claim.research.publisher} · {claim.research.title} <ArrowUpLeft size={14} /></a> : null}
+      <div className="claim-public-state">
+        {claim.canUsePublicly ? <><ShieldCheck size={16} /> Trace و مجوز استفاده عمومی حاضر است.</> : <><TriangleAlert size={16} /> استفاده عمومی هنوز مسدود است.</>}
+      </div>
+      {claim.lastReview ? <p className="claim-last-review">آخرین Review: {claimDecisionLabel(claim.lastReview.decision)} · {formatDate(claim.lastReview.reviewedAt)} — {claim.lastReview.rationale}</p> : null}
+      {claim.reviewableDecisions.length > 0 ? (
+        <form className="claim-review-form" onSubmit={(event) => {
+          event.preventDefault();
+          void onReview({ claimId: claim.claimId, expectedStatus: claim.status, decision: activeDecision, rationale, humanAttestation: activeDecision === 'verify' ? attested : false });
+        }}>
+          <label>تصمیم
+            <select onChange={(event) => { setDecision(event.target.value as ClaimReviewDecision); setAttested(false); }} value={activeDecision}>
+              {claim.reviewableDecisions.map((item) => <option key={item} value={item}>{claimDecisionLabel(item)}</option>)}
+            </select>
+          </label>
+          <label className="claim-rationale">Rationale قابل Audit
+            <textarea maxLength={2000} minLength={20} onChange={(event) => { setRationale(event.target.value); }} required rows={2} value={rationale} />
+          </label>
+          {activeDecision === 'verify' ? <label className="claim-attestation"><input checked={attested} onChange={(event) => { setAttested(event.target.checked); }} required type="checkbox" /> من Source، Evidence، Freshness و متن دقیق Claim را شخصاً بازبینی کرده‌ام.</label> : null}
+          <button disabled={disabled} type="submit">{disabled ? <LoaderCircle className="spin" size={16} /> : <FileCheck2 size={16} />} ثبت Review</button>
+        </form>
+      ) : null}
+    </article>
+  );
+}
+
+function claimStatusLabel(status: ClaimGovernanceSnapshot['claims'][number]['status']): string {
+  return { proposed: 'Proposed', verified: 'Verified', disputed: 'Disputed', expired: 'Expired', revoked: 'Revoked' }[status];
+}
+
+function claimKindLabel(kind: ClaimGovernanceSnapshot['claims'][number]['kind']): string {
+  return { personal_fact: 'Fact شخصی', external_fact: 'Fact بیرونی', opinion: 'نظر', projection: 'پیش‌بینی' }[kind];
+}
+
+function claimTraceLabel(status: ClaimGovernanceSnapshot['claims'][number]['traceStatus']): string {
+  return { complete: 'Trace کامل', incomplete: 'Trace ناقص', stale: 'منبع کهنه', unverified_source: 'منبع تأییدنشده', contradicted: 'نقض‌شده', conflicted: 'متعارض' }[status];
+}
+
+function claimCategoryLabel(category: ClaimGovernanceSnapshot['claims'][number]['categories'][number]): string {
+  return { company: 'شرکت', revenue: 'درآمد', experience: 'سابقه', education: 'تحصیلات', numeric: 'عدد', award: 'جایزه', third_party: 'شخص ثالث', research: 'تحقیق', general: 'عمومی' }[category];
+}
+
+function claimDecisionLabel(decision: ClaimReviewDecision): string {
+  return { verify: 'تأیید انسانی', dispute: 'اعتراض', revoke: 'ابطال' }[decision];
+}
+
 function researchQualityLabel(quality: ResearchSourceQuality): string {
   return {
     primary: 'منبع اصلی',
@@ -1735,7 +1928,7 @@ function DataRightsPanel({
         <aside className="data-rights-note">
           <ShieldCheck size={25} />
           <h3>مرزهای این خروجی</h3>
-          <p>فقط Snapshot فعلی مالک، Evidence مجاز، Research، Strategy، Draft، Preference و Audit نمایش‌داده‌شده صادر می‌شوند.</p>
+          <p>فقط Snapshot فعلی مالک، Evidence مجاز، Research، Claim Review، Strategy، Draft، Preference و Audit نمایش‌داده‌شده صادر می‌شوند.</p>
           <ul>
             <li>هیچ انتشار یا ارسال خارجی انجام نمی‌شود.</li>
             <li>Secret و اطلاعات زیرساخت داخل فایل نیست.</li>
@@ -1756,6 +1949,7 @@ function auditEventLabel(eventType: string): string {
     'strategy.context_saved': 'هدف و جایگاه مطلوب تغییر کرد',
     'memory.proposal_created': 'پیشنهاد حافظه ساخته شد',
     'research.source_recorded': 'منبع تحقیق بیرونی ثبت شد',
+    'claim.reviewed': 'ادعا با Trace بازبینی شد',
     'memory.proposal_confirmed': 'حافظه با رضایت تأیید شد',
     'memory.correct': 'حافظه اصلاح شد',
     'memory.contest': 'به حافظه اعتراض شد',
@@ -2357,6 +2551,7 @@ function errorMessage(error: unknown): string {
     invalid_strategy_context: 'هدف یا جایگاه مطلوب ناقص است؛ فیلدها و موارد هر خط را بررسی کنید.',
     revision_changed: 'این استراتژی در جای دیگری تغییر کرده است؛ نسخه تازه را دریافت و دوباره ویرایش کنید.',
     idempotency_mismatch: 'شناسه این ذخیره قبلاً برای محتوای دیگری استفاده شده است.',
+    status_changed: 'وضعیت Claim هم‌زمان تغییر کرده است؛ فهرست را به‌روزرسانی کنید.',
     strategy_permission_denied: 'فقط مالک می‌تواند هدف و جایگاه مطلوب را تغییر دهد.',
     strategy_unavailable: 'سرویس استراتژی در دسترس نیست.',
     research_unavailable: 'Research Workspace در دسترس نیست.',
@@ -2364,6 +2559,15 @@ function errorMessage(error: unknown): string {
     research_import_conflict: 'این درخواست یا رابطه منبع و Claim قبلاً با محتوای دیگری ثبت شده است.',
     research_permission_denied: 'فقط مالک می‌تواند منابع تحقیق بیرونی را مدیریت کند.',
     research_failed: 'ثبت یا بررسی منبع تحقیق کامل نشد.',
+    claims_unavailable: 'Claim Registry در دسترس نیست.',
+    invalid_claim_review: 'تصمیم، Rationale یا وضعیت مورد انتظار Review معتبر نیست.',
+    claim_permission_denied: 'فقط مالک می‌تواند Claim را بازبینی کند.',
+    claim_not_found: 'Claim موردنظر پیدا نشد.',
+    trace_incomplete: 'Trace این Claim برای Verify کامل نیست.',
+    attestation_required: 'Verify به Attestation صریح بازبین انسانی نیاز دارد.',
+    invalid_transition: 'این تغییر وضعیت Claim مجاز نیست.',
+    claim_review_failed: 'بازبینی Claim کامل نشد.',
+    claim_not_verified: 'Claim فعال دیگر Verified نیست؛ Approval و Export متوقف شد.',
     drafts_unavailable: 'Draft Studio در دسترس نیست.',
     invalid_draft_input: 'اطلاعات Draft ناقص یا خارج از محدودیت‌های پلتفرم است.',
     draft_permission_denied: 'مجوز صریح مالک برای استفاده از این حافظه در Draft وجود ندارد.',

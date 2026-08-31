@@ -31,7 +31,9 @@ const tenant = tenantId('11111111-1111-4111-8111-111111111111');
 const owner = userId('22222222-2222-4222-8222-222222222222');
 const now = new Date('2026-08-31T18:00:00.000Z');
 
-async function fixture() {
+async function fixture(claimPolicy?: Readonly<{
+  effectiveStatus: () => Promise<'verified' | 'disputed'>;
+}>) {
   const conversation = new ConversationIntakeService();
   const assets = new TextAssetIntakeService(new InMemoryTextAssetRepository(), {
     tenantId: tenant,
@@ -94,6 +96,7 @@ async function fixture() {
     strategy,
     learning,
     assets,
+    claimPolicy,
   );
   return {
     service,
@@ -188,6 +191,30 @@ describe('evidence-bound draft workspace', () => {
       publicDraftingConsent: false,
       occurredAt: now,
     })).rejects.toThrow('Explicit public drafting consent');
+  });
+
+  it('blocks draft approval as soon as its governed claim is no longer verified', async () => {
+    let status: 'verified' | 'disputed' = 'verified';
+    const { service, proposalId } = await fixture({ effectiveStatus: () => Promise.resolve(status) });
+    const created = await service.create({
+      actorId: owner,
+      requestId: 'draft_claim_governed',
+      sourceKind: 'memory',
+      sourceRef: proposalId,
+      channel: 'linkedin',
+      narrativeAngle: 'یک روایت مستند درباره تصمیم شفاف',
+      takeaway: 'ادعا پس از اعتراض نباید قابل انتشار بماند.',
+      publicDraftingConsent: true,
+      occurredAt: now,
+    });
+    status = 'disputed';
+    await expect(service.approve({
+      actorId: owner,
+      requestId: 'draft_claim_governed_approval',
+      draftId: created.snapshot.draftId,
+      expectedRevision: created.snapshot.revision,
+      occurredAt: now,
+    })).rejects.toMatchObject({ reason: 'claim_not_verified' });
   });
 
   it('freezes exact evidence at approval and rejects sources added afterward', async () => {

@@ -16,6 +16,17 @@ import {
   type TextAssetSnapshot,
 } from '../assets/text-asset-intake.js';
 import {
+  ClaimGovernanceBlockedError,
+  ClaimGovernanceConflictError,
+  ClaimGovernanceNotFoundError,
+  ClaimGovernancePermissionError,
+  ClaimGovernanceValidationError,
+  type ClaimGovernanceService,
+  type ClaimGovernanceSnapshot,
+  type ClaimReviewDecision,
+} from '../claims/governance.js';
+import type { ClaimStatus } from '../claims/claim-registry.js';
+import {
   DraftBlockedError,
   DraftConflictError,
   DraftNotFoundError,
@@ -91,6 +102,7 @@ export type ApplicationDependencies = Readonly<{
   >;
   learning?: Pick<FeedbackLearningService, 'snapshot' | 'rejectDraft' | 'decide'>;
   research?: Pick<ResearchWorkspaceService, 'snapshot' | 'importSource'>;
+  claims?: Pick<ClaimGovernanceService, 'snapshot' | 'review'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -177,6 +189,17 @@ export function createRequestHandler(
 
     if (request.method === 'POST' && path === '/api/research/sources') {
       await handleResearchImport(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/claims') {
+      await handleClaimSnapshot(request, response, dependencies);
+      return;
+    }
+
+    const claimReview = path.match(/^\/api\/claims\/([0-9a-f-]{36})\/reviews$/iu);
+    if (request.method === 'POST' && claimReview?.[1]) {
+      await handleClaimReview(request, response, dependencies, claimReview[1]);
       return;
     }
 
@@ -593,6 +616,190 @@ function isResearchStance(value: unknown): value is ResearchSourceStance {
   return typeof value === 'string' && researchStances.includes(value as ResearchSourceStance);
 }
 
+async function handleClaimSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = claimActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.claims?.snapshot(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Claim governance disappeared.');
+    sendJson(response, 200, serializeClaimSnapshot(snapshot));
+  } catch (error: unknown) {
+    sendClaimError(response, error);
+  }
+}
+
+async function handleClaimReview(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+  claimId: string,
+): Promise<void> {
+  const actorId = claimActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const expectedStatus = body['expectedStatus'];
+    const decision = body['decision'];
+    const rationale = body['rationale'];
+    const humanAttestation = body['humanAttestation'];
+    if (
+      typeof requestId !== 'string' || !isClaimStatus(expectedStatus) ||
+      !isClaimDecision(decision) || typeof rationale !== 'string' ||
+      typeof humanAttestation !== 'boolean'
+    ) {
+      sendJson(response, 400, { error: 'invalid_claim_review' });
+      return;
+    }
+    const reviewedAt = now(dependencies);
+    const result = await dependencies.claims?.review({
+      actorId,
+      requestId,
+      claimId,
+      expectedStatus,
+      decision,
+      rationale,
+      humanAttestation,
+      reviewedAt,
+    });
+    if (!result) throw new Error('Claim governance disappeared.');
+    if (result.outcome === 'applied') {
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `claim.review:${requestId}`,
+        eventType: 'claim.reviewed',
+        resourceType: 'claim',
+        resourceId: claimId,
+        purpose: 'public_drafting',
+        decision,
+        metadata: { requestId, previousStatus: result.review.previousStatus, resultingStatus: result.review.resultingStatus },
+        occurredAt: result.review.reviewedAt,
+      });
+    }
+    sendJson(response, result.outcome === 'applied' ? 201 : 200, {
+      outcome: result.outcome,
+      persistence: result.persistence,
+      review: serializeClaimReview(result.review),
+    });
+  } catch (error: unknown) {
+    sendClaimError(response, error);
+  }
+}
+
+function claimActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.claims) {
+    sendJson(response, 503, { error: 'claims_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function serializeClaimSnapshot(snapshot: ClaimGovernanceSnapshot): Record<string, unknown> {
+  return {
+    generatedAt: snapshot.generatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    summary: snapshot.summary,
+    claims: snapshot.claims.map((claim) => ({
+      claimId: claim.claimId,
+      statement: claim.statement,
+      kind: claim.kind,
+      status: claim.status,
+      dataClass: claim.dataClass,
+      evidenceIds: claim.evidenceIds,
+      sourceRefs: claim.sourceRefs,
+      allowedPurposes: claim.allowedPurposes,
+      allowedChannels: claim.allowedChannels,
+      validFrom: claim.validFrom.toISOString(),
+      ...(claim.validUntil ? { validUntil: claim.validUntil.toISOString() } : {}),
+      createdAt: claim.createdAt.toISOString(),
+      categories: claim.categories,
+      traceStatus: claim.traceStatus,
+      traceRationale: claim.traceRationale,
+      riskLevel: claim.riskLevel,
+      canUsePublicly: claim.canUsePublicly,
+      reviewableDecisions: claim.reviewableDecisions,
+      ...(claim.research ? {
+        research: {
+          ...claim.research,
+          publishedAt: claim.research.publishedAt.toISOString(),
+          accessedAt: claim.research.accessedAt.toISOString(),
+        },
+      } : {}),
+      ...(claim.lastReview ? { lastReview: serializeClaimReview(claim.lastReview) } : {}),
+    })),
+  };
+}
+
+function serializeClaimReview(review: Readonly<{
+  reviewId: string;
+  requestId: string;
+  claimId: string;
+  decision: ClaimReviewDecision;
+  previousStatus: ClaimStatus;
+  resultingStatus: ClaimStatus;
+  rationale: string;
+  traceSnapshot: Readonly<Record<string, unknown>>;
+  reviewedBy: UserId;
+  reviewedAt: Date;
+}>): Record<string, unknown> {
+  return {
+    reviewId: review.reviewId,
+    requestId: review.requestId,
+    claimId: review.claimId,
+    decision: review.decision,
+    previousStatus: review.previousStatus,
+    resultingStatus: review.resultingStatus,
+    rationale: review.rationale,
+    traceSnapshot: review.traceSnapshot,
+    reviewedAt: review.reviewedAt.toISOString(),
+  };
+}
+
+function sendClaimError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof ClaimGovernanceValidationError) {
+    sendJson(response, 400, { error: 'invalid_claim_review' });
+    return;
+  }
+  if (error instanceof ClaimGovernancePermissionError) {
+    sendJson(response, 403, { error: 'claim_permission_denied' });
+    return;
+  }
+  if (error instanceof ClaimGovernanceNotFoundError) {
+    sendJson(response, 404, { error: 'claim_not_found' });
+    return;
+  }
+  if (error instanceof ClaimGovernanceConflictError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  if (error instanceof ClaimGovernanceBlockedError) {
+    sendJson(response, 422, { error: error.reason });
+    return;
+  }
+  sendJson(response, 500, { error: 'claim_review_failed' });
+}
+
+function isClaimStatus(value: unknown): value is ClaimStatus {
+  return typeof value === 'string' && ['proposed', 'verified', 'disputed', 'expired', 'revoked'].includes(value);
+}
+
+function isClaimDecision(value: unknown): value is ClaimReviewDecision {
+  return typeof value === 'string' && ['verify', 'dispute', 'revoke'].includes(value);
+}
+
 async function handleAuditTrail(
   request: IncomingMessage,
   response: ServerResponse,
@@ -626,7 +833,7 @@ async function handleAccountExport(
   }
   const exportedAt = now(dependencies);
   try {
-    const [workbench, strategy, draft, feedback, memory, assets, research, activity] = await Promise.all([
+    const [workbench, strategy, draft, feedback, memory, assets, research, claims, activity] = await Promise.all([
       dependencies.workbench.snapshot(),
       dependencies.strategy.snapshot(actorId),
       dependencies.drafts.snapshot(actorId, exportedAt),
@@ -638,6 +845,7 @@ async function handleAccountExport(
       }),
       dependencies.assets.snapshot(actorId, exportedAt),
       dependencies.research?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
+      dependencies.claims?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.auditTrail?.snapshot(actorId, exportedAt),
     ]);
     if (!activity) throw new Error('Audit trail disappeared.');
@@ -666,6 +874,7 @@ async function handleAccountExport(
           memory: serializeMemorySnapshot(memory),
           assets: serializeTextAssetSnapshot(assets),
           research: research ? serializeResearchSnapshot(research) : null,
+          claims: claims ? serializeClaimSnapshot(claims) : null,
           draft: draft ? serializeDraft(draft) : null,
           feedback: serializeFeedback(feedback),
           activity: serializeAuditTrail(activity),

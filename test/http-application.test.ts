@@ -8,6 +8,10 @@ import {
 import { ConversationIntakeService } from '../src/conversation/intake.js';
 import { ContentDraftService, InMemoryDraftWorkspaceRepository } from '../src/claims/workspace.js';
 import {
+  ClaimGovernanceService,
+  InMemoryClaimGovernanceRepository,
+} from '../src/claims/governance.js';
+import {
   FeedbackLearningService,
   InMemoryFeedbackLearningRepository,
 } from '../src/feedback/workspace.js';
@@ -230,6 +234,89 @@ describe('operational endpoints', () => {
       }],
     });
     expect(researchSnapshot.sources[0]?.citation).toContain('https://research.example.org/report');
+  });
+
+  it('exposes human claim review without treating citation as automatic verification', async () => {
+    const fixedTime = new Date('2026-08-31T18:00:00.000Z');
+    const tenant = tenantId('tenant_primary');
+    const owner = userId('owner_primary');
+    const research = new ResearchWorkspaceService(
+      new InMemoryResearchWorkspaceRepository(),
+      { tenantId: tenant, ownerUserId: owner },
+    );
+    const imported = await research.importSource({
+      actorId: owner,
+      requestId: 'claim_http_source',
+      title: 'گزارش رسمی اعتماد سازمانی',
+      publisher: 'مرکز پژوهش نمونه',
+      url: 'https://research.example.org/report',
+      excerpt: 'این بخش از گزارش، ارتباط شفافیت تصمیم با حفظ اعتماد را به‌صورت مستند بررسی می‌کند.',
+      statement: 'بر اساس این تحقیق، شفافیت تصمیم اعتماد سازمانی را حفظ می‌کند.',
+      quality: 'primary',
+      stance: 'supports',
+      publishedAt: new Date('2026-08-01T00:00:00.000Z'),
+      maxAgeDays: 90,
+      accessedAt: fixedTime,
+    });
+    const claims = new ClaimGovernanceService(
+      new InMemoryClaimGovernanceRepository(),
+      { tenantId: tenant, ownerUserId: owner },
+      { drafts: { snapshot: () => Promise.resolve(null) }, research },
+    );
+    const dependencies: ApplicationDependencies = {
+      claims,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+    const before = await request('/api/claims', () => ({ ready: true }), undefined, dependencies);
+    await expect(before.json()).resolves.toMatchObject({
+      summary: { totalClaims: 1, verified: 0, publicReady: 0 },
+      claims: [{ claimId: imported.record.claimId, status: 'proposed', traceStatus: 'complete' }],
+    });
+    const blocked = await request(
+      `/api/claims/${imported.record.claimId}/reviews`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'claim_http_review_blocked',
+          expectedStatus: 'proposed',
+          decision: 'verify',
+          rationale: 'بازبین باید پیش از تأیید، Source و Evidence را شخصاً تطبیق دهد.',
+          humanAttestation: false,
+        }),
+      },
+      dependencies,
+    );
+    expect(blocked.status).toBe(422);
+    await expect(blocked.json()).resolves.toEqual({ error: 'attestation_required' });
+
+    const verified = await request(
+      `/api/claims/${imported.record.claimId}/reviews`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'claim_http_review_verified',
+          expectedStatus: 'proposed',
+          decision: 'verify',
+          rationale: 'من Source، تاریخ، Excerpt و Statement را با سند اصلی تطبیق دادم.',
+          humanAttestation: true,
+        }),
+      },
+      dependencies,
+    );
+    expect(verified.status).toBe(201);
+    await expect(verified.json()).resolves.toMatchObject({
+      review: { resultingStatus: 'verified' },
+    });
+    const after = await request('/api/claims', () => ({ ready: true }), undefined, dependencies);
+    await expect(after.json()).resolves.toMatchObject({
+      summary: { verified: 1, publicReady: 0 },
+      claims: [{ status: 'verified', canUsePublicly: false }],
+    });
   });
 
   it('rejects malformed approval input without mutating the workflow', async () => {
