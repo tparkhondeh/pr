@@ -1,4 +1,5 @@
 let approval = null;
+const memoryProposals = new Map();
 
 const actions = [
   {
@@ -81,6 +82,75 @@ export default {
       return json(snapshot());
     }
 
+    if (request.method === 'POST' && url.pathname === '/api/conversations/turns') {
+      const body = await readJson(request);
+      if (!body) return json({ error: 'invalid_json' }, 400);
+      if (
+        typeof body.conversationId !== 'string' ||
+        typeof body.turnId !== 'string' ||
+        typeof body.text !== 'string' ||
+        typeof body.proposeMemory !== 'boolean' ||
+        body.text.trim().length < 3
+      ) {
+        return json({ error: 'invalid_conversation_input' }, 400);
+      }
+      const text = body.text.trim();
+      const followUpQuestion = chooseFollowUpQuestion(text);
+      if (!body.proposeMemory) {
+        return json({
+          assistantMessage: 'شنیدم. فعلاً چیزی به حافظه پیشنهاد نمی‌کنم.',
+          followUpQuestion,
+        });
+      }
+      const id = `memory_${body.turnId}`;
+      const existing = memoryProposals.get(id);
+      if (existing && existing.text !== text) {
+        return json({ error: 'memory_proposal_conflict' }, 409);
+      }
+      const proposal = existing ?? {
+        id,
+        text,
+        epistemicType: 'self_report',
+        dataClass: 'confidential',
+        status: 'awaiting_user_confirmation',
+        occurredAt: new Date().toISOString(),
+      };
+      memoryProposals.set(id, proposal);
+      return json({
+        assistantMessage: 'این برداشت فقط یک Self-report پیشنهادی است و هنوز حافظه قطعی نیست.',
+        followUpQuestion,
+        memoryProposal: withoutText(proposal),
+      });
+    }
+
+    const confirmation = url.pathname.match(
+      /^\/api\/memory\/proposals\/([a-zA-Z0-9][a-zA-Z0-9_-]{2,63})\/confirm$/,
+    );
+    if (request.method === 'POST' && confirmation?.[1]) {
+      const proposal = memoryProposals.get(confirmation[1]);
+      if (!proposal) return json({ error: 'memory_proposal_not_found' }, 404);
+      const body = await readJson(request);
+      const permissions = body?.permissions;
+      if (
+        permissions?.personalUnderstanding !== true ||
+        permissions?.brandUsage !== false ||
+        permissions?.publicUsage !== false
+      ) {
+        return json({ error: 'memory_permission_denied' }, 403);
+      }
+      proposal.confirmedAt ??= new Date().toISOString();
+      return json({
+        assertion: {
+          id: `assertion_${proposal.id.slice('memory_'.length)}`,
+          epistemicType: 'self_report',
+          dataClass: 'confidential',
+        },
+        permissions,
+        confirmedAt: proposal.confirmedAt,
+        persistence: 'ephemeral',
+      });
+    }
+
     return env.ASSETS.fetch(request);
   },
 };
@@ -106,6 +176,34 @@ function snapshot() {
         ? { approvedActionId: approval.actionId, approvedAt: approval.approvedAt }
         : {}),
     },
+  };
+}
+
+async function readJson(request) {
+  try {
+    return await request.json();
+  } catch {
+    return null;
+  }
+}
+
+function chooseFollowUpQuestion(text) {
+  if (/عوض|تغییر|قبلاً|دیگر|نظرم/u.test(text)) {
+    return 'چه تجربه یا شواهدی باعث شد دیدگاهت تغییر کند؟';
+  }
+  if (/جلسه|اتفاق|دیدم|شنیدم|گفت/u.test(text)) {
+    return 'کدام بخش این اتفاق برایت مهم بود و چرا؟';
+  }
+  return 'یک موقعیت واقعی را تعریف می‌کنی که این فکر در آن خودش را نشان داده باشد؟';
+}
+
+function withoutText(proposal) {
+  return {
+    id: proposal.id,
+    epistemicType: proposal.epistemicType,
+    dataClass: proposal.dataClass,
+    status: proposal.status,
+    occurredAt: proposal.occurredAt,
   };
 }
 

@@ -1,8 +1,9 @@
 import { createServer } from 'node:http';
 import { loadEnvironment } from './config/environment.js';
+import { ConversationIntakeService } from './conversation/intake.js';
 import { PostgresRuntime } from './database/postgres.js';
 import { createRequestHandler } from './http/application.js';
-import { userId } from './kernel/identity.js';
+import { tenantId, userId } from './kernel/identity.js';
 import { PostgresWorkbenchApprovalRepository } from './workbench/approval-repository.js';
 import { createDefaultWorkbenchService } from './workbench/workbench.js';
 
@@ -18,6 +19,7 @@ const approvalRepository = postgres && environment.database
     })
   : undefined;
 const ownerUserId = environment.database?.ownerUserId ?? 'owner_primary';
+const activeTenantId = environment.database?.tenantId ?? 'tenant_primary';
 
 const workbench = createDefaultWorkbenchService(
   () => new Date(),
@@ -29,10 +31,13 @@ const workbench = createDefaultWorkbenchService(
       }
     : undefined,
 );
+const conversation = new ConversationIntakeService();
 const requestHandler = createRequestHandler(
   () => postgres?.readiness() ?? { ready: true },
   {
     workbench,
+    conversation,
+    tenantId: tenantId(activeTenantId),
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity
     // before allowing any multi-user or public deployment.
     resolveActor: () => userId(ownerUserId),

@@ -62,6 +62,33 @@ export type WorkbenchSnapshot = Readonly<{
   }>;
 }>;
 
+export type ConversationTurnResult = Readonly<{
+  assistantMessage: string;
+  followUpQuestion: string;
+  memoryProposal?: Readonly<{
+    id: string;
+    epistemicType: 'self_report';
+    dataClass: 'confidential';
+    status: 'awaiting_user_confirmation';
+    occurredAt: string;
+  }>;
+}>;
+
+export type ConfirmedMemory = Readonly<{
+  assertion: Readonly<{
+    id: string;
+    epistemicType: 'self_report';
+    dataClass: 'confidential';
+  }>;
+  permissions: Readonly<{
+    personalUnderstanding: true;
+    brandUsage: false;
+    publicUsage: false;
+  }>;
+  confirmedAt: string;
+  persistence: 'memory' | 'ephemeral';
+}>;
+
 export class WorkbenchApiError extends Error {
   public constructor(
     public readonly status: number,
@@ -89,7 +116,59 @@ export async function approveWorkbenchAction(actionId: string): Promise<Workbenc
   });
 }
 
+export async function submitConversationTurn(input: Readonly<{
+  conversationId: string;
+  turnId: string;
+  text: string;
+  proposeMemory: boolean;
+}>): Promise<ConversationTurnResult> {
+  const payload = await requestJson('/api/conversations/turns', {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+  if (!isConversationTurnResult(payload)) {
+    throw new WorkbenchApiError(200, 'invalid_response');
+  }
+  return payload;
+}
+
+export async function confirmMemoryProposal(proposalId: string): Promise<ConfirmedMemory> {
+  const payload = await requestJson(
+    `/api/memory/proposals/${encodeURIComponent(proposalId)}/confirm`,
+    {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        permissions: {
+          personalUnderstanding: true,
+          brandUsage: false,
+          publicUsage: false,
+        },
+      }),
+    },
+  );
+  if (!isConfirmedMemory(payload)) {
+    throw new WorkbenchApiError(200, 'invalid_response');
+  }
+  return payload;
+}
+
 async function requestWorkbench(url: string, init: RequestInit): Promise<WorkbenchSnapshot> {
+  const payload = await requestJson(url, init);
+  if (!isWorkbenchSnapshot(payload)) {
+    throw new WorkbenchApiError(200, 'invalid_response');
+  }
+  return payload;
+}
+
+async function requestJson(url: string, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(url, init);
@@ -100,9 +179,6 @@ async function requestWorkbench(url: string, init: RequestInit): Promise<Workben
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     throw new WorkbenchApiError(response.status, readErrorCode(payload));
-  }
-  if (!isWorkbenchSnapshot(payload)) {
-    throw new WorkbenchApiError(response.status, 'invalid_response');
   }
   return payload;
 }
@@ -128,6 +204,42 @@ function isWorkbenchSnapshot(payload: unknown): payload is WorkbenchSnapshot {
     typeof workflow['status'] === 'string' &&
     isRecord(runtime) &&
     typeof runtime['source'] === 'string'
+  );
+}
+
+function isConversationTurnResult(payload: unknown): payload is ConversationTurnResult {
+  if (!isRecord(payload)) return false;
+  if (
+    typeof payload['assistantMessage'] !== 'string' ||
+    typeof payload['followUpQuestion'] !== 'string'
+  ) {
+    return false;
+  }
+  const proposal = payload['memoryProposal'];
+  return proposal === undefined || (
+    isRecord(proposal) &&
+    typeof proposal['id'] === 'string' &&
+    proposal['epistemicType'] === 'self_report' &&
+    proposal['dataClass'] === 'confidential' &&
+    proposal['status'] === 'awaiting_user_confirmation'
+  );
+}
+
+function isConfirmedMemory(payload: unknown): payload is ConfirmedMemory {
+  if (!isRecord(payload)) return false;
+  const assertion = payload['assertion'];
+  const permissions = payload['permissions'];
+  return (
+    isRecord(assertion) &&
+    typeof assertion['id'] === 'string' &&
+    assertion['epistemicType'] === 'self_report' &&
+    assertion['dataClass'] === 'confidential' &&
+    isRecord(permissions) &&
+    permissions['personalUnderstanding'] === true &&
+    permissions['brandUsage'] === false &&
+    permissions['publicUsage'] === false &&
+    typeof payload['confirmedAt'] === 'string' &&
+    (payload['persistence'] === 'memory' || payload['persistence'] === 'ephemeral')
   );
 }
 

@@ -46,3 +46,8 @@ Attention Budget، Evidence، Risk و Approval انسانی. View از `GET /api
 `DATABASE_URL`، `PR_TENANT_ID` و `PR_OWNER_USER_ID`، تأیید با Optimistic Lock در
 PostgreSQL ذخیره و در همان Transaction به Audit Log و Outbox افزوده می‌شود.
 نسخه خصوصی Sites همین قرارداد را با state موقت Worker برای تست UI ارائه می‌کند.
+
+دکمه «شروع گفت‌وگو» نیز به `POST /api/conversations/turns` متصل است. Opt-in ساخت
+پیشنهاد حافظه پیش‌فرض خاموش است و حتی پس از فعال‌کردن، ثبت نهایی فقط با درخواست دوم
+`POST /api/memory/proposals/:id/confirm` انجام می‌شود. خروجی اولیه همیشه
+`self_report` و `confidential` است و مجوز Brand/Public به‌طور خودکار داده نمی‌شود.

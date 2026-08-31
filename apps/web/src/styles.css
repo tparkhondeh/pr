@@ -47,6 +47,20 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
 .conversation p:not(.overline) { max-width: 710px; margin: 8px 0 18px; color: #61736a; line-height: 1.9; font-size: 13px; }
 .talk { display: inline-flex; align-items: center; gap: 9px; padding: 10px 15px; color: white; border: 0; border-radius: 4px; background: var(--forest); cursor: pointer; }
 .talk svg:last-child { margin-right: 8px; opacity: .7; }
+.talk:disabled { cursor: wait; opacity: .7; }
+.conversation-form { display: grid; gap: 9px; max-width: 720px; }
+.conversation-form > label:first-child { color: var(--ink); font-size: 11px; font-weight: 600; }
+.conversation-form textarea { width: 100%; resize: vertical; padding: 12px 14px; color: var(--ink); border: 1px solid #c9cec4; border-radius: 4px; outline: none; background: white; line-height: 1.8; }
+.conversation-form textarea:focus { border-color: var(--forest); box-shadow: 0 0 0 2px rgba(22, 76, 56, .08); }
+.memory-opt-in { display: flex; align-items: flex-start; gap: 8px; color: #66786f; font-size: 10px; line-height: 1.7; }
+.memory-opt-in input { margin-top: 4px; accent-color: var(--forest); }
+.conversation-form .talk { justify-self: start; }
+.conversation-result { display: grid; gap: 7px; max-width: 720px; padding: 13px 15px; margin-top: 13px; border-right: 3px solid var(--mint); background: #f1f7f2; }
+.conversation-result span { color: #687a71; font-size: 10px; }
+.conversation-result strong { color: var(--ink); font-size: 12px; font-weight: 500; line-height: 1.8; }
+.conversation-result button { justify-self: start; padding: 8px 11px; color: var(--forest); border: 1px solid #8db7a1; border-radius: 3px; background: transparent; cursor: pointer; font-size: 10px; }
+.conversation-result button:disabled { cursor: wait; opacity: .65; }
+.conversation-result em { display: flex; align-items: center; gap: 6px; color: #347356; font-size: 10px; font-style: normal; }
 .decision-head { display: flex; justify-content: space-between; align-items: flex-end; margin: 0 0 15px; }
 .decision-head h2 { margin: 4px 0 0; font-size: 20px; font-weight: 500; }
 .budget { display: grid; grid-template-columns: auto auto; column-gap: 8px; color: #66786f; font-size: 10px; }

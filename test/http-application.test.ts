@@ -1,10 +1,11 @@
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ConversationIntakeService } from '../src/conversation/intake.js';
 import {
   createRequestHandler,
   type ApplicationDependencies,
 } from '../src/http/application.js';
-import { userId } from '../src/kernel/identity.js';
+import { tenantId, userId } from '../src/kernel/identity.js';
 import { createDefaultWorkbenchService } from '../src/workbench/workbench.js';
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -143,5 +144,89 @@ describe('operational endpoints', () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: 'invalid_json' });
     expect((await workbench.snapshot()).workflow.status).toBe('awaiting_approval');
+  });
+
+  it('routes a conversation turn without silently creating memory', async () => {
+    const response = await request(
+      '/api/conversations/turns',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: 'conversation_today',
+          turnId: 'turn_http_one',
+          text: 'امروز در جلسه اتفاق مهمی افتاد.',
+          proposeMemory: false,
+        }),
+      },
+      {
+        conversation: new ConversationIntakeService(),
+        tenantId: tenantId('tenant_primary'),
+        resolveActor: () => userId('owner_primary'),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await response.json() as Record<string, unknown>;
+    expect(payload['followUpQuestion']).toContain('کدام بخش');
+    expect(payload).not.toHaveProperty('memoryProposal');
+  });
+
+  it('requires a second explicit request before a self-report enters memory', async () => {
+    const fixedTime = new Date('2026-08-31T13:00:00.000Z');
+    const conversation = new ConversationIntakeService();
+    const dependencies: ApplicationDependencies = {
+      conversation,
+      tenantId: tenantId('tenant_primary'),
+      resolveActor: () => userId('owner_primary'),
+      clock: () => fixedTime,
+    };
+    const proposalResponse = await request(
+      '/api/conversations/turns',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: 'conversation_today',
+          turnId: 'turn_http_memory',
+          text: 'صداقت در ابهام برای من مهم است.',
+          proposeMemory: true,
+        }),
+      },
+      dependencies,
+    );
+    const proposal = await proposalResponse.json() as {
+      memoryProposal: { id: string; status: string };
+    };
+    expect(proposal.memoryProposal.status).toBe('awaiting_user_confirmation');
+
+    const confirmationResponse = await request(
+      `/api/memory/proposals/${proposal.memoryProposal.id}/confirm`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          permissions: {
+            personalUnderstanding: true,
+            brandUsage: false,
+            publicUsage: false,
+          },
+        }),
+      },
+      dependencies,
+    );
+
+    expect(confirmationResponse.status).toBe(200);
+    await expect(confirmationResponse.json()).resolves.toMatchObject({
+      assertion: { epistemicType: 'self_report', dataClass: 'confidential' },
+      permissions: {
+        personalUnderstanding: true,
+        brandUsage: false,
+        publicUsage: false,
+      },
+    });
   });
 });

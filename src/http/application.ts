@@ -1,5 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { UserId } from '../kernel/identity.js';
+import {
+  ConversationValidationError,
+  MemoryProposalConflictError,
+  MemoryProposalNotFoundError,
+  MemoryProposalPermissionError,
+} from '../conversation/intake.js';
+import type { ConversationIntakeService } from '../conversation/intake.js';
+import type { TenantId, UserId } from '../kernel/identity.js';
 import {
   WorkbenchActionNotFoundError,
   WorkbenchApprovalConflictError,
@@ -13,6 +20,8 @@ export type ReadinessCheck = () =>
 export type ApplicationDependencies = Readonly<{
   workbench?: Pick<WorkbenchService, 'snapshot' | 'approve'>;
   resolveActor?: (request: IncomingMessage) => UserId | undefined;
+  tenantId?: TenantId;
+  conversation?: Pick<ConversationIntakeService, 'submitTurn' | 'confirmMemory'>;
   clock?: () => Date;
 }>;
 
@@ -61,8 +70,166 @@ export function createRequestHandler(
       return;
     }
 
+    if (request.method === 'POST' && path === '/api/conversations/turns') {
+      await handleConversationTurn(request, response, dependencies);
+      return;
+    }
+
+    const proposalConfirmation = path.match(
+      /^\/api\/memory\/proposals\/([a-zA-Z0-9][a-zA-Z0-9_-]{2,63})\/confirm$/u,
+    );
+    if (request.method === 'POST' && proposalConfirmation?.[1]) {
+      await handleMemoryConfirmation(
+        request,
+        response,
+        dependencies,
+        proposalConfirmation[1],
+      );
+      return;
+    }
+
     sendJson(response, 404, { error: 'not_found' });
   };
+}
+
+async function handleConversationTurn(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.conversation || !dependencies.tenantId) {
+    sendJson(response, 503, { error: 'conversation_unavailable' });
+    return;
+  }
+
+  try {
+    const body = await readJsonObject(request);
+    const conversationId = body['conversationId'];
+    const turnId = body['turnId'];
+    const text = body['text'];
+    const proposeMemory = body['proposeMemory'];
+    if (
+      typeof conversationId !== 'string' ||
+      typeof turnId !== 'string' ||
+      typeof text !== 'string' ||
+      typeof proposeMemory !== 'boolean'
+    ) {
+      sendJson(response, 400, { error: 'invalid_conversation_turn' });
+      return;
+    }
+    const result = dependencies.conversation.submitTurn({
+      tenantId: dependencies.tenantId,
+      actorId,
+      conversationId,
+      turnId,
+      text,
+      proposeMemory,
+      occurredAt: (dependencies.clock ?? (() => new Date()))(),
+    });
+    sendJson(response, 200, {
+      assistantMessage: result.assistantMessage,
+      followUpQuestion: result.followUpQuestion,
+      ...(result.memoryProposal
+        ? {
+            memoryProposal: {
+              id: result.memoryProposal.id,
+              epistemicType: result.memoryProposal.epistemicType,
+              dataClass: result.memoryProposal.dataClass,
+              status: result.memoryProposal.status,
+              occurredAt: result.memoryProposal.occurredAt.toISOString(),
+            },
+          }
+        : {}),
+    });
+  } catch (error: unknown) {
+    sendConversationError(response, error);
+  }
+}
+
+async function handleMemoryConfirmation(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+  proposalId: string,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.conversation || !dependencies.tenantId) {
+    sendJson(response, 503, { error: 'conversation_unavailable' });
+    return;
+  }
+
+  try {
+    const body = await readJsonObject(request);
+    const permissions = body['permissions'];
+    if (!isBooleanPermissionObject(permissions)) {
+      sendJson(response, 400, { error: 'invalid_memory_permissions' });
+      return;
+    }
+    const confirmed = dependencies.conversation.confirmMemory({
+      tenantId: dependencies.tenantId,
+      actorId,
+      proposalId,
+      permissions,
+      confirmedAt: (dependencies.clock ?? (() => new Date()))(),
+    });
+    sendJson(response, 200, {
+      assertion: {
+        id: confirmed.assertion.id,
+        epistemicType: confirmed.assertion.epistemicType,
+        dataClass: confirmed.assertion.dataClass,
+      },
+      permissions: confirmed.permissions,
+      confirmedAt: confirmed.confirmedAt.toISOString(),
+      persistence: 'memory',
+    });
+  } catch (error: unknown) {
+    sendConversationError(response, error);
+  }
+}
+
+function sendConversationError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof ConversationValidationError) {
+    sendJson(response, 400, {
+      error: error instanceof InvalidJsonBodyError ? error.code : 'invalid_conversation_input',
+    });
+    return;
+  }
+  if (error instanceof MemoryProposalNotFoundError) {
+    sendJson(response, 404, { error: 'memory_proposal_not_found' });
+    return;
+  }
+  if (error instanceof MemoryProposalPermissionError) {
+    sendJson(response, 403, { error: 'memory_permission_denied' });
+    return;
+  }
+  if (error instanceof MemoryProposalConflictError) {
+    sendJson(response, 409, { error: 'memory_proposal_conflict' });
+    return;
+  }
+  sendJson(response, 500, { error: 'conversation_failed' });
+}
+
+function isBooleanPermissionObject(value: unknown): value is Readonly<{
+  personalUnderstanding: boolean;
+  brandUsage: boolean;
+  publicUsage: boolean;
+}> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record['personalUnderstanding'] === 'boolean' &&
+    typeof record['brandUsage'] === 'boolean' &&
+    typeof record['publicUsage'] === 'boolean'
+  );
 }
 
 async function handleApproval(

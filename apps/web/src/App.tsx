@@ -20,7 +20,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   WorkbenchApiError,
   approveWorkbenchAction,
+  confirmMemoryProposal,
   loadWorkbench,
+  submitConversationTurn,
+  type ConversationTurnResult,
   type WorkbenchAction,
   type WorkbenchSnapshot,
 } from './api';
@@ -46,6 +49,14 @@ export function App() {
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
+  const [conversationId] = useState(() => `conversation_${Date.now().toString(36)}`);
+  const [conversationOpen, setConversationOpen] = useState(false);
+  const [conversationText, setConversationText] = useState('');
+  const [proposeMemory, setProposeMemory] = useState(false);
+  const [conversationResult, setConversationResult] = useState<ConversationTurnResult | null>(null);
+  const [conversationState, setConversationState] = useState<'idle' | 'sending' | 'confirming'>('idle');
+  const [memoryConfirmed, setMemoryConfirmed] = useState(false);
+  const [memoryPersistence, setMemoryPersistence] = useState<'memory' | 'ephemeral' | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState('loading');
@@ -93,6 +104,43 @@ export function App() {
     } catch (caught: unknown) {
       setError(errorMessage(caught));
       setState('ready');
+    }
+  };
+
+  const submitConversation = async () => {
+    const text = conversationText.trim();
+    if (text.length < 3 || conversationState !== 'idle') return;
+    setConversationState('sending');
+    setError(null);
+    setMemoryConfirmed(false);
+    try {
+      const result = await submitConversationTurn({
+        conversationId,
+        turnId: `turn_${crypto.randomUUID()}`,
+        text,
+        proposeMemory,
+      });
+      setConversationResult(result);
+      setConversationState('idle');
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setConversationState('idle');
+    }
+  };
+
+  const confirmMemory = async () => {
+    const proposalId = conversationResult?.memoryProposal?.id;
+    if (!proposalId || conversationState !== 'idle') return;
+    setConversationState('confirming');
+    setError(null);
+    try {
+      const confirmed = await confirmMemoryProposal(proposalId);
+      setMemoryPersistence(confirmed.persistence);
+      setMemoryConfirmed(true);
+      setConversationState('idle');
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setConversationState('idle');
     }
   };
 
@@ -167,7 +215,75 @@ export function App() {
             <p className="overline">گفت‌وگوی پیوسته</p>
             <h2>امروز چه چیزی ذهنت را درگیر کرده؟</h2>
             <p>می‌توانی یک اتفاق، تصمیم، رابطه یا حتی تردید را تعریف کنی. لازم نیست از قبل بدانی به محتوا تبدیل می‌شود یا نه.</p>
-            <button type="button" className="talk"><MessageCircleMore size={18} /> شروع گفت‌وگو <ArrowUpLeft size={17} /></button>
+            {!conversationOpen ? (
+              <button
+                type="button"
+                className="talk"
+                onClick={() => {
+                  setConversationOpen(true);
+                }}
+              >
+                <MessageCircleMore size={18} /> شروع گفت‌وگو <ArrowUpLeft size={17} />
+              </button>
+            ) : (
+              <form
+                className="conversation-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void submitConversation();
+                }}
+              >
+                <label htmlFor="daily-reflection">روایت یا فکر امروز</label>
+                <textarea
+                  id="daily-reflection"
+                  maxLength={5000}
+                  onChange={(event) => {
+                    setConversationText(event.target.value);
+                    setConversationResult(null);
+                    setMemoryConfirmed(false);
+                  }}
+                  placeholder="مثلاً: امروز در جلسه اتفاقی افتاد که ذهنم را درگیر کرد…"
+                  rows={3}
+                  value={conversationText}
+                />
+                <label className="memory-opt-in">
+                  <input
+                    checked={proposeMemory}
+                    onChange={(event) => {
+                      setProposeMemory(event.target.checked);
+                    }}
+                    type="checkbox"
+                  />
+                  بعد از تحلیل، فقط یک پیشنهاد برای حافظه بساز؛ چیزی خودکار ثبت نشود.
+                </label>
+                <button className="talk" disabled={conversationState !== 'idle'} type="submit">
+                  {conversationState === 'sending' ? <LoaderCircle className="spin" size={17} /> : <MessageCircleMore size={17} />}
+                  {conversationState === 'sending' ? 'در حال بررسی…' : 'ارسال برای بررسی'}
+                </button>
+              </form>
+            )}
+            {conversationResult ? (
+              <div className="conversation-result" aria-live="polite">
+                <span>{conversationResult.assistantMessage}</span>
+                <strong>{conversationResult.followUpQuestion}</strong>
+                {conversationResult.memoryProposal && !memoryConfirmed ? (
+                  <button
+                    disabled={conversationState !== 'idle'}
+                    onClick={() => void confirmMemory()}
+                    type="button"
+                  >
+                    {conversationState === 'confirming' ? 'در حال ثبت…' : 'تأیید ثبت فقط برای شناخت داخلی'}
+                  </button>
+                ) : null}
+                {memoryConfirmed ? (
+                  <em>
+                    <Check size={15} /> به‌عنوان Self-report محرمانه در حافظه موقت
+                    {memoryPersistence === 'ephemeral' ? ' نسخه نمایشی' : ' این اجرا'} ثبت شد؛
+                    استفاده برند و عمومی خاموش است.
+                  </em>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </section>
 
@@ -284,6 +400,10 @@ function errorMessage(error: unknown): string {
     authentication_required: 'برای ثبت تأیید باید دوباره وارد شوید.',
     different_action_approved: 'یک اقدام دیگر قبلاً تأیید شده و قابل جایگزینی خودکار نیست.',
     action_not_found: 'این اقدام دیگر در Snapshot فعلی وجود ندارد.',
+    invalid_conversation_input: 'متن یا شناسه گفت‌وگو معتبر نیست.',
+    memory_permission_denied: 'مجوز لازم برای ثبت این حافظه داده نشده است.',
+    memory_proposal_conflict: 'این پیشنهاد حافظه قبلاً با وضعیت دیگری ثبت شده است.',
+    memory_proposal_not_found: 'پیشنهاد حافظه دیگر در دسترس نیست.',
     invalid_response: 'پاسخ API با قرارداد Workbench هم‌خوان نیست.',
   };
   return messages[error.code] ?? 'در پردازش درخواست خطایی رخ داد.';
