@@ -9,15 +9,19 @@ import type { StrategyContextService } from '../strategy/context.js';
 import type { WorkbenchService, WorkbenchSnapshot } from '../workbench/workbench.js';
 import { proposeClaim, verifyClaim, type Claim } from './claim-registry.js';
 import { guardDraft, type DraftGuardResult, type GuardViolation } from './draft-guard.js';
+import {
+  composePlatformDraft,
+  draftChannels,
+  platformAdaptationFor,
+  platformAdaptationProfileVersion,
+  platformFormatIssues,
+  type DraftChannel,
+  type PlatformAdaptationProfileVersion,
+  type PlatformAdaptationSnapshot,
+} from './platform-adaptation.js';
 
-export type DraftChannel =
-  | 'linkedin'
-  | 'instagram'
-  | 'x'
-  | 'youtube'
-  | 'podcast'
-  | 'newsletter'
-  | 'blog';
+export { draftChannels } from './platform-adaptation.js';
+export type { DraftChannel, PlatformAdaptationSnapshot } from './platform-adaptation.js';
 
 export type DraftSourceKind = 'memory' | 'text_asset';
 
@@ -47,6 +51,7 @@ export type DraftWorkspaceSnapshot = Readonly<{
   strategyRevision: number;
   channel: DraftChannel;
   body: string;
+  adaptation: PlatformAdaptationSnapshot;
   status: DraftWorkspaceStatus;
   guard: DraftGuardResult;
   source: DraftSourceRecord;
@@ -72,6 +77,7 @@ export type CreateDraftCommand = BaseCommand & Readonly<{
   strategyRevision: number;
   channel: DraftChannel;
   body: string;
+  adaptationProfileVersion: PlatformAdaptationProfileVersion;
   guard: DraftGuardResult;
   source: DraftWorkspaceSnapshot['source'];
 }>;
@@ -266,6 +272,7 @@ export class ContentDraftService {
       strategyRevision: strategy.revision,
       channel: input.channel,
       body,
+      adaptationProfileVersion: platformAdaptationProfileVersion,
       guard,
       source: sourceValue,
     });
@@ -413,6 +420,7 @@ export class InMemoryDraftWorkspaceRepository implements DraftWorkspaceRepositor
       strategyRevision: command.strategyRevision,
       channel: command.channel,
       body: command.body,
+      adaptation: platformAdaptationFor(command.channel, command.body, command.adaptationProfileVersion),
       status: command.guard.mayRequestApproval ? 'awaiting_approval' : 'guard_failed',
       guard: command.guard,
       source: command.source,
@@ -434,6 +442,7 @@ export class InMemoryDraftWorkspaceRepository implements DraftWorkspaceRepositor
         strategyRevision: current.strategyRevision,
         channel: current.channel,
         body: command.body,
+        adaptation: platformAdaptationFor(current.channel, command.body, current.adaptation.version),
         status: command.guard.mayRequestApproval ? 'awaiting_approval' : 'guard_failed',
         guard: command.guard,
         source: current.source,
@@ -503,6 +512,7 @@ type DraftRow = Readonly<{
   strategy_revision: string | number;
   channel: DraftChannel;
   body: string;
+  adaptation_profile_version: PlatformAdaptationProfileVersion;
   status: DraftWorkspaceStatus;
   guard_result: unknown;
   source_kind: DraftSourceKind;
@@ -631,9 +641,10 @@ export class PostgresDraftWorkspaceRepository implements DraftWorkspaceRepositor
         `INSERT INTO app.draft_artifacts (
            id, tenant_id, owner_user_id, workflow_id, channel, body, status,
            guard_result, source_kind, source_proposal_ref, source_assertion_id, strategy_revision,
+           adaptation_profile_version,
            revision, created_by, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, 1, $3, $13, $13)`,
-        [command.draftId, this.context.tenantId, this.context.ownerUserId, `draft:${command.draftId}`, command.channel, command.body, status, JSON.stringify(command.guard), command.source.kind, command.source.ref, command.source.assertionId, command.strategyRevision, command.occurredAt],
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, 1, $3, $14, $14)`,
+        [command.draftId, this.context.tenantId, this.context.ownerUserId, `draft:${command.draftId}`, command.channel, command.body, status, JSON.stringify(command.guard), command.source.kind, command.source.ref, command.source.assertionId, command.strategyRevision, command.adaptationProfileVersion, command.occurredAt],
       );
       await transaction.query(
         `INSERT INTO app.draft_claims (tenant_id, draft_id, claim_id, excerpt)
@@ -748,10 +759,6 @@ export class PostgresDraftWorkspaceRepository implements DraftWorkspaceRepositor
   }
 }
 
-export const draftChannels: readonly DraftChannel[] = [
-  'linkedin', 'instagram', 'x', 'youtube', 'podcast', 'newsletter', 'blog',
-];
-
 function sourceAuthorizedForContentAction(
   workbench: WorkbenchSnapshot,
   source: DraftSourceRecord,
@@ -764,41 +771,6 @@ function sourceAuthorizedForContentAction(
   ) return false;
   const authorized = new Set(workbench.workflow.approvedEvidenceIds);
   return source.evidenceIds.every((id) => authorized.has(id));
-}
-
-function composePlatformDraft(
-  channel: DraftChannel,
-  angle: string,
-  statement: string,
-  takeaway: string,
-  preferences: Readonly<Record<string, unknown>>,
-): string {
-  const adaptedAngle = preferences['voice.headline_length'] === 'shorter'
-    ? shorten(angle, 72)
-    : angle;
-  const adaptedTakeaway = preferences['voice.draft_length'] === 'shorter'
-    ? shorten(takeaway, 180)
-    : takeaway;
-  if (channel === 'x') return `${adaptedAngle}\n\n${statement}\n\nبرداشت من: ${adaptedTakeaway}`;
-  if (channel === 'youtube') {
-    return `Hook\n${adaptedAngle}\n\nروایت واقعی\n${statement}\n\nجمع‌بندی و دعوت به گفت‌وگو\n${adaptedTakeaway}`;
-  }
-  if (channel === 'podcast') {
-    return `آغاز اپیزود\n${adaptedAngle}\n\nروایت و زمینه\n${statement}\n\nبرداشت شخصی\n${adaptedTakeaway}`;
-  }
-  if (channel === 'newsletter' || channel === 'blog') {
-    return `# ${adaptedAngle}\n\n## روایت\n${statement}\n\n## برداشت من\n${adaptedTakeaway}`;
-  }
-  if (channel === 'instagram') {
-    return `${adaptedAngle}\n\n${statement}\n\nبرداشت من:\n${adaptedTakeaway}\n\n#روایت_واقعی`;
-  }
-  const question = preferences['voice.question_cta'] === 'omit' ? '' : '\n\nنظر شما چیست؟';
-  return `${adaptedAngle}\n\n${statement}\n\nبرداشت من:\n${adaptedTakeaway}${question}`;
-}
-
-function shorten(value: string, maximum: number): string {
-  if (value.length <= maximum) return value;
-  return `${value.slice(0, maximum - 1).trimEnd()}…`;
 }
 
 function reviewBody(
@@ -815,7 +787,7 @@ function reviewBody(
   const containsClaim = body.includes(source.statement);
   const remaining = body.replaceAll(source.statement, '');
   const extractionComplete = !hasPotentialUnboundFact(remaining);
-  return guardDraft(
+  const guard = guardDraft(
     {
       id: draftId,
       tenantId,
@@ -828,6 +800,18 @@ function reviewBody(
     [claim],
     at,
   );
+  const formatViolations: GuardViolation[] = platformFormatIssues(channel, body).map((message) => ({
+    code: 'channel_format_violation',
+    severity: 'red',
+    claimId: 'draft',
+    message,
+  }));
+  if (formatViolations.length === 0) return guard;
+  return {
+    classification: 'red',
+    mayRequestApproval: false,
+    violations: [...guard.violations, ...formatViolations],
+  };
 }
 
 function evidenceBoundClaim(
@@ -897,6 +881,7 @@ function createSnapshot(
     strategyRevision: command.strategyRevision,
     channel: command.channel,
     body: command.body,
+    adaptation: platformAdaptationFor(command.channel, command.body, command.adaptationProfileVersion),
     status,
     guard: command.guard,
     source: command.source,
@@ -911,6 +896,7 @@ function createSnapshot(
 function draftSelectColumns(): string {
   return `SELECT draft.id AS draft_id, draft.revision, draft.strategy_revision,
                  draft.channel, draft.body, draft.status, draft.guard_result,
+                 draft.adaptation_profile_version,
                  draft.source_kind, draft.source_proposal_ref, draft.source_assertion_id,
                  claim.id AS claim_id, claim.statement, evidence.evidence_ids,
                  draft.approved_at, draft.exported_at, draft.updated_at`;
@@ -931,6 +917,7 @@ function draftUpdateCte(): string {
 function draftReturningColumns(): string {
   return `draft.id AS draft_id, draft.revision, draft.strategy_revision,
     draft.channel, draft.body, draft.status, draft.guard_result,
+    draft.adaptation_profile_version,
     draft.source_kind, draft.source_proposal_ref, draft.source_assertion_id,
     (SELECT claim_id FROM claim_context) AS claim_id,
     (SELECT statement FROM claim_context) AS statement,
@@ -959,6 +946,7 @@ function rowToSnapshot(row: DraftRow, persistence: DraftWorkspacePersistence): D
     strategyRevision,
     channel: row.channel,
     body: row.body,
+    adaptation: platformAdaptationFor(row.channel, row.body, row.adaptation_profile_version),
     status: row.status,
     guard: parseGuard(row.guard_result),
     source: {
@@ -1088,6 +1076,7 @@ function parseStoredSnapshot(value: unknown): DraftWorkspaceSnapshot {
     strategyRevision: Number(record['strategyRevision']),
     channel: stringValue(record['channel']) as DraftChannel,
     body: stringValue(record['body']),
+    adaptation: parseStoredAdaptation(record),
     status: stringValue(record['status']) as DraftWorkspaceStatus,
     guard: parseGuard(record['guard']),
     source: {
@@ -1113,6 +1102,20 @@ function parseStoredSnapshot(value: unknown): DraftWorkspaceSnapshot {
     updatedAt: new Date(stringValue(record['updatedAt'])),
     persistence: record['persistence'] === 'postgres' ? 'postgres' : 'memory',
   };
+}
+
+function parseStoredAdaptation(record: Record<string, unknown>): PlatformAdaptationSnapshot {
+  const channel = stringValue(record['channel']) as DraftChannel;
+  const body = stringValue(record['body']);
+  const adaptation = record['adaptation'];
+  const version = adaptation && typeof adaptation === 'object' && !Array.isArray(adaptation)
+    ? (adaptation as Record<string, unknown>)['version']
+    : undefined;
+  return platformAdaptationFor(
+    channel,
+    body,
+    version === platformAdaptationProfileVersion ? version : platformAdaptationProfileVersion,
+  );
 }
 
 async function setTenantContext(transaction: SqlTransaction, tenantId: string): Promise<void> {

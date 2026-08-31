@@ -126,6 +126,17 @@ export type DraftWorkspaceSnapshot = Readonly<{
   strategyRevision: number;
   channel: DraftChannel;
   body: string;
+  adaptation: Readonly<{
+    version: 'platform-adaptation-v1';
+    audienceContext: string;
+    format: string;
+    recommendedCharacters: Readonly<{ min: number; max: number }>;
+    hardMaximumCharacters: number;
+    currentCharacters: number;
+    visualLanguage: string;
+    interactionModel: string;
+    requiredElements: readonly string[];
+  }>;
   status: 'guard_failed' | 'awaiting_approval' | 'approved' | 'exported';
   guard: Readonly<{
     classification: 'green' | 'yellow' | 'red';
@@ -817,13 +828,22 @@ function isStrategyContextSnapshot(payload: unknown): payload is StrategyContext
 }
 
 function isDraftWorkspaceSnapshot(payload: unknown): payload is DraftWorkspaceSnapshot {
-  if (!isRecord(payload) || !isRecord(payload['guard']) || !isRecord(payload['source'])) return false;
+  if (!isRecord(payload) || !isRecord(payload['guard']) || !isRecord(payload['source']) || !isRecord(payload['adaptation'])) return false;
   const guard = payload['guard'];
   const source = payload['source'];
+  const adaptation = payload['adaptation'];
+  const recommended = adaptation['recommendedCharacters'];
   return (
     typeof payload['draftId'] === 'string' && typeof payload['claimId'] === 'string' &&
     typeof payload['revision'] === 'number' && typeof payload['strategyRevision'] === 'number' &&
     typeof payload['channel'] === 'string' && typeof payload['body'] === 'string' &&
+    adaptation['version'] === 'platform-adaptation-v1' &&
+    typeof adaptation['audienceContext'] === 'string' && typeof adaptation['format'] === 'string' &&
+    isRecord(recommended) && typeof recommended['min'] === 'number' && typeof recommended['max'] === 'number' &&
+    typeof adaptation['hardMaximumCharacters'] === 'number' &&
+    typeof adaptation['currentCharacters'] === 'number' &&
+    typeof adaptation['visualLanguage'] === 'string' && typeof adaptation['interactionModel'] === 'string' &&
+    Array.isArray(adaptation['requiredElements']) && adaptation['requiredElements'].every((item) => typeof item === 'string') &&
     typeof payload['status'] === 'string' &&
     (guard['classification'] === 'green' || guard['classification'] === 'yellow' || guard['classification'] === 'red') &&
     typeof guard['mayRequestApproval'] === 'boolean' && Array.isArray(guard['violations']) &&

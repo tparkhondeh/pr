@@ -135,6 +135,16 @@ Approval قبلی Draft را باطل و Guard ادعا/فرمت را دوبار
 `POST /api/drafts/:id/approve` و `POST /api/drafts/:id/export` تشکیل شده است. انتشار
 مستقیم در این مرحله عمداً وجود ندارد و Export فایل متنی آخرین Human-in-the-Loop است.
 
+Platform Adaptation در نسخه `platform-adaptation-v1` برای هر هفت کانال یک قرارداد
+مجزای Audience Context، Format، بازه طول پیشنهادی، سقف قطعی طول، Visual Language،
+Interaction Model و عناصر الزامی دارد. Newsletter و Blog دیگر قالب مشترک ندارند و
+نسخه X با حفظ عین Claim مستند، زاویه و برداشت را تا سقف ۲۸۰ نویسه Fit می‌کند. نسخه
+قرارداد همراه Draft در PostgreSQL ذخیره می‌شود؛ API آن را در `adaptation` توضیح می‌دهد
+و UI «Platform Brief» را کنار Traceability نشان می‌دهد. هر Edit دوباره عناصر الزامی
+و سقف کانال را بررسی می‌کند. جزئیات قرارداد در
+[`docs/architecture/platform-adaptation-v1.0.md`](docs/architecture/platform-adaptation-v1.0.md)
+ثبت شده است.
+
 هر ذخیره ویرایش Draft به Feedback Engine متصل است. سیستم فقط تغییرهای مادی و
 توضیح‌پذیر مانند کوتاه‌کردن متن/تیتر، کاهش میان‌تیتر یا حذف پرسش پایانی را به‌عنوان
 Signal ثبت می‌کند. یک Edit یا Reject منفرد Voice Model را تغییر نمی‌دهد؛ پس از دست‌کم

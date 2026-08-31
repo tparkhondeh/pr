@@ -62,6 +62,10 @@ const assetRightsMigrationPath = fileURLToPath(
   new URL('../db/migrations/0014_text_asset_rights.sql', import.meta.url),
 );
 const assetRightsSql = readFileSync(assetRightsMigrationPath, 'utf8');
+const platformAdaptationMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0015_platform_adaptation_profile.sql', import.meta.url),
+);
+const platformAdaptationSql = readFileSync(platformAdaptationMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -260,5 +264,11 @@ describe('foundation migration', () => {
     expect(assetRightsSql).toContain('UNIQUE (tenant_id, owner_user_id, client_ref)');
     expect(assetRightsSql).toContain('ALTER TABLE app.asset_rights_requests FORCE ROW LEVEL SECURITY');
     expect(assetRightsSql).toContain('CREATE POLICY asset_rights_requests_tenant_isolation');
+  });
+
+  it('freezes the platform adaptation contract used by each draft', () => {
+    defineMigration('0015_platform_adaptation_profile', platformAdaptationSql);
+    expect(platformAdaptationSql).toContain('ADD COLUMN adaptation_profile_version text NOT NULL');
+    expect(platformAdaptationSql).toContain("adaptation_profile_version = 'platform-adaptation-v1'");
   });
 });

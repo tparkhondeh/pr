@@ -1232,6 +1232,10 @@ function DraftWorkspacePanel({
   const canApprove = snapshot.status === 'awaiting_approval' && snapshot.guard.mayRequestApproval &&
     snapshot.sourceAvailable && !snapshot.staleStrategy;
   const canExport = snapshot.status === 'approved' && snapshot.sourceAvailable && !snapshot.staleStrategy;
+  const adaptation = snapshot.adaptation;
+  const currentCharacters = body.length;
+  const withinRecommendedLength = currentCharacters >= adaptation.recommendedCharacters.min &&
+    currentCharacters <= adaptation.recommendedCharacters.max;
   return (
     <section className="draft-view" aria-label="ویرایش و خروجی پیش‌نویس">
       <header className="draft-head">
@@ -1258,19 +1262,34 @@ function DraftWorkspacePanel({
           <label htmlFor="draft-body">متن قابل‌ویرایش</label>
           <textarea
             id="draft-body"
-            maxLength={20000}
+            maxLength={adaptation.hardMaximumCharacters}
             onChange={(event) => { setBody(event.target.value); }}
             rows={18}
             value={body}
           />
           <div className="draft-editor-foot">
-            <span>{body.length.toLocaleString('fa-IR')} نویسه</span>
+            <span className={currentCharacters > adaptation.hardMaximumCharacters ? 'draft-length-danger' : undefined}>
+              {currentCharacters.toLocaleString('fa-IR')} / {adaptation.hardMaximumCharacters.toLocaleString('fa-IR')} نویسه
+              {' · '}{withinRecommendedLength ? 'در بازه پیشنهادی' : `پیشنهاد ${adaptation.recommendedCharacters.min.toLocaleString('fa-IR')}–${adaptation.recommendedCharacters.max.toLocaleString('fa-IR')}`}
+            </span>
             <button disabled={state === 'mutating' || body.trim() === snapshot.body} onClick={() => void onEdit(body)} type="button">
               <FileCheck2 size={16} /> ذخیره و بررسی دوباره
             </button>
           </div>
         </div>
         <aside className="draft-trace">
+          <p className="overline">Platform Brief · {adaptation.version}</p>
+          <h3>چرا این نسخه برای {draftChannelLabel(snapshot.channel)} متفاوت است؟</h3>
+          <div className="platform-brief">
+            <div><b>مخاطب</b><span>{adaptation.audienceContext}</span></div>
+            <div><b>قالب</b><span>{adaptation.format}</span></div>
+            <div><b>زبان بصری</b><span>{adaptation.visualLanguage}</span></div>
+            <div><b>تعامل</b><span>{adaptation.interactionModel}</span></div>
+          </div>
+          <div className="platform-elements">
+            {adaptation.requiredElements.map((element) => <span key={element}>{element}</span>)}
+          </div>
+          <div className="draft-trace-divider" />
           <p className="overline">Traceability</p>
           <h3>این متن به چه چیزی متصل است؟</h3>
           <blockquote>{snapshot.source.statement}</blockquote>

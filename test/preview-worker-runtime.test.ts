@@ -131,8 +131,13 @@ describe('private preview worker draft runtime', () => {
       draftId: string;
       revision: number;
       status: string;
+      adaptation: { version: string; hardMaximumCharacters: number; currentCharacters: number };
     };
     expect(created.status).toBe('awaiting_approval');
+    expect(created.adaptation).toMatchObject({
+      version: 'platform-adaptation-v1',
+      hardMaximumCharacters: 3000,
+    });
 
     let edited = created;
     const statement = 'در یک پروژه واقعی، ابهام را با گفت‌وگوی مستقیم به تصمیم قابل اجرا تبدیل کردم.';
@@ -144,7 +149,7 @@ describe('private preview worker draft runtime', () => {
           body: JSON.stringify({
             requestId: `draft_runtime_edit_${String(index)}`,
             expectedRevision: edited.revision,
-            body: `تیتر کوتاه\n\n${statement}\n\n${'برداشت روشن و صادقانه. '.repeat(repeat)}`,
+            body: `تیتر کوتاه\n\nروایت مستند:\n${statement}\n\nبرداشت من:\n${'برداشت روشن و صادقانه. '.repeat(repeat)}`,
           }),
         }),
         env,

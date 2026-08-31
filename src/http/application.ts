@@ -1033,6 +1033,7 @@ function serializeDraft(snapshot: DraftWorkspaceSnapshot): Record<string, unknow
     strategyRevision: snapshot.strategyRevision,
     channel: snapshot.channel,
     body: snapshot.body,
+    adaptation: snapshot.adaptation,
     status: snapshot.status,
     guard: snapshot.guard,
     source: snapshot.source,

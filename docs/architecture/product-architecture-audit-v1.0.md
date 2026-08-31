@@ -154,7 +154,7 @@ Consent، authorization، scoring نهایی، persistence، publishing و delet
 | Similarity retrieval | Algorithmic؛ policy filter قطعی |
 | Strategy scenarios | LLM/Agent + structured schema |
 | Opportunity/attention score | Rule/weighted model؛ rationale قابل مشاهده |
-| Draft و platform adaptation | LLM |
+| Draft و platform adaptation | Profile قطعی در MVP؛ LLM آینده فقط داخل Schema و Guard |
 | Claim/fact/risk gates | ترکیب rule، retrieval و LLM critic |
 | Public publish، red-risk action | Human approval |
 | Export/delete/revoke | Human request + deterministic execution |

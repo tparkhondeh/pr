@@ -10,6 +10,7 @@ import {
   PostgresDraftWorkspaceRepository,
   type CreateDraftCommand,
 } from '../src/claims/workspace.js';
+import { platformAdaptationProfileVersion } from '../src/claims/platform-adaptation.js';
 import { ConversationIntakeService } from '../src/conversation/intake.js';
 import type { SqlQueryResult, SqlTransaction, SqlTransactionRunner } from '../src/database/sql.js';
 import {
@@ -124,6 +125,7 @@ describe('evidence-bound draft workspace', () => {
       revision: 1,
       status: 'awaiting_approval',
       guard: { classification: 'green' },
+      adaptation: { version: 'platform-adaptation-v1', hardMaximumCharacters: 3000 },
       source: { kind: 'memory', ref: proposalId, evidenceIds: ['evidence_turn_draft_source'] },
     });
 
@@ -279,6 +281,38 @@ describe('evidence-bound draft workspace', () => {
     })).rejects.toMatchObject({ reason: 'source_not_authorized_for_action' });
   });
 
+  it('blocks approval when an edit removes a required platform element', async () => {
+    const { service, proposalId } = await fixture();
+    const created = await service.create({
+      actorId: owner,
+      requestId: 'draft_youtube_create',
+      sourceKind: 'memory',
+      sourceRef: proposalId,
+      channel: 'youtube',
+      narrativeAngle: 'یک روایت ویدیویی درباره تصمیم شفاف',
+      takeaway: 'نشانه‌های بصری باید به تجربه واقعی متصل بمانند.',
+      publicDraftingConsent: true,
+      occurredAt: now,
+    });
+
+    const edited = await service.edit({
+      actorId: owner,
+      requestId: 'draft_youtube_remove_visual',
+      draftId: created.snapshot.draftId,
+      expectedRevision: created.snapshot.revision,
+      body: created.snapshot.body.replace('راهنمای تصویر', 'بخش دوم'),
+      occurredAt: now,
+    });
+
+    expect(edited.snapshot).toMatchObject({
+      status: 'guard_failed',
+      guard: {
+        classification: 'red',
+        violations: [expect.objectContaining({ code: 'channel_format_violation' })],
+      },
+    });
+  });
+
   it('records an edit as owner feedback without auto-applying a preference', async () => {
     const { service, learning, proposalId } = await fixture();
     const created = await service.create({
@@ -348,6 +382,7 @@ describe('Postgres draft workspace repository', () => {
       strategyRevision: 1,
       channel: 'linkedin',
       body: 'زاویه روایت\n\nیک تجربه واقعی\n\nبرداشت من',
+      adaptationProfileVersion: platformAdaptationProfileVersion,
       guard: { classification: 'green', mayRequestApproval: true, violations: [] },
       source: {
         kind: 'memory',

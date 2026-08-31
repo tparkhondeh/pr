@@ -1,6 +1,7 @@
 import type { TenantId } from '../kernel/identity.js';
 import type { Purpose } from '../kernel/policy.js';
 import { effectiveClaimStatus, type Claim } from './claim-registry.js';
+import { platformHardCharacterLimit } from './platform-adaptation.js';
 
 export type DraftClaimReference = Readonly<{
   claimId: string;
@@ -70,7 +71,7 @@ export function guardDraft(
     );
   }
 
-  const channelLimit = channelCharacterLimit(draft.channel);
+  const channelLimit = platformHardCharacterLimit(draft.channel);
   if (channelLimit && draft.body.length > channelLimit) {
     violations.push(
       red(
@@ -134,18 +135,6 @@ export function guardDraft(
     mayRequestApproval: classification !== 'red',
     violations,
   };
-}
-
-function channelCharacterLimit(channel: string): number | undefined {
-  return {
-    linkedin: 3_000,
-    instagram: 2_200,
-    x: 280,
-    youtube: 10_000,
-    podcast: 10_000,
-    newsletter: 15_000,
-    blog: 20_000,
-  }[channel];
 }
 
 function red(code: GuardViolation['code'], claimId: string, message: string): GuardViolation {
