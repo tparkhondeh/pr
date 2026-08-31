@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
+import { AuditTrailService, InMemoryAuditTrailRepository } from '../src/account/audit-trail.js';
 import { ConversationIntakeService } from '../src/conversation/intake.js';
 import { ContentDraftService, InMemoryDraftWorkspaceRepository } from '../src/claims/workspace.js';
 import {
@@ -601,5 +602,113 @@ describe('operational endpoints', () => {
     await expect(decisionResponse.json()).resolves.toMatchObject({
       summary: { applied: 1 },
     });
+  });
+
+  it('exposes an owner audit trail and a portable, auditable account export', async () => {
+    const activeTenant = tenantId('tenant_primary');
+    const owner = userId('owner_primary');
+    const fixedTime = new Date('2026-08-31T22:00:00.000Z');
+    const approval = new InMemoryWorkbenchApprovalRepository();
+    const strategy = new StrategyContextService(
+      new InMemoryStrategyContextRepository(defaultStrategyContext(activeTenant, owner), approval),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    const workbench = createDefaultWorkbenchService(
+      () => fixedTime,
+      approval,
+      { tenantId: activeTenant, ownerUserId: owner },
+      strategy,
+    );
+    const conversation = new ConversationIntakeService();
+    const learning = new FeedbackLearningService(
+      new InMemoryFeedbackLearningRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    const drafts = new ContentDraftService(
+      new InMemoryDraftWorkspaceRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+      conversation,
+      workbench,
+      strategy,
+      learning,
+    );
+    const auditTrail = new AuditTrailService(new InMemoryAuditTrailRepository(), {
+      tenantId: activeTenant,
+      ownerUserId: owner,
+    });
+    const dependencies: ApplicationDependencies = {
+      workbench,
+      strategy,
+      conversation,
+      drafts,
+      learning,
+      auditTrail,
+      mutationAuditTrail: auditTrail,
+      tenantId: activeTenant,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+
+    const approvalResponse = await request(
+      '/api/workbench/approval',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ actionId: 'conversation' }),
+      },
+      dependencies,
+    );
+    expect(approvalResponse.status).toBe(200);
+
+    const activityResponse = await request(
+      '/api/account/activity',
+      () => ({ ready: true }),
+      undefined,
+      dependencies,
+    );
+    const activity = await activityResponse.json() as {
+      summary: { total: number; approvals: number };
+      events: Array<{ eventType: string; metadata: Record<string, unknown> }>;
+    };
+    expect(activityResponse.status).toBe(200);
+    expect(activity.summary).toEqual(expect.objectContaining({ total: 1, approvals: 1 }));
+    expect(activity.events[0]).toMatchObject({
+      eventType: 'workbench.action_approved',
+      metadata: { actionId: 'conversation' },
+    });
+
+    const exportResponse = await request(
+      '/api/account/export',
+      () => ({ ready: true }),
+      undefined,
+      dependencies,
+    );
+    const portable = await exportResponse.json() as {
+      schemaVersion: number;
+      scope: string;
+      data: { memory: { records: unknown[] }; activity: { events: unknown[] } };
+    };
+    expect(exportResponse.status).toBe(200);
+    expect(exportResponse.headers.get('content-disposition')).toContain('pr-personal-data-2026-08-31.json');
+    expect(portable).toMatchObject({
+      schemaVersion: 1,
+      scope: 'owner_portable_data',
+      data: { memory: { records: [] } },
+    });
+    expect(portable.data.activity.events).toHaveLength(1);
+
+    const activityAfterExport = await request(
+      '/api/account/activity',
+      () => ({ ready: true }),
+      undefined,
+      dependencies,
+    );
+    const activityAfter = await activityAfterExport.json() as {
+      summary: { total: number; exports: number };
+      events: Array<{ eventType: string }>;
+    };
+    expect(activityAfter.summary).toMatchObject({ total: 2, exports: 1 });
+    expect(activityAfter.events.some((event) => event.eventType === 'account.data_exported')).toBe(true);
   });
 });

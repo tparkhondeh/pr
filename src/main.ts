@@ -1,4 +1,9 @@
 import { createServer } from 'node:http';
+import {
+  AuditTrailService,
+  InMemoryAuditTrailRepository,
+  PostgresAuditTrailRepository,
+} from './account/audit-trail.js';
 import { loadEnvironment } from './config/environment.js';
 import {
   ContentDraftService,
@@ -49,6 +54,15 @@ const ownerUserId = environment.database?.ownerUserId ?? 'owner_primary';
 const activeTenantId = environment.database?.tenantId ?? 'tenant_primary';
 const activeTenant = tenantId(activeTenantId);
 const owner = userId(ownerUserId);
+const auditTrail = new AuditTrailService(
+  postgres && environment.database
+    ? new PostgresAuditTrailRepository(postgres, {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+      })
+    : new InMemoryAuditTrailRepository(),
+  { tenantId: activeTenant, ownerUserId: owner },
+);
 const fallbackStrategy = defaultStrategyContext(activeTenant, owner);
 const strategyRepository = postgres && environment.database
   ? new PostgresStrategyContextRepository(
@@ -105,6 +119,8 @@ const requestHandler = createRequestHandler(
     drafts,
     learning,
     conversation,
+    auditTrail,
+    ...(!postgres ? { mutationAuditTrail: auditTrail } : {}),
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity
     // before allowing any multi-user or public deployment.

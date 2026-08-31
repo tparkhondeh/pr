@@ -1,5 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
+  AuditTrailPermissionError,
+  AuditTrailValidationError,
+  type AuditTrailService,
+  type AuditTrailSnapshot,
+  type RecordAuditEvent,
+} from '../account/audit-trail.js';
+import {
   DraftBlockedError,
   DraftConflictError,
   DraftNotFoundError,
@@ -16,7 +23,7 @@ import {
   MemoryProposalNotFoundError,
   MemoryProposalPermissionError,
 } from '../conversation/intake.js';
-import type { ConversationIntakeService } from '../conversation/intake.js';
+import type { ConversationIntakeService, PersonalMemorySnapshot } from '../conversation/intake.js';
 import {
   FeedbackConflictError,
   FeedbackNotFoundError,
@@ -50,6 +57,8 @@ export type ApplicationDependencies = Readonly<{
   strategy?: Pick<StrategyContextService, 'snapshot' | 'save'>;
   drafts?: Pick<ContentDraftService, 'snapshot' | 'create' | 'edit' | 'approve' | 'export'>;
   learning?: Pick<FeedbackLearningService, 'snapshot' | 'rejectDraft' | 'decide'>;
+  auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
+  mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
   resolveActor?: (request: IncomingMessage) => UserId | undefined;
   tenantId?: TenantId;
   conversation?: Pick<
@@ -116,6 +125,16 @@ export function createRequestHandler(
 
     if (request.method === 'GET' && path === '/api/feedback') {
       await handleFeedbackSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/account/activity') {
+      await handleAuditTrail(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/account/export') {
+      await handleAccountExport(request, response, dependencies);
       return;
     }
 
@@ -233,14 +252,26 @@ async function handleDraftRejection(
       sendJson(response, 404, { error: 'draft_not_found' });
       return;
     }
+    const occurredAt = now(dependencies);
     const snapshot = await dependencies.learning?.rejectDraft({
       actorId,
       requestId,
       draftId,
       reason,
-      occurredAt: now(dependencies),
+      occurredAt,
     });
     if (!snapshot) throw new Error('Learning service disappeared.');
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `feedback.reject:${requestId}`,
+      eventType: 'feedback.draft_rejected',
+      resourceType: 'draft',
+      resourceId: draftId,
+      purpose: 'brand_usage',
+      decision: 'rejected',
+      metadata: { requestId },
+      occurredAt,
+    });
     sendJson(response, 200, serializeFeedback(snapshot));
   } catch (error: unknown) {
     sendFeedbackError(response, error);
@@ -263,14 +294,26 @@ async function handlePreferenceDecision(
       sendJson(response, 400, { error: 'invalid_feedback_input' });
       return;
     }
+    const occurredAt = now(dependencies);
     const snapshot = await dependencies.learning?.decide({
       actorId,
       requestId,
       proposalId,
       decision,
-      occurredAt: now(dependencies),
+      occurredAt,
     });
     if (!snapshot) throw new Error('Learning service disappeared.');
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `feedback.preference:${requestId}`,
+      eventType: `feedback.preference_${decision}`,
+      resourceType: 'preference_proposal',
+      resourceId: proposalId,
+      purpose: 'brand_usage',
+      decision,
+      metadata: { requestId },
+      occurredAt,
+    });
     sendJson(response, 200, serializeFeedback(snapshot));
   } catch (error: unknown) {
     sendFeedbackError(response, error);
@@ -321,6 +364,132 @@ function serializeFeedback(snapshot: FeedbackLearningSnapshot): Record<string, u
   };
 }
 
+async function handleAuditTrail(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = accountActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.auditTrail?.snapshot(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Audit trail disappeared.');
+    sendJson(response, 200, serializeAuditTrail(snapshot));
+  } catch (error: unknown) {
+    sendAccountError(response, error);
+  }
+}
+
+async function handleAccountExport(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = accountActor(request, response, dependencies);
+  if (!actorId) return;
+  if (
+    !dependencies.workbench || !dependencies.strategy || !dependencies.drafts ||
+    !dependencies.learning || !dependencies.conversation || !dependencies.tenantId
+  ) {
+    sendJson(response, 503, { error: 'account_export_unavailable' });
+    return;
+  }
+  const exportedAt = now(dependencies);
+  try {
+    const [workbench, strategy, draft, feedback, memory, activity] = await Promise.all([
+      dependencies.workbench.snapshot(),
+      dependencies.strategy.snapshot(actorId),
+      dependencies.drafts.snapshot(actorId, exportedAt),
+      dependencies.learning.snapshot(actorId, exportedAt),
+      dependencies.conversation.memorySnapshot({
+        tenantId: dependencies.tenantId,
+        actorId,
+        generatedAt: exportedAt,
+      }),
+      dependencies.auditTrail?.snapshot(actorId, exportedAt),
+    ]);
+    if (!activity) throw new Error('Audit trail disappeared.');
+    await dependencies.auditTrail?.record({
+      actorId,
+      requestId: `account.export:${crypto.randomUUID()}`,
+      eventType: 'account.data_exported',
+      resourceType: 'account',
+      resourceId: 'owner_portable_data',
+      purpose: 'personal_understanding',
+      decision: 'exported',
+      metadata: { schemaVersion: 1, consistency: 'best_effort_snapshot' },
+      occurredAt: exportedAt,
+    });
+    sendJsonDownload(
+      response,
+      `pr-personal-data-${exportedAt.toISOString().slice(0, 10)}.json`,
+      {
+        schemaVersion: 1,
+        exportedAt: exportedAt.toISOString(),
+        scope: 'owner_portable_data',
+        consistency: 'best_effort_snapshot',
+        data: {
+          workbench,
+          strategy: serializeStrategy(strategy),
+          memory: serializeMemorySnapshot(memory),
+          draft: draft ? serializeDraft(draft) : null,
+          feedback: serializeFeedback(feedback),
+          activity: serializeAuditTrail(activity),
+        },
+      },
+    );
+  } catch (error: unknown) {
+    sendAccountError(response, error);
+  }
+}
+
+function accountActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.auditTrail) {
+    sendJson(response, 503, { error: 'audit_trail_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function serializeAuditTrail(snapshot: AuditTrailSnapshot): Record<string, unknown> {
+  return {
+    generatedAt: snapshot.generatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    summary: snapshot.summary,
+    events: snapshot.events.map((event) => ({
+      id: event.id,
+      eventType: event.eventType,
+      resourceType: event.resourceType,
+      ...(event.resourceId ? { resourceId: event.resourceId } : {}),
+      ...(event.purpose ? { purpose: event.purpose } : {}),
+      ...(event.decision ? { decision: event.decision } : {}),
+      metadata: event.metadata,
+      occurredAt: event.occurredAt.toISOString(),
+    })),
+  };
+}
+
+function sendAccountError(response: ServerResponse, error: unknown): void {
+  if (error instanceof AuditTrailPermissionError) {
+    sendJson(response, 403, { error: 'account_permission_denied' });
+    return;
+  }
+  if (error instanceof AuditTrailValidationError) {
+    sendJson(response, 400, { error: 'invalid_audit_event' });
+    return;
+  }
+  sendJson(response, 500, { error: 'account_data_failed' });
+}
+
 function sendFeedbackError(response: ServerResponse, error: unknown): void {
   if (error instanceof InvalidJsonBodyError || error instanceof FeedbackValidationError) {
     sendJson(response, 400, { error: error instanceof InvalidJsonBodyError ? error.code : 'invalid_feedback_input' });
@@ -347,6 +516,13 @@ function isPreferenceDecision(value: unknown): value is PreferenceDecision {
 
 function now(dependencies: ApplicationDependencies): Date {
   return (dependencies.clock ?? (() => new Date()))();
+}
+
+async function recordMutationAudit(
+  dependencies: ApplicationDependencies,
+  event: Omit<RecordAuditEvent, 'tenantId'>,
+): Promise<void> {
+  await dependencies.mutationAuditTrail?.record(event);
 }
 
 async function handleDraftSnapshot(
@@ -390,6 +566,7 @@ async function handleDraftCreate(
       sendJson(response, 400, { error: 'invalid_draft_input' });
       return;
     }
+    const occurredAt = now(dependencies);
     const result = await dependencies.drafts?.create({
       actorId,
       requestId,
@@ -398,9 +575,20 @@ async function handleDraftCreate(
       narrativeAngle,
       takeaway,
       publicDraftingConsent,
-      occurredAt: (dependencies.clock ?? (() => new Date()))(),
+      occurredAt,
     });
     if (!result) throw new Error('Draft service disappeared.');
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `draft.create:${requestId}`,
+      eventType: 'draft.created',
+      resourceType: 'draft',
+      resourceId: result.snapshot.draftId,
+      purpose: 'public_drafting',
+      decision: result.snapshot.guard.classification,
+      metadata: { requestId, revision: result.snapshot.revision, channel: result.snapshot.channel },
+      occurredAt,
+    });
     sendJson(response, 200, { outcome: result.outcome, ...serializeDraft(result.snapshot) });
   } catch (error: unknown) {
     sendDraftError(response, error);
@@ -424,15 +612,27 @@ async function handleDraftEdit(
       sendJson(response, 400, { error: 'invalid_draft_input' });
       return;
     }
+    const occurredAt = now(dependencies);
     const result = await dependencies.drafts?.edit({
       actorId,
       requestId,
       draftId,
       expectedRevision,
       body: draftBody,
-      occurredAt: (dependencies.clock ?? (() => new Date()))(),
+      occurredAt,
     });
     if (!result) throw new Error('Draft service disappeared.');
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `draft.edit:${requestId}`,
+      eventType: 'draft.edited',
+      resourceType: 'draft',
+      resourceId: draftId,
+      purpose: 'public_drafting',
+      decision: result.snapshot.guard.classification,
+      metadata: { requestId, revision: result.snapshot.revision },
+      occurredAt,
+    });
     sendJson(response, 200, { outcome: result.outcome, ...serializeDraft(result.snapshot) });
   } catch (error: unknown) {
     sendDraftError(response, error);
@@ -466,11 +666,33 @@ async function handleDraftTransition(
     if (operation === 'approve') {
       const result = await dependencies.drafts?.approve(command);
       if (!result) throw new Error('Draft service disappeared.');
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `draft.approve:${requestId}`,
+        eventType: 'draft.approved',
+        resourceType: 'draft',
+        resourceId: draftId,
+        purpose: 'public_drafting',
+        decision: 'approved',
+        metadata: { requestId, revision: result.snapshot.revision },
+        occurredAt: command.occurredAt,
+      });
       sendJson(response, 200, { outcome: result.outcome, ...serializeDraft(result.snapshot) });
       return;
     }
     const result = await dependencies.drafts?.export(command);
     if (!result) throw new Error('Draft service disappeared.');
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `draft.export:${requestId}`,
+      eventType: 'draft.exported',
+      resourceType: 'draft',
+      resourceId: draftId,
+      purpose: 'public_drafting',
+      decision: 'exported',
+      metadata: { requestId, revision: result.snapshot.revision, channel: result.snapshot.channel },
+      occurredAt: command.occurredAt,
+    });
     sendJson(response, 200, {
       outcome: result.outcome,
       filename: result.filename,
@@ -595,12 +817,24 @@ async function handleStrategySave(
       sendJson(response, 400, { error: 'invalid_strategy_context' });
       return;
     }
+    const occurredAt = now(dependencies);
     const result = await dependencies.strategy.save({
       actorId,
       requestId,
       expectedRevision,
       value,
-      occurredAt: (dependencies.clock ?? (() => new Date()))(),
+      occurredAt,
+    });
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `strategy.save:${requestId}`,
+      eventType: 'strategy.context_saved',
+      resourceType: 'strategy_context',
+      resourceId: result.snapshot.goalId,
+      purpose: 'strategy_reasoning',
+      decision: 'saved',
+      metadata: { requestId, revision: result.snapshot.revision },
+      occurredAt,
     });
     sendJson(response, 200, { outcome: result.outcome, ...serializeStrategy(result.snapshot) });
   } catch (error: unknown) {
@@ -702,11 +936,18 @@ async function handleMemorySnapshot(
       actorId,
       generatedAt: (dependencies.clock ?? (() => new Date()))(),
     });
-    sendJson(response, 200, {
-      generatedAt: snapshot.generatedAt.toISOString(),
-      persistence: snapshot.persistence,
-      summary: snapshot.summary,
-      records: snapshot.records.map((record) => ({
+    sendJson(response, 200, serializeMemorySnapshot(snapshot));
+  } catch (error: unknown) {
+    sendConversationError(response, error);
+  }
+}
+
+function serializeMemorySnapshot(snapshot: PersonalMemorySnapshot): Record<string, unknown> {
+  return {
+    generatedAt: snapshot.generatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    summary: snapshot.summary,
+    records: snapshot.records.map((record) => ({
         proposalId: record.proposalId,
         assertionId: record.assertionId,
         text: record.text,
@@ -738,10 +979,7 @@ async function handleMemorySnapshot(
             : {}),
         },
       })),
-    });
-  } catch (error: unknown) {
-    sendConversationError(response, error);
-  }
+  };
 }
 
 async function handleMemoryRight(
@@ -775,6 +1013,7 @@ async function handleMemoryRight(
       sendJson(response, 400, { error: 'invalid_memory_right' });
       return;
     }
+    const occurredAt = now(dependencies);
     const applied = await dependencies.conversation.applyMemoryRight({
       tenantId: dependencies.tenantId,
       actorId,
@@ -787,7 +1026,18 @@ async function handleMemoryRight(
             correctedText: typeof correctedText === 'string' ? correctedText : '',
           }
         : { kind: operation, reason },
-      occurredAt: (dependencies.clock ?? (() => new Date()))(),
+      occurredAt,
+    });
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `memory.right:${requestId}`,
+      eventType: `memory.${operation}`,
+      resourceType: 'memory_proposal',
+      resourceId: proposalId,
+      purpose: 'personal_understanding',
+      decision: operation,
+      metadata: { requestId, permissionsRevoked: applied.permissionsRevoked },
+      occurredAt,
     });
     sendJson(response, 200, {
       outcome: applied.outcome,
@@ -842,6 +1092,7 @@ async function handleConversationTurn(
       sendJson(response, 400, { error: 'invalid_conversation_turn' });
       return;
     }
+    const occurredAt = now(dependencies);
     const result = await dependencies.conversation.submitTurn({
       tenantId: dependencies.tenantId,
       actorId,
@@ -849,8 +1100,21 @@ async function handleConversationTurn(
       turnId,
       text,
       proposeMemory,
-      occurredAt: (dependencies.clock ?? (() => new Date()))(),
+      occurredAt,
     });
+    if (result.memoryProposal) {
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `memory.proposal:${turnId}`,
+        eventType: 'memory.proposal_created',
+        resourceType: 'memory_proposal',
+        resourceId: result.memoryProposal.id,
+        purpose: 'personal_understanding',
+        decision: 'awaiting_confirmation',
+        metadata: { conversationId, turnId },
+        occurredAt,
+      });
+    }
     sendJson(response, 200, {
       assistantMessage: result.assistantMessage,
       followUpQuestion: result.followUpQuestion,
@@ -894,12 +1158,24 @@ async function handleMemoryConfirmation(
       sendJson(response, 400, { error: 'invalid_memory_permissions' });
       return;
     }
+    const confirmedAt = now(dependencies);
     const confirmed = await dependencies.conversation.confirmMemory({
       tenantId: dependencies.tenantId,
       actorId,
       proposalId,
       permissions,
-      confirmedAt: (dependencies.clock ?? (() => new Date()))(),
+      confirmedAt,
+    });
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `memory.confirm:${proposalId}`,
+      eventType: 'memory.proposal_confirmed',
+      resourceType: 'assertion',
+      resourceId: confirmed.assertion.id,
+      purpose: 'personal_understanding',
+      decision: 'confirmed',
+      metadata: { proposalId, permissions: confirmed.permissions },
+      occurredAt: confirmedAt,
     });
     sendJson(response, 200, {
       assertion: {
@@ -975,11 +1251,23 @@ async function handleApproval(
       sendJson(response, 400, { error: 'invalid_action_id' });
       return;
     }
+    const occurredAt = now(dependencies);
     const snapshot = await dependencies.workbench.approve(
       actionId,
       actorId,
-      (dependencies.clock ?? (() => new Date()))(),
+      occurredAt,
     );
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `workbench.approve:${snapshot.workflow.id}:${actionId}`,
+      eventType: 'workbench.action_approved',
+      resourceType: 'workbench',
+      resourceId: snapshot.workflow.id,
+      purpose: 'strategy_reasoning',
+      decision: 'approved',
+      metadata: { actionId, revision: snapshot.workflow.revision },
+      occurredAt,
+    });
     sendJson(response, 200, snapshot);
   } catch (error: unknown) {
     if (error instanceof InvalidJsonBodyError) {
@@ -1037,4 +1325,18 @@ function sendJson(
     'x-content-type-options': 'nosniff',
   });
   response.end(JSON.stringify(payload));
+}
+
+function sendJsonDownload(
+  response: ServerResponse,
+  filename: string,
+  payload: unknown,
+): void {
+  response.writeHead(200, {
+    'cache-control': 'no-store',
+    'content-disposition': `attachment; filename="${filename}"`,
+    'content-type': 'application/json; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+  });
+  response.end(JSON.stringify(payload, null, 2));
 }

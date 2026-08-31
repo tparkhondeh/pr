@@ -120,5 +120,39 @@ describe('private preview worker draft runtime', () => {
     const replayedExport = await post(`/api/drafts/${created.draftId}/export`, exportRequest);
     expect(replayedExport.status).toBe(409);
     expect(await replayedExport.json()).toEqual({ error: 'source_not_available' });
+
+    const activityResponse = await worker.fetch(
+      new Request('https://preview.example/api/account/activity'),
+      env,
+    );
+    const activity = await activityResponse.json() as {
+      summary: { total: number; dataRights: number; exports: number };
+      events: Array<{ eventType: string }>;
+    };
+    expect(activityResponse.status).toBe(200);
+    expect(activity.summary.total).toBeGreaterThanOrEqual(9);
+    expect(activity.summary.dataRights).toBeGreaterThanOrEqual(3);
+    expect(activity.events.some((event) => event.eventType === 'draft.exported')).toBe(true);
+
+    const accountExportResponse = await worker.fetch(
+      new Request('https://preview.example/api/account/export'),
+      env,
+    );
+    const accountExport = await accountExportResponse.json() as {
+      schemaVersion: number;
+      scope: string;
+      data: { memory: { records: Array<{ consent: { personalUnderstanding: boolean } }> } };
+    };
+    expect(accountExportResponse.status).toBe(200);
+    expect(accountExport).toMatchObject({ schemaVersion: 1, scope: 'owner_portable_data' });
+    expect(accountExport.data.memory.records[0]?.consent.personalUnderstanding).toBe(false);
+
+    const activityAfterExport = await worker.fetch(
+      new Request('https://preview.example/api/account/activity'),
+      env,
+    );
+    await expect(activityAfterExport.json()).resolves.toMatchObject({
+      summary: { exports: 2 },
+    });
   });
 });

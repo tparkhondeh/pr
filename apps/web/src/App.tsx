@@ -32,10 +32,12 @@ import {
   confirmMemoryProposal,
   createDraft,
   editDraft,
+  exportAccountData,
   exportDraft,
   decideLearnedPreference,
   loadDraftWorkspace,
   loadFeedbackLearning,
+  loadAuditTrail,
   loadPersonalMemory,
   loadStrategyContext,
   loadWorkbench,
@@ -43,6 +45,7 @@ import {
   saveStrategyContext,
   submitConversationTurn,
   type AppliedMemoryRight,
+  type AuditTrailSnapshot,
   type ConversationTurnResult,
   type DraftChannel,
   type DraftWorkspaceSnapshot,
@@ -74,7 +77,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'memory' | 'strategy' | 'draft' | 'learning'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'memory' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -107,6 +110,9 @@ export function App() {
   const [feedbackSnapshot, setFeedbackSnapshot] = useState<FeedbackLearningSnapshot | null>(null);
   const [feedbackViewState, setFeedbackViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [feedbackViewError, setFeedbackViewError] = useState<string | null>(null);
+  const [auditSnapshot, setAuditSnapshot] = useState<AuditTrailSnapshot | null>(null);
+  const [dataViewState, setDataViewState] = useState<'idle' | 'loading' | 'ready' | 'exporting' | 'error'>('idle');
+  const [dataViewError, setDataViewError] = useState<string | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState('loading');
@@ -204,6 +210,38 @@ export function App() {
       setFeedbackViewState('error');
     }
   }, []);
+
+  const refreshAudit = useCallback(async (signal?: AbortSignal) => {
+    setDataViewState('loading');
+    setDataViewError(null);
+    try {
+      setAuditSnapshot(await loadAuditTrail(signal));
+      setDataViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setDataViewError(errorMessage(caught));
+      setDataViewState('error');
+    }
+  }, []);
+
+  const exportMyData = async () => {
+    if (dataViewState === 'exporting') return;
+    setDataViewState('exporting');
+    setDataViewError(null);
+    try {
+      const exported = await exportAccountData();
+      downloadText(
+        `pr-personal-data-${exported.exportedAt.slice(0, 10)}.json`,
+        'application/json;charset=utf-8',
+        JSON.stringify(exported, null, 2),
+      );
+      setAuditSnapshot(await loadAuditTrail());
+      setDataViewState('ready');
+    } catch (caught: unknown) {
+      setDataViewError(errorMessage(caught));
+      setDataViewState('error');
+    }
+  };
 
   const createDraftWorkspace = async (input: Readonly<{
     sourceProposalId: string;
@@ -426,6 +464,7 @@ export function App() {
       view: 'learning' as const,
       badge: feedbackSnapshot?.summary.proposed ? String(feedbackSnapshot.summary.proposed) : undefined,
     },
+    { label: 'داده و شفافیت', icon: History, view: 'data' as const },
     { label: 'روابط', icon: Network },
     {
       label: 'تأییدها',
@@ -450,6 +489,7 @@ export function App() {
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
                 if (view === 'learning') void refreshFeedback();
+                if (view === 'data') void refreshAudit();
               }}
               type="button"
             >
@@ -478,6 +518,8 @@ export function App() {
                   ? 'از شاهد تا متن قابل‌دفاع.'
                   : activeView === 'learning'
                     ? 'سیستم پیشنهاد می‌دهد؛ شما تصمیم می‌گیرید.'
+                    : activeView === 'data'
+                      ? 'داده‌های شما، زیر کنترل شما.'
                 : 'حرکت بعدی، نه پست بعدی.'}</h1>
           </div>
           <div className="top-actions">
@@ -531,6 +573,14 @@ export function App() {
             onRefresh={() => refreshFeedback()}
             snapshot={feedbackSnapshot}
             state={feedbackViewState}
+          />
+        ) : activeView === 'data' ? (
+          <DataRightsPanel
+            error={dataViewError}
+            onExport={exportMyData}
+            onRefresh={() => refreshAudit()}
+            snapshot={auditSnapshot}
+            state={dataViewState}
           />
         ) : (
           <>
@@ -1219,6 +1269,144 @@ function FeedbackLearningPanel({
   );
 }
 
+function DataRightsPanel({
+  error,
+  onExport,
+  onRefresh,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onExport: () => Promise<void>;
+  onRefresh: () => Promise<void>;
+  snapshot: AuditTrailSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'exporting' | 'error';
+}>) {
+  if ((state === 'idle' || state === 'loading') && !snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <LoaderCircle className="spin" size={24} />
+        <h2>در حال بازیابی ردپای خصوصی شما…</h2>
+        <p>فقط رویدادهای همین مالک و همین فضای داده خوانده می‌شوند.</p>
+      </section>
+    );
+  }
+  if (!snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <TriangleAlert size={25} />
+        <h2>مرکز شفافیت در دسترس نیست</h2>
+        <p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p>
+        <button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button>
+      </section>
+    );
+  }
+  return (
+    <section className="data-rights-view" aria-label="داده‌ها و ردپای حساب">
+      <header className="draft-head">
+        <div>
+          <p className="overline">Ownership · Portability · Audit</p>
+          <h2>مرکز داده و شفافیت</h2>
+          <p>می‌بینید چه تصمیم‌هایی ثبت شده‌اند و یک نسخه قابل‌حمل از داده‌های فعلی خودتان می‌گیرید. متن حافظه حذف‌شده دوباره در Export ظاهر نمی‌شود.</p>
+        </div>
+        <div className="data-rights-actions">
+          <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button">
+            <RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی
+          </button>
+          <button className="export-data" disabled={state === 'exporting'} onClick={() => void onExport()} type="button">
+            {state === 'exporting' ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
+            {state === 'exporting' ? 'در حال ساخت خروجی…' : 'دریافت داده‌های من'}
+          </button>
+        </div>
+      </header>
+      <div className="audit-summary">
+        <div><span>کل رویدادها</span><strong>{snapshot.summary.total}</strong></div>
+        <div><span>تأییدهای انسانی</span><strong>{snapshot.summary.approvals}</strong></div>
+        <div><span>حقوق حافظه</span><strong>{snapshot.summary.dataRights}</strong></div>
+        <div><span>خروجی‌ها</span><strong>{snapshot.summary.exports}</strong></div>
+      </div>
+      <div className="audit-layout">
+        <div className="audit-timeline">
+          <h3>ردپای قابل‌توضیح</h3>
+          {snapshot.events.length === 0 ? (
+            <div className="learning-empty"><History size={25} /><p>هنوز اقدام قابل ثبت در این نشست انجام نشده است.</p></div>
+          ) : (
+            <ol>
+              {snapshot.events.map((event) => (
+                <li key={event.id}>
+                  <i aria-hidden="true" />
+                  <div>
+                    <strong>{auditEventLabel(event.eventType)}</strong>
+                    <span>{auditResourceLabel(event.resourceType)}{event.decision ? ` · ${auditDecisionLabel(event.decision)}` : ''}</span>
+                    <time>{formatTimestamp(event.occurredAt)}</time>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+        <aside className="data-rights-note">
+          <ShieldCheck size={25} />
+          <h3>مرزهای این خروجی</h3>
+          <p>فقط Snapshot فعلی مالک، Evidence مجاز، Strategy، Draft، Preference و Audit نمایش‌داده‌شده صادر می‌شوند.</p>
+          <ul>
+            <li>هیچ انتشار یا ارسال خارجی انجام نمی‌شود.</li>
+            <li>Secret و اطلاعات زیرساخت داخل فایل نیست.</li>
+            <li>محتوای حذف‌شده با مقدار خالی و وضعیت حذف باقی می‌ماند.</li>
+          </ul>
+          <small>{persistenceLabel(snapshot.persistence === 'ephemeral' ? 'ephemeral' : snapshot.persistence)}</small>
+        </aside>
+      </div>
+      {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
+    </section>
+  );
+}
+
+function auditEventLabel(eventType: string): string {
+  const labels: Readonly<Record<string, string>> = {
+    'account.data_exported': 'خروجی داده‌های شخصی دریافت شد',
+    'workbench.action_approved': 'اقدام پیشنهادی تأیید شد',
+    'strategy.context_saved': 'هدف و جایگاه مطلوب تغییر کرد',
+    'memory.proposal_created': 'پیشنهاد حافظه ساخته شد',
+    'memory.proposal_confirmed': 'حافظه با رضایت تأیید شد',
+    'memory.correct': 'حافظه اصلاح شد',
+    'memory.contest': 'به حافظه اعتراض شد',
+    'memory.revoke': 'مجوز حافظه لغو شد',
+    'memory.delete': 'حافظه حذف شد',
+    'draft.created': 'پیش‌نویس Evidence-bound ساخته شد',
+    'draft.edited': 'پیش‌نویس ویرایش شد',
+    'draft.approved': 'نسخه پیش‌نویس تأیید شد',
+    'draft.exported': 'پیش‌نویس خروجی گرفته شد',
+    'feedback.draft_rejected': 'پیش‌نویس رد شد',
+    'feedback.preference_applied': 'ترجیح پیشنهادی اعمال شد',
+    'feedback.preference_rejected': 'ترجیح پیشنهادی رد شد',
+    'feedback.preference_revoked': 'اثر ترجیح لغو شد',
+  };
+  return labels[eventType] ?? eventType;
+}
+
+function auditResourceLabel(resourceType: string): string {
+  const labels: Readonly<Record<string, string>> = {
+    account: 'حساب شخصی',
+    assertion: 'حافظه',
+    draft: 'پیش‌نویس',
+    memory_proposal: 'حافظه',
+    preference_proposal: 'مدل ترجیح',
+    strategy_context: 'استراتژی',
+    workbench: 'تصمیم امروز',
+  };
+  return labels[resourceType] ?? resourceType;
+}
+
+function auditDecisionLabel(decision: string): string {
+  const labels: Readonly<Record<string, string>> = {
+    approved: 'تأییدشده', confirmed: 'ثبت‌شده', delete: 'حذف‌شده',
+    exported: 'خروجی', rejected: 'ردشده', revoke: 'لغوشده', saved: 'ذخیره‌شده',
+    green: 'سبز', red: 'متوقف', yellow: 'نیازمند بررسی',
+  };
+  return labels[decision] ?? decision;
+}
+
 function preferenceLabel(key: string, value: unknown): string {
   return feedbackSignalLabel(key, value);
 }
@@ -1542,6 +1730,17 @@ function formatDate(value: string): string {
   }).format(date);
 }
 
+function formatTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'زمان نامشخص';
+  return new Intl.DateTimeFormat('fa-IR', {
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    month: 'short',
+  }).format(date);
+}
+
 function approvalLabel(
   state: 'loading' | 'ready' | 'approving' | 'error',
   selectedIsApproved: boolean,
@@ -1580,6 +1779,10 @@ function errorMessage(error: unknown): string {
     strategy_changed: 'استراتژی تغییر کرده است؛ Draft باید با جهت جدید دوباره ساخته شود.',
     draft_not_approved: 'قبل از Export باید همین Revision را تأیید کنید.',
     feedback_unavailable: 'سرویس یادگیری از بازخورد در دسترس نیست.',
+    audit_trail_unavailable: 'ردپای حساب در دسترس نیست.',
+    account_export_unavailable: 'خروجی کامل داده‌های حساب هنوز آماده نیست.',
+    account_permission_denied: 'این ردپا فقط برای مالک حساب قابل مشاهده است.',
+    account_data_failed: 'بازیابی یا خروجی داده‌های حساب کامل نشد.',
     invalid_feedback_input: 'دلیل رد یا تصمیم Preference معتبر نیست.',
     feedback_permission_denied: 'فقط مالک می‌تواند Feedback و Preference Model را مدیریت کند.',
     preference_not_found: 'این پیشنهاد ترجیح دیگر در دسترس نیست.',

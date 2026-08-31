@@ -248,6 +248,42 @@ export type PersonalMemorySnapshot = Readonly<{
   records: readonly PersonalMemoryRecord[];
 }>;
 
+export type AuditTrailSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  summary: Readonly<{
+    total: number;
+    approvals: number;
+    dataRights: number;
+    exports: number;
+  }>;
+  events: readonly Readonly<{
+    id: string;
+    eventType: string;
+    resourceType: string;
+    resourceId?: string;
+    purpose?: string;
+    decision?: string;
+    metadata: Readonly<Record<string, unknown>>;
+    occurredAt: string;
+  }>[];
+}>;
+
+export type AccountDataExport = Readonly<{
+  schemaVersion: 1;
+  exportedAt: string;
+  scope: 'owner_portable_data';
+  consistency: 'best_effort_snapshot';
+  data: Readonly<{
+    workbench: WorkbenchSnapshot;
+    strategy: StrategyContextSnapshot;
+    memory: PersonalMemorySnapshot;
+    draft: DraftWorkspaceSnapshot | null;
+    feedback: FeedbackLearningSnapshot;
+    activity: AuditTrailSnapshot;
+  }>;
+}>;
+
 export class WorkbenchApiError extends Error {
   public constructor(
     public readonly status: number,
@@ -377,6 +413,23 @@ export async function loadFeedbackLearning(signal?: AbortSignal): Promise<Feedba
     ...(signal ? { signal } : {}),
   });
   if (!isFeedbackLearningSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function loadAuditTrail(signal?: AbortSignal): Promise<AuditTrailSnapshot> {
+  const payload = await requestJson('/api/account/activity', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isAuditTrailSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function exportAccountData(): Promise<AccountDataExport> {
+  const payload = await requestJson('/api/account/export', {
+    headers: { accept: 'application/json' },
+  });
+  if (!isAccountDataExport(payload)) throw new WorkbenchApiError(200, 'invalid_response');
   return payload;
 }
 
@@ -601,6 +654,35 @@ function isFeedbackLearningSnapshot(payload: unknown): payload is FeedbackLearni
       typeof preference['preferenceKey'] === 'string' && Array.isArray(preference['evidenceEventIds']) &&
       typeof preference['rationale'] === 'string' && typeof preference['confidence'] === 'number' &&
       typeof preference['status'] === 'string' && typeof preference['proposedAt'] === 'string')
+  );
+}
+
+function isAuditTrailSnapshot(payload: unknown): payload is AuditTrailSnapshot {
+  if (!isRecord(payload) || !isRecord(payload['summary']) || !Array.isArray(payload['events'])) {
+    return false;
+  }
+  const summary = payload['summary'];
+  return (
+    typeof payload['generatedAt'] === 'string' &&
+    (payload['persistence'] === 'memory' || payload['persistence'] === 'postgres' || payload['persistence'] === 'ephemeral') &&
+    typeof summary['total'] === 'number' && typeof summary['approvals'] === 'number' &&
+    typeof summary['dataRights'] === 'number' && typeof summary['exports'] === 'number' &&
+    payload['events'].every((event) => isRecord(event) && typeof event['id'] === 'string' &&
+      typeof event['eventType'] === 'string' && typeof event['resourceType'] === 'string' &&
+      isRecord(event['metadata']) && typeof event['occurredAt'] === 'string')
+  );
+}
+
+function isAccountDataExport(payload: unknown): payload is AccountDataExport {
+  if (!isRecord(payload) || !isRecord(payload['data'])) return false;
+  const data = payload['data'];
+  return (
+    payload['schemaVersion'] === 1 && payload['scope'] === 'owner_portable_data' &&
+    payload['consistency'] === 'best_effort_snapshot' && typeof payload['exportedAt'] === 'string' &&
+    isWorkbenchSnapshot(data['workbench']) && isStrategyContextSnapshot(data['strategy']) &&
+    isPersonalMemorySnapshot(data['memory']) &&
+    (data['draft'] === null || isDraftWorkspaceSnapshot(data['draft'])) &&
+    isFeedbackLearningSnapshot(data['feedback']) && isAuditTrailSnapshot(data['activity'])
   );
 }
 

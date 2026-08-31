@@ -99,3 +99,10 @@ Signal ثبت می‌کند. یک Edit یا Reject منفرد Voice Model را �
 می‌دهد، اما Guard ادعا و تأیید انسانی را دور نمی‌زند. مسیرهای این بخش
 `GET /api/feedback`، `POST /api/feedback/drafts/:id/reject` و
 `POST /api/feedback/preferences/:id/decision` هستند.
+
+نمای «داده و شفافیت» ردپای owner-scoped تصمیم‌ها، تأییدها، حقوق حافظه و Exportها را
+از `GET /api/account/activity` نمایش می‌دهد. کاربر از `GET /api/account/export` یک
+فایل JSON قابل‌حمل از Snapshot فعلی Workbench، Strategy، Memory، Draft، Feedback و
+Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
+زیرساختی وارد فایل نمی‌شوند. در PostgreSQL این Timeline با RLS به Tenant و مالک فعال
+محدود است؛ نسخه‌های حافظه‌ای و Sites تا Restart موقت‌اند.

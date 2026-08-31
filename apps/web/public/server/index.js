@@ -28,6 +28,7 @@ const preferenceProposals = new Map();
 const feedbackRequests = new Map();
 const memoryProposals = new Map();
 const memoryRightRequests = new Map();
+const auditEvents = new Map();
 
 const actions = [
   {
@@ -106,6 +107,38 @@ export default {
       return json(feedbackSnapshot());
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/account/activity') {
+      return json(auditSnapshot());
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/account/export') {
+      const exportedAt = new Date().toISOString();
+      const activity = auditSnapshot();
+      recordAudit(`account.export:${crypto.randomUUID()}`, {
+        eventType: 'account.data_exported',
+        resourceType: 'account',
+        resourceId: 'owner_portable_data',
+        purpose: 'personal_understanding',
+        decision: 'exported',
+        metadata: { schemaVersion: 1, consistency: 'best_effort_snapshot' },
+        occurredAt: exportedAt,
+      });
+      return json({
+        schemaVersion: 1,
+        exportedAt,
+        scope: 'owner_portable_data',
+        consistency: 'best_effort_snapshot',
+        data: {
+          workbench: snapshot(),
+          strategy,
+          memory: memorySnapshot(),
+          draft: currentDraft ? draftSnapshot() : null,
+          feedback: feedbackSnapshot(),
+          activity,
+        },
+      });
+    }
+
     const draftRejection = url.pathname.match(/^\/api\/feedback\/drafts\/([0-9a-f-]{36})\/reject$/i);
     if (request.method === 'POST' && draftRejection?.[1]) {
       const body = await readJson(request);
@@ -119,6 +152,7 @@ export default {
       const repeated = reserveFeedbackRequest(body.requestId, fingerprint);
       if (repeated === 'mismatch') return json({ error: 'idempotency_mismatch' }, 409);
       if (!repeated) {
+        const occurredAt = new Date().toISOString();
         feedbackEvents.set(`feedback_${body.requestId}`, {
           id: `feedback_${body.requestId}`,
           artifactType: 'draft',
@@ -126,7 +160,11 @@ export default {
           eventType: 'rejected',
           signalKey: 'draft.rejection_reason',
           signalValue: body.reason.trim(),
-          occurredAt: new Date().toISOString(),
+          occurredAt,
+        });
+        recordAudit(`feedback.reject:${body.requestId}`, {
+          eventType: 'feedback.draft_rejected', resourceType: 'draft', resourceId: draftRejection[1],
+          purpose: 'brand_usage', decision: 'rejected', metadata: { requestId: body.requestId }, occurredAt,
         });
       }
       return json(feedbackSnapshot());
@@ -161,6 +199,11 @@ export default {
       }
       preference.status = body.decision;
       preference.decidedAt = new Date().toISOString();
+      recordAudit(`feedback.preference:${body.requestId}`, {
+        eventType: `feedback.preference_${body.decision}`, resourceType: 'preference_proposal',
+        resourceId: preference.id, purpose: 'brand_usage', decision: body.decision,
+        metadata: { requestId: body.requestId }, occurredAt: preference.decidedAt,
+      });
       return json(feedbackSnapshot());
     }
 
@@ -216,6 +259,11 @@ export default {
       };
       source.permissions = { ...source.permissions, publicUsage: true };
       rememberDraftRequest(body.requestId, 'create', body, currentDraft);
+      recordAudit(`draft.create:${body.requestId}`, {
+        eventType: 'draft.created', resourceType: 'draft', resourceId: draftId,
+        purpose: 'public_drafting', decision: guard.classification,
+        metadata: { requestId: body.requestId, revision: 1, channel: body.channel }, occurredAt: currentDraft.updatedAt,
+      });
       return json({ outcome: 'applied', ...draftSnapshot() });
     }
 
@@ -244,6 +292,11 @@ export default {
       };
       rememberDraftRequest(body.requestId, 'edit', { ...body, draftId: draftEdit[1] }, currentDraft);
       recordEditFeedback(body.requestId, currentDraft.draftId, previousBody, currentDraft.body);
+      recordAudit(`draft.edit:${body.requestId}`, {
+        eventType: 'draft.edited', resourceType: 'draft', resourceId: currentDraft.draftId,
+        purpose: 'public_drafting', decision: guard.classification,
+        metadata: { requestId: body.requestId, revision: currentDraft.revision }, occurredAt: currentDraft.updatedAt,
+      });
       return json({ outcome: 'applied', ...draftSnapshot() });
     }
 
@@ -276,6 +329,11 @@ export default {
           updatedAt: new Date().toISOString(),
         };
         rememberDraftRequest(body.requestId, operation, requestValue, currentDraft);
+        recordAudit(`draft.approve:${body.requestId}`, {
+          eventType: 'draft.approved', resourceType: 'draft', resourceId: currentDraft.draftId,
+          purpose: 'public_drafting', decision: 'approved',
+          metadata: { requestId: body.requestId, revision: currentDraft.revision }, occurredAt: currentDraft.updatedAt,
+        });
         return json({ outcome: 'applied', ...draftSnapshot() });
       }
       if (currentDraft.status !== 'approved') return json({ error: 'draft_not_approved' }, 409);
@@ -287,6 +345,11 @@ export default {
         updatedAt: new Date().toISOString(),
       };
       rememberDraftRequest(body.requestId, operation, requestValue, currentDraft);
+      recordAudit(`draft.export:${body.requestId}`, {
+        eventType: 'draft.exported', resourceType: 'draft', resourceId: currentDraft.draftId,
+        purpose: 'public_drafting', decision: 'exported',
+        metadata: { requestId: body.requestId, revision: currentDraft.revision, channel: currentDraft.channel }, occurredAt: currentDraft.updatedAt,
+      });
       return json(exportPayload('applied', draftSnapshot()));
     }
 
@@ -316,28 +379,16 @@ export default {
       };
       approval = null;
       strategyRequests.set(body.requestId, { fingerprint, snapshot: strategy });
+      recordAudit(`strategy.save:${body.requestId}`, {
+        eventType: 'strategy.context_saved', resourceType: 'strategy_context', resourceId: strategy.goalId,
+        purpose: 'strategy_reasoning', decision: 'saved',
+        metadata: { requestId: body.requestId, revision }, occurredAt: strategy.updatedAt,
+      });
       return json({ outcome: 'saved', ...strategy });
     }
 
     if (request.method === 'GET' && url.pathname === '/api/memory') {
-      const records = [...memoryProposals.values()]
-        .filter((proposal) => proposal.confirmedAt)
-        .map((proposal) => memoryRecord(proposal))
-        .sort((left, right) => right.lifecycle.updatedAt.localeCompare(left.lifecycle.updatedAt));
-      return json({
-        generatedAt: new Date().toISOString(),
-        persistence: 'ephemeral',
-        summary: {
-          total: records.length,
-          active: records.filter((record) => record.lifecycle.status === 'active').length,
-          attentionRequired: records.filter((record) => (
-            record.lifecycle.status === 'contested' ||
-            record.lifecycle.status === 'consent_revoked'
-          )).length,
-          deleted: records.filter((record) => record.lifecycle.status === 'deleted').length,
-        },
-        records,
-      });
+      return json(memorySnapshot());
     }
 
     if (request.method === 'POST' && url.pathname === '/api/workbench/approval') {
@@ -357,6 +408,11 @@ export default {
         approvedAt: new Date().toISOString(),
         strategyRevision: strategy.revision,
       };
+      recordAudit(`workbench.approve:workbench_today:${action.id}`, {
+        eventType: 'workbench.action_approved', resourceType: 'workbench', resourceId: 'workbench_today',
+        purpose: 'strategy_reasoning', decision: 'approved',
+        metadata: { actionId: action.id, revision: 2 }, occurredAt: approval.approvedAt,
+      });
       return json(snapshot());
     }
 
@@ -394,6 +450,11 @@ export default {
         occurredAt: new Date().toISOString(),
       };
       memoryProposals.set(id, proposal);
+      recordAudit(`memory.proposal:${body.turnId}`, {
+        eventType: 'memory.proposal_created', resourceType: 'memory_proposal', resourceId: id,
+        purpose: 'personal_understanding', decision: 'awaiting_confirmation',
+        metadata: { conversationId: body.conversationId, turnId: body.turnId }, occurredAt: proposal.occurredAt,
+      });
       return json({
         assistantMessage: 'این برداشت فقط یک Self-report پیشنهادی است و هنوز حافظه قطعی نیست.',
         followUpQuestion,
@@ -421,6 +482,11 @@ export default {
       proposal.revisionCount ??= 1;
       proposal.updatedAt ??= proposal.confirmedAt;
       proposal.permissions ??= permissions;
+      recordAudit(`memory.confirm:${proposal.id}`, {
+        eventType: 'memory.proposal_confirmed', resourceType: 'assertion', resourceId: proposal.activeAssertionId,
+        purpose: 'personal_understanding', decision: 'confirmed',
+        metadata: { proposalId: proposal.id, permissions }, occurredAt: proposal.confirmedAt,
+      });
       return json({
         assertion: {
           id: proposal.activeAssertionId,
@@ -506,6 +572,11 @@ export default {
         persistence: 'ephemeral',
       };
       memoryRightRequests.set(body.requestId, { fingerprint, result });
+      recordAudit(`memory.right:${body.requestId}`, {
+        eventType: `memory.${body.operation}`, resourceType: 'memory_proposal', resourceId: proposal.id,
+        purpose: 'personal_understanding', decision: body.operation,
+        metadata: { requestId: body.requestId, permissionsRevoked: result.permissionsRevoked }, occurredAt: result.occurredAt,
+      });
       return json(result);
     }
 
@@ -651,6 +722,49 @@ function feedbackSnapshot() {
     },
     recentEvents,
     preferences,
+  };
+}
+
+function memorySnapshot() {
+  const records = [...memoryProposals.values()]
+    .filter((proposal) => proposal.confirmedAt)
+    .map((proposal) => memoryRecord(proposal))
+    .sort((left, right) => right.lifecycle.updatedAt.localeCompare(left.lifecycle.updatedAt));
+  return {
+    generatedAt: new Date().toISOString(),
+    persistence: 'ephemeral',
+    summary: {
+      total: records.length,
+      active: records.filter((record) => record.lifecycle.status === 'active').length,
+      attentionRequired: records.filter((record) => (
+        record.lifecycle.status === 'contested' || record.lifecycle.status === 'consent_revoked'
+      )).length,
+      deleted: records.filter((record) => record.lifecycle.status === 'deleted').length,
+    },
+    records,
+  };
+}
+
+function recordAudit(requestId, event) {
+  if (!auditEvents.has(requestId)) {
+    auditEvents.set(requestId, { id: requestId, ...event });
+  }
+}
+
+function auditSnapshot() {
+  const events = [...auditEvents.values()]
+    .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+    .slice(0, 100);
+  return {
+    generatedAt: new Date().toISOString(),
+    persistence: 'ephemeral',
+    summary: {
+      total: auditEvents.size,
+      approvals: events.filter((event) => event.decision === 'approved').length,
+      dataRights: events.filter((event) => event.eventType.startsWith('memory.')).length,
+      exports: events.filter((event) => event.eventType.endsWith('exported')).length,
+    },
+    events,
   };
 }
 
