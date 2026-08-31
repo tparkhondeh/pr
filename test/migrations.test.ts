@@ -18,6 +18,10 @@ const strategyMigrationPath = fileURLToPath(
   new URL('../db/migrations/0003_strategy_loop.sql', import.meta.url),
 );
 const strategySql = readFileSync(strategyMigrationPath, 'utf8');
+const claimMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0004_claim_registry.sql', import.meta.url),
+);
+const claimSql = readFileSync(claimMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -79,6 +83,15 @@ describe('foundation migration', () => {
       expect(strategySql).toContain(`CREATE TABLE app.${table}`);
       expect(strategySql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
       expect(strategySql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
+  });
+
+  it('adds tenant-isolated claim and draft tables', () => {
+    defineMigration('0004_claim_registry', claimSql);
+    for (const table of ['claims', 'claim_evidence', 'draft_artifacts', 'draft_claims']) {
+      expect(claimSql).toContain(`CREATE TABLE app.${table}`);
+      expect(claimSql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
+      expect(claimSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
     }
   });
 });
