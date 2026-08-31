@@ -22,6 +22,10 @@ const claimMigrationPath = fileURLToPath(
   new URL('../db/migrations/0004_claim_registry.sql', import.meta.url),
 );
 const claimSql = readFileSync(claimMigrationPath, 'utf8');
+const feedbackMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0005_feedback_learning.sql', import.meta.url),
+);
+const feedbackSql = readFileSync(feedbackMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -92,6 +96,15 @@ describe('foundation migration', () => {
       expect(claimSql).toContain(`CREATE TABLE app.${table}`);
       expect(claimSql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
       expect(claimSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
+  });
+
+  it('adds tenant-isolated feedback learning tables', () => {
+    defineMigration('0005_feedback_learning', feedbackSql);
+    for (const table of ['feedback_events', 'preference_proposals']) {
+      expect(feedbackSql).toContain(`CREATE TABLE app.${table}`);
+      expect(feedbackSql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
+      expect(feedbackSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
     }
   });
 });
