@@ -441,7 +441,7 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
         assistant_question: string;
         propose_memory: boolean;
         content_sha256: string;
-        orchestration_snapshot: unknown;
+        orchestration_matches: boolean;
       }>>(
         `WITH thread AS (
            INSERT INTO app.conversation_threads (
@@ -471,7 +471,8 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
          )
          SELECT thread.external_ref AS conversation_ref, turn.user_text,
                 turn.assistant_question, turn.propose_memory,
-                turn.content_sha256, turn.orchestration_snapshot
+                turn.content_sha256,
+                turn.orchestration_snapshot = $10::jsonb AS orchestration_matches
            FROM selected
            JOIN app.conversation_turns turn ON turn.id = selected.id AND turn.tenant_id = $1
            JOIN app.conversation_threads thread
@@ -497,7 +498,7 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
         storedTurn.assistant_question !== command.followUpQuestion ||
         storedTurn.propose_memory !== command.proposeMemory ||
         storedTurn.content_sha256 !== textSha256(command.text) ||
-        stableJson(storedTurn.orchestration_snapshot) !== stableJson(command.orchestration)
+        !storedTurn.orchestration_matches
       ) {
         throw new ConversationRepositoryConflictError('Turn ID has conflicting content.');
       }
@@ -1377,18 +1378,6 @@ function turnFingerprint(command: ConversationTurnPersistenceCommand): string {
       orchestration: command.orchestration,
     }),
   );
-}
-
-function stableJson(value: unknown): string {
-  if (value === undefined) return 'null';
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function rightFingerprint(command: MemoryRightCommand): string {

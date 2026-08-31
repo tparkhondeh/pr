@@ -101,7 +101,7 @@ describe('Postgres conversation memory repository', () => {
           assistant_question: proposal.followUpQuestion,
           propose_memory: true,
           content_sha256: createHash('sha256').update(proposal.text).digest('hex'),
-          orchestration_snapshot: orchestration,
+          orchestration_matches: true,
         }],
         rowCount: 1,
       },
@@ -130,6 +130,7 @@ describe('Postgres conversation memory repository', () => {
     expect(runner.transactions).toBe(1);
     expect(transaction.queries[0]?.sql).toContain("set_config('app.tenant_id'");
     expect(transaction.queries[1]?.sql).toContain('app.conversation_turns');
+    expect(transaction.queries[1]?.sql).toContain('orchestration_snapshot = $10::jsonb');
     expect(transaction.queries[2]?.sql).toContain('app.memory_proposals');
   });
 
