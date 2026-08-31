@@ -60,12 +60,21 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
 .memory-opt-in { display: flex; align-items: flex-start; gap: 8px; color: #66786f; font-size: 10px; line-height: 1.7; }
 .memory-opt-in input { margin-top: 4px; accent-color: var(--forest); }
 .conversation-form .talk { justify-self: start; }
+.conversation-privacy { max-width: 680px; color: #74857c; font-size: 9px; line-height: 1.8; }
 .conversation-result { display: grid; gap: 7px; max-width: 720px; padding: 13px 15px; margin-top: 13px; border-right: 3px solid var(--mint); background: #f1f7f2; }
 .conversation-result span { color: #687a71; font-size: 10px; }
 .conversation-result strong { color: var(--ink); font-size: 12px; font-weight: 500; line-height: 1.8; }
 .conversation-result button { justify-self: start; padding: 8px 11px; color: var(--forest); border: 1px solid #8db7a1; border-radius: 3px; background: transparent; cursor: pointer; font-size: 10px; }
 .conversation-result button:disabled { cursor: wait; opacity: .65; }
 .conversation-result em { display: flex; align-items: center; gap: 6px; color: #347356; font-size: 10px; font-style: normal; }
+.orchestration-card { display: grid; gap: 8px; padding: 12px; margin: 4px 0; border: 1px solid #cbdcd2; border-radius: 4px; background: rgba(255,255,255,.72); }
+.orchestration-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.orchestration-heading span { color: var(--forest); font-size: 11px; font-weight: 700; }
+.orchestration-heading b { color: #5e7167; font-size: 9px; }
+.orchestration-card p { margin: 0 !important; font-size: 10px !important; line-height: 1.75 !important; }
+.orchestration-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.orchestration-meta span { padding: 4px 7px; color: #385b4b; border: 1px solid #d2e1d8; border-radius: 99px; background: #f7fbf8; font-size: 8px; }
+.orchestration-card .orchestration-rationale { color: #52675d; }
 .memory-confirm-scope { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid #c8dbd0; background: #fbfdfb; }
 .memory-rights { display: grid; gap: 10px; padding: 12px; margin-top: 5px; border: 1px solid #c8dbd0; border-radius: 4px; background: #fbfdfb; }
 .memory-rights > strong { font-size: 11px; font-weight: 600; }

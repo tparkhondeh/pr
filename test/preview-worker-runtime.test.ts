@@ -109,7 +109,45 @@ describe('private preview worker draft runtime', () => {
       proposeMemory: true,
     });
     expect(turn.status).toBe(200);
+    await expect(turn.json()).resolves.toMatchObject({
+      orchestration: {
+        policyVersion: 'conversation-orchestrator-v1',
+        intent: { kind: 'reflect' },
+        route: { module: 'conversation', writeAuthority: 'propose_only' },
+      },
+      memoryProposal: { id: 'memory_turn_runtime' },
+    });
     const proposalId = 'memory_turn_runtime';
+
+    const researchTurn = await post('/api/conversations/turns', {
+      conversationId: 'conversation_runtime',
+      turnId: 'turn_runtime_research',
+      text: 'آخرین تحقیق این موضوع را با منبع معتبر بررسی کن.',
+      proposeMemory: true,
+    });
+    const researchTurnPayload = await researchTurn.json() as Record<string, unknown>;
+    expect(researchTurnPayload).toMatchObject({
+      orchestration: {
+        intent: { kind: 'research_external' },
+        route: { module: 'research', writeAuthority: 'none' },
+        safety: { memoryProposalAllowed: false },
+      },
+    });
+    expect(researchTurnPayload).not.toHaveProperty('memoryProposal');
+
+    const sensitiveTurn = await post('/api/conversations/turns', {
+      conversationId: 'conversation_runtime',
+      turnId: 'turn_runtime_sensitive',
+      text: 'توکن من: secret-value-1234 است؛ این را یادت بمونه.',
+      proposeMemory: true,
+    });
+    await expect(sensitiveTurn.json()).resolves.toMatchObject({
+      orchestration: {
+        route: { module: 'data', mode: 'hold', writeAuthority: 'none' },
+        safety: { sensitiveDataDetected: true },
+        retention: { turn: 'not_persisted' },
+      },
+    });
 
     expect((await post(`/api/memory/proposals/${proposalId}/confirm`, {
       permissions: {

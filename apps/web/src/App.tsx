@@ -918,6 +918,9 @@ export function App() {
                   />
                   بعد از تحلیل، فقط یک پیشنهاد برای حافظه بساز؛ چیزی خودکار ثبت نشود.
                 </label>
+                <small className="conversation-privacy">
+                  بدون Opt-in حافظه، متن خام در Store ثبت نمی‌شود؛ داده حساس حتی با Opt-in هم ذخیره نخواهد شد.
+                </small>
                 <button className="talk" disabled={conversationState !== 'idle'} type="submit">
                   {conversationState === 'sending' ? <LoaderCircle className="spin" size={17} /> : <MessageCircleMore size={17} />}
                   {conversationState === 'sending' ? 'در حال بررسی…' : 'ارسال برای بررسی'}
@@ -928,6 +931,31 @@ export function App() {
               <div className="conversation-result" aria-live="polite">
                 <span>{conversationResult.assistantMessage}</span>
                 <strong>{conversationResult.followUpQuestion}</strong>
+                <div className="orchestration-card">
+                  <div className="orchestration-heading">
+                    <span>مسیر تصمیم · {conversationIntentLabel(conversationResult.orchestration.intent.kind)}</span>
+                    <b>{Math.round(conversationResult.orchestration.intent.confidence * 100)}٪ اطمینان</b>
+                  </div>
+                  <p>{conversationResult.orchestration.intent.rationale}</p>
+                  <div className="orchestration-meta">
+                    <span>ماژول: {conversationModuleLabel(conversationResult.orchestration.route.module)}</span>
+                    <span>اختیار نوشتن: {conversationResult.orchestration.route.writeAuthority === 'propose_only' ? 'فقط پیشنهاد' : 'ندارد'}</span>
+                    <span>{conversationResult.orchestration.route.requiresUserApproval ? 'تأیید کاربر لازم است' : 'بدون اقدام حساس'}</span>
+                    <span>{conversationResult.orchestration.retention.turn === 'not_persisted' ? 'متن خام ذخیره نشد' : 'فقط Proposal محرمانه'}</span>
+                  </div>
+                  <p className="orchestration-rationale">{conversationResult.orchestration.arbitration.rationale}</p>
+                  {conversationResult.orchestration.recommendedAction.kind !== 'clarify' ||
+                  conversationResult.orchestration.recommendedAction.targetView !== 'today' ? (
+                    <button
+                      onClick={() => {
+                        setActiveView(conversationResult.orchestration.recommendedAction.targetView);
+                      }}
+                      type="button"
+                    >
+                      {conversationResult.orchestration.recommendedAction.label}
+                    </button>
+                  ) : null}
+                </div>
                 {conversationResult.memoryProposal && !memoryConfirmed ? (
                   <div className="memory-confirm-scope">
                     <label className="memory-opt-in">
@@ -2668,6 +2696,38 @@ function memoryStatusLabel(status: PersonalMemoryRecord['lifecycle']['status']):
   if (status === 'contested') return 'مورد اعتراض';
   if (status === 'consent_revoked') return 'مجوز لغوشده';
   return 'حذف‌شده';
+}
+
+function conversationIntentLabel(
+  intent: ConversationTurnResult['orchestration']['intent']['kind'],
+): string {
+  const labels: Readonly<Record<typeof intent, string>> = {
+    reflect: 'بازتاب شخصی',
+    remember: 'پیشنهاد حافظه',
+    correct_memory: 'اصلاح حافظه',
+    set_strategy: 'زمینه استراتژی',
+    assess_action: 'ارزیابی اقدام',
+    research_external: 'تحقیق بیرونی',
+    draft_content: 'پیش‌نویس محتوا',
+    data_control: 'کنترل داده',
+    unclear: 'نیازمند روشن‌سازی',
+  };
+  return labels[intent];
+}
+
+function conversationModuleLabel(
+  module: ConversationTurnResult['orchestration']['route']['module'],
+): string {
+  const labels: Readonly<Record<typeof module, string>> = {
+    conversation: 'گفت‌وگو',
+    memory: 'حافظه',
+    strategy: 'استراتژی',
+    research: 'تحقیق',
+    draft: 'پیش‌نویس',
+    risk: 'حفاظت برند',
+    data: 'داده و حقوق',
+  };
+  return labels[module];
 }
 
 function sourceTypeLabel(source: string): string {

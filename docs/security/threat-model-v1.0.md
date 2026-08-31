@@ -54,6 +54,7 @@ Trust Boundaryها:
 | T-13 | پرشدن دیسک و شکست backup/deploy | P1 | بررسی disk و backup قبل از deploy | دیسک فعلی سرور ۹۹٪؛ owner زیرساخت باید cleanup/ظرفیت را مدیریت کند |
 | T-14 | تبدیل Citation به Verified یا ادامه انتشار Claim مورد اعتراض | P0 | Human attestation، append-only review، expected status، Draft propagation و repository re-check | Multi-review/quorum برای Scope پرریسک آینده لازم است |
 | T-15 | Override شدن ریسک اعتباری/حریم خصوصی توسط Utility یا Acknowledgement کهنه | P0 | ۱۵ Risk Check نسخه‌دار، SHA-256 Assessment، Yellow attestation، Red veto، append-only review و approval re-check | مانیتورینگ بحران و Legal escalation واقعی تا Connector و incident drill خارج Scope است |
+| T-16 | Prompt Injection یا Intent اشتباه در Channel گفت‌وگو که Permission را گسترش دهد یا داده حساس را ذخیره کند | P0 | ورودی untrusted، authority صریح، abstention در Confidence پایین، public-action hold، جداسازی Research/Memory و `not_persisted` برای credential | پیش از Model/Tool و Attachment integration، red-team چندزبانه، DLP و eval مستقل لازم است |
 
 ## P0 Gate
 
@@ -62,7 +63,7 @@ Trust Boundaryها:
 - Shared/public release با T-02 باز ممنوع است.
 - Durable production با PostgreSQL تا integration isolation test، TLS و restore drill
   ممنوع است.
-- Model/Research/Publishing واقعی تا بستن T-06 و eval مربوط فعال نمی‌شود.
+- Model/Research/Publishing واقعی تا بستن T-06/T-16 و eval مربوط فعال نمی‌شود.
 
 ## Verification evidence
 

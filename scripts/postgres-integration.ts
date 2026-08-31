@@ -9,6 +9,8 @@ import type { SqlQueryResult } from '../src/database/sql.js';
 import { PostgresRuntime } from '../src/database/postgres.js';
 import { defineMigration } from '../src/kernel/migrations.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
+import { ConversationIntakeService } from '../src/conversation/intake.js';
+import { PostgresConversationMemoryRepository } from '../src/conversation/repository.js';
 import {
   BrandProtectionService,
   PostgresRiskReviewRepository,
@@ -56,12 +58,63 @@ async function main(): Promise<void> {
     await verifyTenantPolicies(client);
     await verifyRuntimeIsolation(client);
     await verifyBrandRiskPersistence();
+    await verifyConversationOrchestrationPersistence();
     await verifyRuntimeReadiness(connectionString);
     process.stdout.write(
       `PostgreSQL integration passed (${String(migrations.length)} migrations, RLS enforced).\n`,
     );
   } finally {
     await client.end();
+  }
+}
+
+async function verifyConversationOrchestrationPersistence(): Promise<void> {
+  const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
+  const owner = userId(userA);
+  const service = new ConversationIntakeService(
+    new PostgresConversationMemoryRepository(runtime, {
+      tenantId: tenantA,
+      ownerUserId: userA,
+    }),
+  );
+  const request = {
+    tenantId: tenantId(tenantA),
+    actorId: owner,
+    conversationId: 'conversation_integration_v1',
+    turnId: 'turn_orchestration_v1',
+    text: 'امروز در جلسه متوجه شدم که توضیح شفاف، ابهام تصمیم را کمتر می‌کند.',
+    proposeMemory: true,
+    occurredAt: new Date('2026-08-31T22:47:00.000Z'),
+  } as const;
+  try {
+    const first = await service.submitTurn(request);
+    const replay = await service.submitTurn(request);
+    if (
+      first.orchestration.intent.kind !== 'reflect' ||
+      replay.orchestration.route.writeAuthority !== 'propose_only'
+    ) {
+      throw new Error('Conversation orchestration contract was not stable across replay.');
+    }
+    await runtime.transaction(async (transaction) => {
+      await transaction.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
+      const stored = await transaction.query<Readonly<{
+        orchestration_snapshot: Record<string, unknown>;
+      }>>(
+        `SELECT orchestration_snapshot
+           FROM app.conversation_turns
+          WHERE tenant_id = $1 AND actor_user_id = $2 AND client_ref = $3`,
+        [tenantA, userA, request.turnId],
+      );
+      const snapshot = stored.rows[0]?.orchestration_snapshot;
+      if (
+        snapshot?.['policyVersion'] !== 'conversation-orchestrator-v1' ||
+        JSON.stringify(snapshot).includes(request.text)
+      ) {
+        throw new Error('Stored orchestration snapshot is missing or duplicates raw user text.');
+      }
+    });
+  } finally {
+    await runtime.close();
   }
 }
 

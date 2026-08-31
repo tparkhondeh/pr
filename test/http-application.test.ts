@@ -428,6 +428,12 @@ describe('operational endpoints', () => {
     expect(response.status).toBe(200);
     const payload = await response.json() as Record<string, unknown>;
     expect(payload['followUpQuestion']).toContain('کدام بخش');
+    expect(payload['orchestration']).toMatchObject({
+      policyVersion: 'conversation-orchestrator-v1',
+      intent: { kind: 'reflect' },
+      route: { module: 'conversation', writeAuthority: 'none' },
+      provenance: { personalMemoryUsed: false, externalResearchUsed: false },
+    });
     expect(payload).not.toHaveProperty('memoryProposal');
   });
 

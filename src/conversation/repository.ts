@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { SqlTransaction, SqlTransactionRunner } from '../database/sql.js';
 import { tenantId, userId, type TenantId, type UserId } from '../kernel/identity.js';
 import type { MemoryProposal, MemoryUsePermissions } from './intake.js';
+import type { ConversationOrchestration } from './orchestrator.js';
 
 export type ConversationTurnPersistenceCommand = Readonly<{
   tenantId: TenantId;
@@ -12,6 +13,7 @@ export type ConversationTurnPersistenceCommand = Readonly<{
   proposeMemory: boolean;
   occurredAt: Date;
   followUpQuestion: string;
+  orchestration: ConversationOrchestration;
   proposal?: MemoryProposal;
 }>;
 
@@ -439,6 +441,7 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
         assistant_question: string;
         propose_memory: boolean;
         content_sha256: string;
+        orchestration_snapshot: unknown;
       }>>(
         `WITH thread AS (
            INSERT INTO app.conversation_threads (
@@ -453,9 +456,10 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
          ), inserted AS (
            INSERT INTO app.conversation_turns (
              tenant_id, thread_id, actor_user_id, client_ref, user_text,
-             assistant_question, propose_memory, content_sha256, occurred_at
+             assistant_question, propose_memory, content_sha256, occurred_at,
+             orchestration_snapshot
            )
-           SELECT $1, id, $2, $4, $5, $6, $8, $9, $7 FROM thread
+           SELECT $1, id, $2, $4, $5, $6, $8, $9, $7, $10::jsonb FROM thread
            ON CONFLICT (tenant_id, actor_user_id, client_ref) DO NOTHING
            RETURNING id
          ), selected AS (
@@ -467,7 +471,7 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
          )
          SELECT thread.external_ref AS conversation_ref, turn.user_text,
                 turn.assistant_question, turn.propose_memory,
-                turn.content_sha256
+                turn.content_sha256, turn.orchestration_snapshot
            FROM selected
            JOIN app.conversation_turns turn ON turn.id = selected.id AND turn.tenant_id = $1
            JOIN app.conversation_threads thread
@@ -482,6 +486,7 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
           command.occurredAt,
           command.proposeMemory,
           textSha256(command.text),
+          JSON.stringify(command.orchestration),
         ],
       );
       const storedTurn = turn.rows[0];
@@ -491,7 +496,8 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
         storedTurn.user_text !== command.text ||
         storedTurn.assistant_question !== command.followUpQuestion ||
         storedTurn.propose_memory !== command.proposeMemory ||
-        storedTurn.content_sha256 !== textSha256(command.text)
+        storedTurn.content_sha256 !== textSha256(command.text) ||
+        stableJson(storedTurn.orchestration_snapshot) !== stableJson(command.orchestration)
       ) {
         throw new ConversationRepositoryConflictError('Turn ID has conflicting content.');
       }
@@ -1368,8 +1374,21 @@ function turnFingerprint(command: ConversationTurnPersistenceCommand): string {
       text: command.text,
       proposeMemory: command.proposeMemory,
       followUpQuestion: command.followUpQuestion,
+      orchestration: command.orchestration,
     }),
   );
+}
+
+function stableJson(value: unknown): string {
+  if (value === undefined) return 'null';
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function rightFingerprint(command: MemoryRightCommand): string {

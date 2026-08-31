@@ -13,7 +13,7 @@ const owner = userId('owner_one');
 const occurredAt = new Date('2026-08-31T13:00:00.000Z');
 
 describe('continuous conversation intake', () => {
-  it('asks one contextual question without storing a memory proposal by default', async () => {
+  it('asks one contextual question without persisting raw text or creating memory by default', async () => {
     class RecordingRepository extends InMemoryConversationMemoryRepository {
       public writes = 0;
 
@@ -35,6 +35,37 @@ describe('continuous conversation intake', () => {
 
     expect(result.followUpQuestion).toContain('کدام بخش');
     expect(result.memoryProposal).toBeUndefined();
+    expect(result.orchestration).toMatchObject({
+      intent: { kind: 'reflect' },
+      route: { writeAuthority: 'none' },
+      retention: { turn: 'not_persisted' },
+    });
+    expect(repository.writes).toBe(0);
+  });
+
+  it('does not persist or propose a turn containing sensitive data', async () => {
+    class RecordingRepository extends InMemoryConversationMemoryRepository {
+      public writes = 0;
+
+      public override async saveTurn(...args: Parameters<InMemoryConversationMemoryRepository['saveTurn']>) {
+        this.writes += 1;
+        return await super.saveTurn(...args);
+      }
+    }
+    const repository = new RecordingRepository();
+    const result = await new ConversationIntakeService(repository).submitTurn({
+      tenantId: tenant,
+      actorId: owner,
+      conversationId: 'conversation_sensitive',
+      turnId: 'turn_sensitive',
+      text: 'پسورد من: super-secret-value است؛ این را یادت بمونه.',
+      proposeMemory: true,
+      occurredAt,
+    });
+
+    expect(result.memoryProposal).toBeUndefined();
+    expect(result.orchestration.retention.turn).toBe('not_persisted');
+    expect(result.orchestration.safety.sensitiveDataDetected).toBe(true);
     expect(repository.writes).toBe(0);
   });
 
@@ -55,6 +86,7 @@ describe('continuous conversation intake', () => {
       dataClass: 'confidential',
       status: 'awaiting_user_confirmation',
     });
+    expect(result.orchestration.retention.turn).toBe('confidential');
   });
 
   it('requires explicit understanding permission and keeps brand/public use off', async () => {

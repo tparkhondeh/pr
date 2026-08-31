@@ -78,6 +78,10 @@ const brandRiskReviewMigrationPath = fileURLToPath(
   new URL('../db/migrations/0018_brand_risk_reviews.sql', import.meta.url),
 );
 const brandRiskReviewSql = readFileSync(brandRiskReviewMigrationPath, 'utf8');
+const conversationOrchestrationMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0019_conversation_orchestration.sql', import.meta.url),
+);
+const conversationOrchestrationSql = readFileSync(conversationOrchestrationMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -93,6 +97,15 @@ describe('foundation migration', () => {
     expect(brandRiskReviewSql).toContain("policy_version = 'brand-protection-v1'");
     expect(brandRiskReviewSql).toContain("expected_level = 'yellow' OR decision <> 'acknowledge'");
     expect(brandRiskReviewSql).toContain('UNIQUE (tenant_id, owner_user_id, client_ref)');
+  });
+
+  it('adds a versioned orchestration contract without duplicating raw conversation text', () => {
+    defineMigration('0019_conversation_orchestration', conversationOrchestrationSql);
+    expect(conversationOrchestrationSql).toContain('orchestration_snapshot jsonb');
+    expect(conversationOrchestrationSql).toContain('untrusted_user_input');
+    expect(conversationOrchestrationSql).toContain('no_silent_cross_module_write');
+    expect(conversationOrchestrationSql).toContain('orchestration_snapshot ?& ARRAY');
+    expect(conversationOrchestrationSql).not.toContain("'userText'");
   });
 
   it('defines the required tenant-owned tables', () => {

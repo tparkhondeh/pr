@@ -384,9 +384,57 @@ export type FeedbackLearningSnapshot = Readonly<{
   }>[];
 }>;
 
+export type ConversationTargetView = 'today' | 'memory' | 'strategy' | 'research' | 'draft' | 'risk' | 'data';
+
+export type ConversationOrchestration = Readonly<{
+  policyVersion: 'conversation-orchestrator-v1';
+  intent: Readonly<{
+    kind: 'reflect' | 'remember' | 'correct_memory' | 'set_strategy' | 'assess_action' |
+      'research_external' | 'draft_content' | 'data_control' | 'unclear';
+    confidence: number;
+    rationale: string;
+  }>;
+  route: Readonly<{
+    module: 'conversation' | 'memory' | 'strategy' | 'research' | 'draft' | 'risk' | 'data';
+    mode: 'clarify' | 'analyze' | 'propose' | 'hold';
+    targetView: ConversationTargetView;
+    readAuthority: 'none' | 'owner_scoped';
+    writeAuthority: 'none' | 'propose_only';
+    requiresUserApproval: boolean;
+  }>;
+  provenance: Readonly<{
+    sources: readonly Readonly<{
+      kind: 'current_turn'; ref: string; trust: 'untrusted_user_input';
+    }>[];
+    personalMemoryUsed: false;
+    externalResearchUsed: false;
+  }>;
+  safety: Readonly<{
+    sensitiveDataDetected: boolean;
+    promptInjectionDetected: boolean;
+    publicActionRequested: boolean;
+    memoryProposalAllowed: boolean;
+  }>;
+  arbitration: Readonly<{
+    outcome: 'routed' | 'clarification_required' | 'approval_required' | 'held';
+    rationale: string;
+    appliedRules: readonly string[];
+  }>;
+  retention: Readonly<{
+    turn: 'confidential' | 'not_persisted';
+    rationale: string;
+  }>;
+  recommendedAction: Readonly<{
+    kind: 'open_view' | 'clarify' | 'review_sensitive_input';
+    label: string;
+    targetView: ConversationTargetView;
+  }>;
+}>;
+
 export type ConversationTurnResult = Readonly<{
   assistantMessage: string;
   followUpQuestion: string;
+  orchestration: ConversationOrchestration;
   memoryProposal?: Readonly<{
     id: string;
     epistemicType: 'self_report';
@@ -1437,7 +1485,8 @@ function isConversationTurnResult(payload: unknown): payload is ConversationTurn
   if (!isRecord(payload)) return false;
   if (
     typeof payload['assistantMessage'] !== 'string' ||
-    typeof payload['followUpQuestion'] !== 'string'
+    typeof payload['followUpQuestion'] !== 'string' ||
+    !isConversationOrchestration(payload['orchestration'])
   ) {
     return false;
   }
@@ -1449,6 +1498,47 @@ function isConversationTurnResult(payload: unknown): payload is ConversationTurn
     proposal['dataClass'] === 'confidential' &&
     proposal['status'] === 'awaiting_user_confirmation'
   );
+}
+
+function isConversationOrchestration(payload: unknown): payload is ConversationOrchestration {
+  if (!isRecord(payload)) return false;
+  const intent = payload['intent'];
+  const route = payload['route'];
+  const provenance = payload['provenance'];
+  const safety = payload['safety'];
+  const arbitration = payload['arbitration'];
+  const retention = payload['retention'];
+  const action = payload['recommendedAction'];
+  if (
+    payload['policyVersion'] !== 'conversation-orchestrator-v1' ||
+    !isRecord(intent) || typeof intent['kind'] !== 'string' ||
+    typeof intent['confidence'] !== 'number' || typeof intent['rationale'] !== 'string' ||
+    !isRecord(route) || typeof route['module'] !== 'string' ||
+    typeof route['mode'] !== 'string' || !isConversationTargetView(route['targetView']) ||
+    typeof route['readAuthority'] !== 'string' || typeof route['writeAuthority'] !== 'string' ||
+    typeof route['requiresUserApproval'] !== 'boolean' ||
+    !isRecord(provenance) || !Array.isArray(provenance['sources']) ||
+    provenance['personalMemoryUsed'] !== false || provenance['externalResearchUsed'] !== false ||
+    !provenance['sources'].every((source) => isRecord(source) && source['kind'] === 'current_turn' &&
+      typeof source['ref'] === 'string' && source['trust'] === 'untrusted_user_input') ||
+    !isRecord(safety) || typeof safety['sensitiveDataDetected'] !== 'boolean' ||
+    typeof safety['promptInjectionDetected'] !== 'boolean' ||
+    typeof safety['publicActionRequested'] !== 'boolean' ||
+    typeof safety['memoryProposalAllowed'] !== 'boolean' ||
+    !isRecord(arbitration) || typeof arbitration['outcome'] !== 'string' ||
+    typeof arbitration['rationale'] !== 'string' || !Array.isArray(arbitration['appliedRules']) ||
+    !arbitration['appliedRules'].every((rule) => typeof rule === 'string') ||
+    !isRecord(retention) || (retention['turn'] !== 'confidential' && retention['turn'] !== 'not_persisted') ||
+    typeof retention['rationale'] !== 'string' ||
+    !isRecord(action) || typeof action['kind'] !== 'string' ||
+    typeof action['label'] !== 'string' || !isConversationTargetView(action['targetView'])
+  ) return false;
+  return intent['confidence'] >= 0 && intent['confidence'] <= 1;
+}
+
+function isConversationTargetView(value: unknown): value is ConversationTargetView {
+  return value === 'today' || value === 'memory' || value === 'strategy' ||
+    value === 'research' || value === 'draft' || value === 'risk' || value === 'data';
 }
 
 function isConfirmedMemory(payload: unknown): payload is ConfirmedMemory {

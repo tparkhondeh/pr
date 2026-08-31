@@ -11,6 +11,7 @@ Asset/Evidence و مرکز حقوق داده پیاده‌سازی شده‌ان
 - [ممیزی محصول و معماری](docs/architecture/product-architecture-audit-v1.0.md)
 - [معماری هدف و محدوده MVP](docs/architecture/target-architecture-v1.0.md)
 - [Ethics, Privacy, Risk & Brand Protection](docs/architecture/brand-protection-v1.0.md)
+- [Continuous Conversation Orchestrator](docs/architecture/conversation-orchestrator-v1.0.md)
 - [Master Implementation Prompt مرحله Foundation](docs/implementation/foundation-master-prompt-v1.0.md)
 - [ADRهای Draft مرحله Foundation](docs/decisions/foundation-adrs-draft-v1.0.md)
 - [Data & Policy Kernel](docs/architecture/data-kernel-v1.0.md)
@@ -96,13 +97,20 @@ Self-reportهای فعال، تنوع منبع و اعمال حقوق داده �
 revoke می‌کند. درخواست‌ها idempotent، tenant-isolated و همراه Audit/Outbox هستند و
 تعداد اعمال حقوق داده در بلوغ مدل شخصی منعکس می‌شود.
 
-دکمه «شروع گفت‌وگو» نیز به `POST /api/conversations/turns` متصل است. Opt-in ساخت
-پیشنهاد حافظه پیش‌فرض خاموش است و حتی پس از فعال‌کردن، ثبت نهایی فقط با درخواست دوم
-`POST /api/memory/proposals/:id/confirm` انجام می‌شود. خروجی اولیه همیشه
-`self_report` و `confidential` است و مجوز Brand/Public به‌طور خودکار داده نمی‌شود.
-وقتی Opt-in خاموش است، متن مکالمه در Store پایدار ثبت نمی‌شود. با تنظیم متغیرهای
-PostgreSQL، Proposal انتخاب‌شده و تأیید آن همراه Evidence، Assertion، Consent، Audit
-و Outbox در یک Transaction ذخیره می‌شوند؛ در نبود دیتابیس، Store حافظه‌ای و موقت است.
+دکمه «شروع گفت‌وگو» به `POST /api/conversations/turns` و Orchestrator نسخه‌دار متصل
+است. پاسخ Intent، Confidence، Route، Provenance، Read/Write Authority، Arbitration،
+نیاز به تأیید و Retention را آشکار می‌کند. بدون Opt-in معتبر حافظه، متن خام Turn در
+Store ثبت نمی‌شود؛ اگر نشانه credential یا داده حساس دیده شود، متن خام حتی با Opt-in
+ذخیره یا به Memory Proposal تبدیل نمی‌شود. Research بیرونی نیز حتی با Opt-in حافظه از
+Personal Memory جدا می‌ماند. Prompt Injection ورودی غیرقابل‌اعتماد است و نمی‌تواند
+Policy یا Permission را تغییر دهد.
+
+Opt-in ساخت پیشنهاد حافظه پیش‌فرض خاموش است و حتی پس از فعال‌کردن، ثبت نهایی فقط با
+درخواست دوم `POST /api/memory/proposals/:id/confirm` انجام می‌شود. خروجی Proposal
+همیشه `self_report` و `confidential` است و مجوز Brand/Public به‌طور خودکار داده
+نمی‌شود. با PostgreSQL، Turn و Snapshot قرارداد `conversation-orchestrator-v1` ذخیره
+می‌شوند و Proposal/Confirmation همراه Evidence، Assertion، Consent، Audit و Outbox
+در Transactionهای کنترل‌شده ثبت می‌شوند؛ Store بدون دیتابیس موقت است.
 
 پس از تأیید نیز کاربر از مسیر
 `POST /api/memory/proposals/:id/rights` می‌تواند حافظه را اصلاح، Contest، حذف یا

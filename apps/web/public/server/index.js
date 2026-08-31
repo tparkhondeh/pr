@@ -26,6 +26,7 @@ const draftRequests = new Map();
 const feedbackEvents = new Map();
 const preferenceProposals = new Map();
 const feedbackRequests = new Map();
+const conversationTurns = new Map();
 const memoryProposals = new Map();
 const memoryRightRequests = new Map();
 const auditEvents = new Map();
@@ -715,16 +716,33 @@ export default {
         typeof body.turnId !== 'string' ||
         typeof body.text !== 'string' ||
         typeof body.proposeMemory !== 'boolean' ||
-        body.text.trim().length < 3
+        !/^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/u.test(body.conversationId) ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9_-]{2,47}$/u.test(body.turnId) ||
+        body.text.trim().length < 3 ||
+        body.text.trim().length > 5000
       ) {
         return json({ error: 'invalid_conversation_input' }, 400);
       }
       const text = body.text.trim();
-      const followUpQuestion = chooseFollowUpQuestion(text);
-      if (!body.proposeMemory) {
+      const orchestrated = orchestrateConversationTurn(body.turnId, text, body.proposeMemory);
+      const shouldProposeMemory = body.proposeMemory && orchestrated.orchestration.safety.memoryProposalAllowed;
+      if (orchestrated.orchestration.retention.turn === 'confidential') {
+        const turnKey = `${body.conversationId}:${body.turnId}`;
+        const fingerprint = await sha256(JSON.stringify({
+          conversationId: body.conversationId,
+          text,
+          proposeMemory: shouldProposeMemory,
+          orchestration: orchestrated.orchestration,
+        }));
+        const existingTurn = conversationTurns.get(turnKey);
+        if (existingTurn && existingTurn !== fingerprint) {
+          return json({ error: 'memory_proposal_conflict' }, 409);
+        }
+        conversationTurns.set(turnKey, fingerprint);
+      }
+      if (!shouldProposeMemory) {
         return json({
-          assistantMessage: 'شنیدم. فعلاً چیزی به حافظه پیشنهاد نمی‌کنم.',
-          followUpQuestion,
+          ...orchestrated,
         });
       }
       const id = `memory_${body.turnId}`;
@@ -747,8 +765,7 @@ export default {
         metadata: { conversationId: body.conversationId, turnId: body.turnId }, occurredAt: proposal.occurredAt,
       });
       return json({
-        assistantMessage: 'این برداشت فقط یک Self-report پیشنهادی است و هنوز حافظه قطعی نیست.',
-        followUpQuestion,
+        ...orchestrated,
         memoryProposal: withoutText(proposal),
       });
     }
@@ -1858,14 +1875,139 @@ async function sha256(value) {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function chooseFollowUpQuestion(text) {
-  if (/عوض|تغییر|قبلاً|دیگر|نظرم/u.test(text)) {
-    return 'چه تجربه یا شواهدی باعث شد دیدگاهت تغییر کند؟';
+function orchestrateConversationTurn(turnId, inputText, memoryProposalRequested) {
+  const text = inputText.trim().replace(/ي/gu, 'ی').replace(/ك/gu, 'ک').replace(/\s+/gu, ' ');
+  const sensitiveDataDetected = [
+    /(?:رمز|پسورد|password|token|توکن|api.?key|کلید خصوصی)[^:\n=]{0,16}[:=]\s*\S{4,}/iu,
+    /(?:کارت|شبا|حساب|کد ملی)\D{0,12}\d(?:[\d\s-]{7,24}\d)/u,
+    /-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----/u,
+  ].some((pattern) => pattern.test(text));
+  const promptInjectionDetected = [
+    /(?:دستور|قانون|پرامپت).{0,24}(?:قبلی|سیستم).{0,24}(?:نادیده|لغو|افشا)/u,
+    /(?:ignore|reveal).{0,24}(?:previous|system|prompt|instruction)/iu,
+  ].some((pattern) => pattern.test(text));
+  const publicActionRequested = [
+    /منتشر|انتشار|پابلیش|ارسال عمومی|اجرا کن/u,
+    /(?:لینکدین|اینستاگرام|یوتیوب|ایکس|توییتر).{0,24}(?:بگذار|بذار|ارسال)/u,
+  ].some((pattern) => pattern.test(text));
+  const definitions = [
+    ['data_control', /(?:حافظه|اطلاعات|داده|برداشت).{0,24}(?:حذف|پاک|فراموش|لغو)(?:ش)?\s+(?:کن|کنید|شود|بشه)|(?:این|اطلاعات|حافظه).{0,30}استفاده نکن|این (?:را|رو).{0,16}(?:پاک|حذف|فراموش)/u, 'data', 'data', 'hold', true, false, 'بازکردن کنترل داده و حافظه'],
+    ['correct_memory', /(?:برداشت|حافظه|اطلاعات).{0,24}(?:غلط|نادرست|اصلاح|تصحیح)|(?:اصلاح|تصحیح).{0,24}(?:برداشت|حافظه|اطلاعات)|دیگر (?:متعلق به من|نظر من|باور من) نیست/u, 'memory', 'memory', 'hold', true, false, 'بازکردن حافظه برای اصلاح'],
+    ['research_external', /تحقیق|پژوهش|جستجو|جست‌وجو|منبع|فکت.?چک|راستی.?آزمایی|آخرین (?:خبر|آمار|گزارش|تحقیق)|درباره .{2,80}(?:پیدا کن|بررسی کن)/u, 'research', 'research', 'propose', false, false, 'رفتن به Research Workspace'],
+    ['assess_action', /منتشر|انتشار|پابلیش|ارسال عمومی|اجرا کن|اقدام کنیم|ریسک این|(?:پست|مقاله|ویدئو|بیانیه).{0,30}(?:بگذار|بذار|منتشر)/u, 'risk', 'risk', 'hold', true, false, 'بررسی اقدام و ریسک'],
+    ['draft_content', /(?:پست|مقاله|کپشن|خبرنامه|اسکریپت|سناریو|متن).{0,28}(?:بنویس|بساز|آماده|پیش.?نویس)|برای (?:لینکدین|اینستاگرام|یوتیوب|ایکس|توییتر|وبلاگ|پادکست)/u, 'draft', 'draft', 'propose', true, false, 'رفتن به استودیوی پیش‌نویس'],
+    ['set_strategy', /استراتژ|راهبرد|جایگاه|مخاطب هدف|هدف برند|جهت برند|(?:هدف|اولویت).{0,24}(?:عوض|تغییر|جدید)/u, 'strategy', 'strategy', 'propose', true, true, 'بازکردن زمینه استراتژی'],
+    ['remember', /یادت (?:باشه|بماند|بمونه)|به خاطر بسپار|در حافظه|ثبتش کن|این را بدان/u, 'memory', 'memory', 'propose', true, true, 'ساخت پیشنهاد حافظه'],
+    ['reflect', /فکر می‌کنم|به نظرم|امروز|جلسه|اتفاق|تجربه|دیدگاه|نظرم|باور|ارزش|دیدم|شنیدم|یاد گرفتم|متوجه شدم|در (?:یک )?(?:پروژه|موقعیت)|کردم|داشتم/u, 'conversation', 'today', 'clarify', false, true, 'ادامه همین گفت‌وگو'],
+  ];
+  let definition = publicActionRequested
+    ? definitions.find(([kind]) => kind === 'assess_action')
+    : definitions.find(([, pattern]) => pattern.test(text));
+  if (!definition && memoryProposalRequested) {
+    definition = definitions.find(([kind]) => kind === 'remember');
   }
-  if (/جلسه|اتفاق|دیدم|شنیدم|گفت/u.test(text)) {
-    return 'کدام بخش این اتفاق برایت مهم بود و چرا؟';
-  }
-  return 'یک موقعیت واقعی را تعریف می‌کنی که این فکر در آن خودش را نشان داده باشد؟';
+  const ambiguous = !definition;
+  definition ??= ['unclear', /$a/u, 'conversation', 'today', 'clarify', false, true, 'روشن‌کردن مقصود'];
+  const [kind, , baseModule, baseTargetView, baseMode, baseApproval, baseMemoryAllowed, baseLabel] = definition;
+  const memoryProposalAllowed = baseMemoryAllowed && !sensitiveDataDetected && !promptInjectionDetected;
+  const held = sensitiveDataDetected || (promptInjectionDetected && publicActionRequested);
+  const requiresUserApproval = baseApproval || publicActionRequested;
+  const outcome = held ? 'held' : ambiguous ? 'clarification_required' : requiresUserApproval ? 'approval_required' : 'routed';
+  const targetView = held && sensitiveDataDetected ? 'data' : baseTargetView;
+  const module = held && sensitiveDataDetected ? 'data' : baseModule;
+  const confidence = kind === 'unclear' ? 0.35
+    : promptInjectionDetected ? 0.51
+      : ['data_control', 'correct_memory'].includes(kind) ? 0.94
+        : ['remember', 'research_external', 'assess_action'].includes(kind) ? 0.9
+          : text.length < 18 ? 0.64 : kind === 'reflect' ? 0.72 : 0.82;
+  const intentRationales = {
+    reflect: 'ورودی شبیه تجربه، فکر یا تغییر دیدگاه شخصی است.',
+    remember: 'کاربر به‌طور صریح به یادسپاری یا ثبت در حافظه اشاره کرده است.',
+    correct_memory: 'ورودی به اصلاح یا رد یک برداشت حافظه‌ای اشاره دارد.',
+    set_strategy: 'ورودی درباره هدف، مخاطب، جایگاه یا جهت استراتژیک است.',
+    assess_action: 'ورودی درخواست اقدام یا انتشار دارد و باید قبل از اجرا ارزیابی شود.',
+    research_external: 'ورودی به منبع، تحقیق یا واقعیت بیرونی وابسته است.',
+    draft_content: 'ورودی درخواست ساخت یا آماده‌سازی محتوای قابل انتشار دارد.',
+    data_control: 'ورودی یک حق کنترلی درباره داده یا حافظه را بیان می‌کند.',
+    unclear: 'Signal کافی برای Routing مطمئن وجود ندارد؛ سیستم از حدس خودداری می‌کند.',
+  };
+  const arbitrationRationale = outcome === 'held'
+    ? 'Privacy/Security بر Utility مقدم شد؛ تا بازبینی انسانی هیچ Route اجرایی فعال نیست.'
+    : outcome === 'clarification_required'
+      ? 'Confidence برای Routing پایین است و یک سؤال با Information Gain بالا لازم است.'
+      : outcome === 'approval_required'
+        ? kind === 'assess_action'
+          ? 'اقدام عمومی باید از Claim، Risk و تأیید انسانی عبور کند.'
+          : 'ماژول فقط پیشنهاد آماده می‌کند؛ نوشتن یا اجرا به تأیید صریح کاربر نیاز دارد.'
+        : 'Route فقط برای تحلیل انتخاب شد و هیچ ماژول دیگری تغییر نکرد.';
+  const orchestration = {
+    policyVersion: 'conversation-orchestrator-v1',
+    intent: { kind, confidence, rationale: intentRationales[kind] },
+    route: {
+      module, mode: held ? 'hold' : baseMode, targetView, readAuthority: 'none',
+      writeAuthority: memoryProposalAllowed && memoryProposalRequested ? 'propose_only' : 'none',
+      requiresUserApproval,
+    },
+    provenance: {
+      sources: [{ kind: 'current_turn', ref: turnId, trust: 'untrusted_user_input' }],
+      personalMemoryUsed: false, externalResearchUsed: false,
+    },
+    safety: { sensitiveDataDetected, promptInjectionDetected, publicActionRequested, memoryProposalAllowed },
+    arbitration: {
+      outcome, rationale: arbitrationRationale,
+      appliedRules: [
+        'user_input_is_untrusted', 'no_silent_cross_module_write',
+        'public_action_requires_approval', 'external_research_is_not_personal_memory',
+        ...(sensitiveDataDetected ? ['sensitive_input_not_persisted'] : []),
+        ...(promptInjectionDetected ? ['prompt_injection_cannot_change_authority'] : []),
+      ],
+    },
+    retention: sensitiveDataDetected
+      ? { turn: 'not_persisted', rationale: 'نشانه داده حساس دیده شد؛ متن خام برای پیوستگی ذخیره نمی‌شود.' }
+      : memoryProposalRequested && memoryProposalAllowed
+        ? { turn: 'confidential', rationale: 'کاربر Proposal حافظه را درخواست کرده؛ Turn به‌صورت owner-scoped و محرمانه ثبت می‌شود.' }
+        : { turn: 'not_persisted', rationale: 'بدون Opt-in معتبر حافظه، متن خام Turn در Store ثبت نمی‌شود.' },
+    recommendedAction: {
+      kind: sensitiveDataDetected ? 'review_sensitive_input' : ambiguous ? 'clarify' : 'open_view',
+      label: sensitiveDataDetected ? 'بازبینی داده حساس' : baseLabel,
+      targetView,
+    },
+  };
+  const assistantMessage = sensitiveDataDetected
+    ? 'نشانه‌ای از داده حساس دیدم؛ متن خام ذخیره نشد و هیچ اقدامی انجام نمی‌دهم.'
+    : promptInjectionDetected
+      ? 'این ورودی به‌عنوان محتوای غیرقابل‌اعتماد تحلیل شد و نمی‌تواند Permission یا قواعد سیستم را تغییر دهد.'
+      : memoryProposalRequested && !memoryProposalAllowed
+        ? 'این ورودی به حافظه شخصی تعلق ندارد؛ آن را با Research، اقدام یا کنترل داده مخلوط نمی‌کنم.'
+        : orchestration.route.writeAuthority === 'propose_only'
+          ? 'مسیر مناسب را تشخیص دادم؛ فقط یک پیشنهاد حافظه می‌سازم و ثبت قطعی نیازمند تأیید جداگانه است.'
+          : outcome === 'approval_required'
+            ? 'مسیر مناسب را تشخیص دادم؛ فعلاً فقط تحلیل و پیشنهاد مجاز است و هیچ اقدام حساسی اجرا نشد.'
+            : kind === 'unclear'
+              ? 'برای اینکه ورودی را به ماژول اشتباه نفرستم، فعلاً از حدس‌زدن خودداری می‌کنم.'
+              : 'ورودی را فهمیدم و بدون تغییر پنهانی در حافظه، استراتژی یا اقدام‌ها Route کردم.';
+  const questions = {
+    reflect: /عوض|تغییر|قبلاً|دیگر|نظرم/u.test(text)
+      ? 'چه تجربه یا شواهدی باعث شد دیدگاهت تغییر کند؟'
+      : /جلسه|اتفاق|دیدم|شنیدم|گفت/u.test(text)
+        ? 'کدام بخش این اتفاق برایت مهم بود و چرا؟'
+        : 'یک موقعیت واقعی را تعریف می‌کنی که این فکر در آن خودش را نشان داده باشد؟',
+    remember: 'این برداشت فقط برای فهم شخصی بماند یا اجازه استفاده داخلی در تحلیل برند هم دارد؟',
+    correct_memory: 'کدام حافظه یا برداشت دقیقاً باید اصلاح شود و نسخه درست آن چیست؟',
+    set_strategy: 'این تغییر قرار است کدام هدف، مخاطب یا مرز استراتژیک را جابه‌جا کند؟',
+    assess_action: 'پیش از هر تأیید، هدف اقدام و مهم‌ترین پیامد احتمالی آن چیست؟',
+    research_external: 'برای این تحقیق، بازه زمانی و معیار اعتبار منبع چه باشد؟',
+    draft_content: 'Mother Idea، مخاطب و پلتفرم مقصد این پیش‌نویس چیست؟',
+    data_control: 'دقیقاً کدام داده یا حافظه باید اصلاح، محدود، لغو یا حذف شود؟',
+    unclear: 'این ورودی را برای فهم شخصی، تحقیق بیرونی، ساخت محتوا یا یک اقدام مشخص مطرح کردی؟',
+  };
+  return {
+    assistantMessage,
+    followUpQuestion: held
+      ? 'می‌خواهی پس از حذف داده حساس، نسخه بدون اطلاعات خصوصی را دوباره بررسی کنیم؟'
+      : questions[kind],
+    orchestration,
+  };
 }
 
 function withoutText(proposal) {

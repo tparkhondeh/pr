@@ -2006,6 +2006,7 @@ async function handleConversationTurn(
     sendJson(response, 200, {
       assistantMessage: result.assistantMessage,
       followUpQuestion: result.followUpQuestion,
+      orchestration: result.orchestration,
       ...(result.memoryProposal
         ? {
             memoryProposal: {

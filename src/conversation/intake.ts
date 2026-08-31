@@ -13,6 +13,10 @@ import {
   type MemoryRightOperation,
   type PersonalMemoryRecord,
 } from './repository.js';
+import {
+  orchestrateConversationTurn,
+  type ConversationOrchestration,
+} from './orchestrator.js';
 
 export type MemoryUsePermissions = Readonly<{
   personalUnderstanding: boolean;
@@ -37,6 +41,7 @@ export type MemoryProposal = Readonly<{
 export type ConversationTurnResult = Readonly<{
   assistantMessage: string;
   followUpQuestion: string;
+  orchestration: ConversationOrchestration;
   memoryProposal?: MemoryProposal;
 }>;
 
@@ -99,11 +104,21 @@ export class ConversationIntakeService {
       throw new ConversationValidationError('Conversation time is invalid.');
     }
 
-    const followUpQuestion = chooseFollowUpQuestion(text);
-    if (!request.proposeMemory) {
+    const orchestrated = orchestrateConversationTurn({
+      turnId: request.turnId,
+      text,
+      memoryProposalRequested: request.proposeMemory,
+    });
+    const shouldProposeMemory =
+      request.proposeMemory && orchestrated.orchestration.safety.memoryProposalAllowed;
+    const persistenceRequest = {
+      ...request,
+      text,
+      proposeMemory: shouldProposeMemory,
+    };
+    if (!shouldProposeMemory) {
       return {
-        assistantMessage: 'شنیدم. فعلاً چیزی به حافظه پیشنهاد نمی‌کنم.',
-        followUpQuestion,
+        ...orchestrated,
       };
     }
 
@@ -119,13 +134,19 @@ export class ConversationIntakeService {
       dataClass: 'confidential',
       status: 'awaiting_user_confirmation',
       occurredAt: request.occurredAt,
-      followUpQuestion,
+      followUpQuestion: orchestrated.followUpQuestion,
     };
-    const persisted = await this.persistTurn(request, followUpQuestion, memoryProposal);
+    const persisted = await this.persistTurn(
+      persistenceRequest,
+      orchestrated.followUpQuestion,
+      orchestrated.orchestration,
+      memoryProposal,
+    );
     if (!persisted) throw new Error('Memory proposal was not returned by the repository.');
     return {
-      assistantMessage: 'این برداشت فقط یک Self-report پیشنهادی است و هنوز حافظه قطعی نیست.',
+      assistantMessage: orchestrated.assistantMessage,
       followUpQuestion: persisted.followUpQuestion,
+      orchestration: orchestrated.orchestration,
       memoryProposal: persisted,
     };
   }
@@ -313,6 +334,7 @@ export class ConversationIntakeService {
       occurredAt: Date;
     }>,
     followUpQuestion: string,
+    orchestration: ConversationOrchestration,
     proposal?: MemoryProposal,
   ): Promise<MemoryProposal | undefined> {
     try {
@@ -320,6 +342,7 @@ export class ConversationIntakeService {
         ...request,
         text: request.text.trim(),
         followUpQuestion,
+        orchestration,
         ...(proposal ? { proposal } : {}),
       });
     } catch (error: unknown) {
@@ -332,16 +355,6 @@ export class ConversationIntakeService {
       throw error;
     }
   }
-}
-
-function chooseFollowUpQuestion(text: string): string {
-  if (/عوض|تغییر|قبلاً|دیگر|نظرم/u.test(text)) {
-    return 'چه تجربه یا شواهدی باعث شد دیدگاهت تغییر کند؟';
-  }
-  if (/جلسه|اتفاق|دیدم|شنیدم|گفت/u.test(text)) {
-    return 'کدام بخش این اتفاق برایت مهم بود و چرا؟';
-  }
-  return 'یک موقعیت واقعی را تعریف می‌کنی که این فکر در آن خودش را نشان داده باشد؟';
 }
 
 function validateSafeId(value: string, label: string, maximumLength: number): void {

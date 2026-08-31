@@ -11,6 +11,7 @@ import type {
 } from '../src/database/sql.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
 import type { MemoryProposal } from '../src/conversation/intake.js';
+import { orchestrateConversationTurn } from '../src/conversation/orchestrator.js';
 
 type RecordedQuery = Readonly<{ sql: string; values: readonly unknown[] }>;
 
@@ -70,6 +71,11 @@ const proposalRow = {
   assistant_question: proposal.followUpQuestion,
   subject_user_id: ownerValue,
 };
+const orchestration = orchestrateConversationTurn({
+  turnId: proposal.turnId,
+  text: proposal.text,
+  memoryProposalRequested: true,
+}).orchestration;
 
 const rightProposalRow = {
   proposal_id: '55555555-5555-4555-8555-555555555555',
@@ -95,6 +101,7 @@ describe('Postgres conversation memory repository', () => {
           assistant_question: proposal.followUpQuestion,
           propose_memory: true,
           content_sha256: createHash('sha256').update(proposal.text).digest('hex'),
+          orchestration_snapshot: orchestration,
         }],
         rowCount: 1,
       },
@@ -115,6 +122,7 @@ describe('Postgres conversation memory repository', () => {
       proposeMemory: true,
       occurredAt,
       followUpQuestion: proposal.followUpQuestion,
+      orchestration,
       proposal,
     });
 
@@ -457,6 +465,7 @@ describe('Postgres conversation memory repository', () => {
         proposeMemory: false,
         occurredAt,
         followUpQuestion: proposal.followUpQuestion,
+        orchestration,
       }),
     ).rejects.toThrow(ConversationRepositoryPermissionError);
     await expect(repository.applyRight({
