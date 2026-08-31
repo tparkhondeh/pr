@@ -11,6 +11,7 @@
 - [Master Implementation Prompt مرحله Foundation](docs/implementation/foundation-master-prompt-v1.0.md)
 - [ADRهای Draft مرحله Foundation](docs/decisions/foundation-adrs-draft-v1.0.md)
 - [Data & Policy Kernel](docs/architecture/data-kernel-v1.0.md)
+- [Operations Runbook](docs/operations/runbook-v1.0.md)
 
 ## محیط‌ها
 

@@ -1,17 +1,12 @@
 import { createServer } from 'node:http';
 import { loadEnvironment } from './config/environment.js';
+import { createRequestHandler } from './http/application.js';
 
 const environment = loadEnvironment();
 
+const requestHandler = createRequestHandler(() => ({ ready: true }));
 const server = createServer((request, response) => {
-  if (request.method === 'GET' && request.url === '/health') {
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ status: 'ok' }));
-    return;
-  }
-
-  response.writeHead(404, { 'content-type': 'application/json' });
-  response.end(JSON.stringify({ error: 'not_found' }));
+  void requestHandler(request, response);
 });
 
 server.listen(environment.port, () => {
