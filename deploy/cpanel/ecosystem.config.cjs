@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: 'wealthos-pr',
-      script: '/home/wealthos/apps/pr/runtime/main.mjs',
+      script: '/home/wealthos/apps/pr/runtime/main.cjs',
       cwd: '/home/wealthos/apps/pr',
       instances: 1,
       exec_mode: 'fork',

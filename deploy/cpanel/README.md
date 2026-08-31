@@ -4,7 +4,7 @@
 
 - Source: `/home/wealthos/apps/pr`
 - Document Root: `/home/wealthos/pr.wealthos.ir`
-- Node API: `127.0.0.1:31056` زیر PM2
+- Node API: `127.0.0.1:31056` زیر PM2 با Bundle مستقل `runtime/main.cjs`
 - Frontend: خروجی `apps/web/dist`
 - Access: اجباری از طریق HTTP Basic Auth؛ فایل رمز خارج از Document Root در
   `/home/wealthos/apps/pr/runtime/.htpasswd`
