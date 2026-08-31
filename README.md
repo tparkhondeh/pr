@@ -67,6 +67,13 @@ Self-reportهای فعال، تنوع منبع و اعمال حقوق داده �
 `strategyReadiness` دقیقاً مشخص می‌کند چند شاهد برای توصیه استراتژیک مجاز یا withheld
 است. Store محلی و Sites در نبود PostgreSQL با Restart پاک می‌شوند.
 
+مالک برای هر Text Asset از مسیر `POST /api/assets/text/:id/rights` می‌تواند مجوز
+`brandUsage` را مستقل لغو یا خود منبع را حذف کند. لغو، Consent تحلیل برند را revoke
+و منبع را بی‌درنگ از Recommendation و Draft Sources خارج می‌کند؛ حذف، Asset، Evidence
+و Assertion فعال را soft-delete، Snapshot ذخیره‌شده را redacted و همه Consentها را
+revoke می‌کند. درخواست‌ها idempotent، tenant-isolated و همراه Audit/Outbox هستند و
+تعداد اعمال حقوق داده در بلوغ مدل شخصی منعکس می‌شود.
+
 دکمه «شروع گفت‌وگو» نیز به `POST /api/conversations/turns` متصل است. Opt-in ساخت
 پیشنهاد حافظه پیش‌فرض خاموش است و حتی پس از فعال‌کردن، ثبت نهایی فقط با درخواست دوم
 `POST /api/memory/proposals/:id/confirm` انجام می‌شود. خروجی اولیه همیشه

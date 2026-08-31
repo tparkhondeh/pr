@@ -161,6 +161,10 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
 .asset-list blockquote { padding: 10px 12px; margin: 10px 0; color: #345f4c; border-right: 2px solid #75aa8c; background: #f0f7f2; font-size: 10px; line-height: 1.8; }
 .asset-list footer { display: flex; flex-wrap: wrap; gap: 8px; }
 .asset-list footer span { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; color: #6b7a72; border: 1px solid #d8ddd8; background: #fff; font-size: 8px; }
+.asset-rights { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.asset-rights button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border: 1px solid #cfd8d2; background: #fff; color: #496459; font-size: 9px; }
+.asset-rights button.danger { border-color: #e2c4c0; color: #9a4e47; }
+.asset-rights small { color: var(--muted); font-size: 9px; }
 .memory-card-controls > button.danger { background: #8a443e; }
 .memory-card-controls > button:disabled { cursor: wait; opacity: .65; }
 .memory-control-success,

@@ -21,11 +21,13 @@ import {
   ShieldCheck,
   Sparkles,
   ThumbsDown,
+  Trash2,
   TriangleAlert,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type SyntheticEvent } from 'react';
 import {
   WorkbenchApiError,
+  applyTextAssetRight,
   applyMemoryRight,
   approveWorkbenchAction,
   approveDraft,
@@ -61,6 +63,7 @@ import {
   type PersonalMemorySnapshot,
   type EditableStrategyContext,
   type StrategyContextSnapshot,
+  type TextAssetRightOperation,
   type WorkbenchAction,
   type WorkbenchSnapshot,
 } from './api';
@@ -179,6 +182,30 @@ export function App() {
         assertionText: input.assertionText,
         occurredAt: input.occurredAt,
         permissions: { personalUnderstanding: true, brandUsage: input.brandUsage },
+      });
+      await refresh();
+      await refreshAudit();
+    } catch (caught: unknown) {
+      setOnboardingError(errorMessage(caught));
+      setOnboardingState('error');
+      throw caught;
+    }
+  };
+
+  const controlTextAsset = async (
+    assetId: string,
+    operation: TextAssetRightOperation,
+  ) => {
+    setOnboardingState('mutating');
+    setOnboardingError(null);
+    try {
+      await applyTextAssetRight({
+        requestId: `asset_right_${crypto.randomUUID()}`,
+        assetId,
+        operation,
+        reason: operation === 'delete'
+          ? 'درخواست مالک برای حذف این منبع.'
+          : 'درخواست مالک برای لغو استفاده این منبع در تحلیل برند.',
       });
       await refresh();
       await refreshAudit();
@@ -609,6 +636,7 @@ export function App() {
           <AssetIntakePanel
             error={onboardingError}
             onImport={addTextAsset}
+            onRight={controlTextAsset}
             onRefresh={() => refreshOnboarding()}
             snapshot={onboardingSnapshot}
             state={onboardingState}
@@ -1492,6 +1520,8 @@ function auditEventLabel(eventType: string): string {
     'memory.contest': 'به حافظه اعتراض شد',
     'memory.revoke': 'مجوز حافظه لغو شد',
     'memory.delete': 'حافظه حذف شد',
+    'asset.revoke_brand_usage': 'مجوز تحلیل برند منبع لغو شد',
+    'asset.delete': 'منبع متنی حذف شد',
     'draft.created': 'پیش‌نویس Evidence-bound ساخته شد',
     'draft.edited': 'پیش‌نویس ویرایش شد',
     'draft.approved': 'نسخه پیش‌نویس تأیید شد',
@@ -1508,6 +1538,7 @@ function auditResourceLabel(resourceType: string): string {
   const labels: Readonly<Record<string, string>> = {
     account: 'حساب شخصی',
     assertion: 'حافظه',
+    asset: 'منبع متنی',
     draft: 'پیش‌نویس',
     memory_proposal: 'حافظه',
     preference_proposal: 'مدل ترجیح',
@@ -1597,6 +1628,7 @@ function lineItems(value: string): readonly string[] {
 function AssetIntakePanel({
   error,
   onImport,
+  onRight,
   onRefresh,
   snapshot,
   state,
@@ -1609,6 +1641,7 @@ function AssetIntakePanel({
     occurredAt: string;
     brandUsage: boolean;
   }>) => Promise<void>;
+  onRight: (assetId: string, operation: TextAssetRightOperation) => Promise<void>;
   onRefresh: () => Promise<void>;
   snapshot: OnboardingSnapshot | null;
   state: 'loading' | 'ready' | 'mutating' | 'error';
@@ -1752,6 +1785,29 @@ function AssetIntakePanel({
               <span><BookOpenText size={14} /> Evidence متصل</span>
               <span><LockKeyhole size={14} /> Public خاموش</span>
             </footer>
+            <div className="asset-rights">
+              {record.permissions.brandUsage ? (
+                <button
+                  disabled={state === 'mutating'}
+                  onClick={() => void onRight(record.assetId, 'revoke_brand_usage')}
+                  type="button"
+                >
+                  <RotateCcw size={14} /> لغو استفاده در تحلیل برند
+                </button>
+              ) : <small>استفاده در تحلیل برند غیرفعال است.</small>}
+              <button
+                className="danger"
+                disabled={state === 'mutating'}
+                onClick={() => {
+                  if (window.confirm('این منبع، Evidence و Assertion متصل از نمای فعال حذف شوند؟')) {
+                    void onRight(record.assetId, 'delete');
+                  }
+                }}
+                type="button"
+              >
+                <Trash2 size={14} /> حذف منبع
+              </button>
+            </div>
           </article>
         ))}
       </div>
@@ -2078,6 +2134,10 @@ function errorMessage(error: unknown): string {
     account_permission_denied: 'این ردپا فقط برای مالک حساب قابل مشاهده است.',
     account_data_failed: 'بازیابی یا خروجی داده‌های حساب کامل نشد.',
     invalid_feedback_input: 'دلیل رد یا تصمیم Preference معتبر نیست.',
+    invalid_asset_right: 'نوع یا دلیل درخواست کنترل منبع معتبر نیست.',
+    asset_not_found: 'این منبع دیگر در داده‌های فعال شما وجود ندارد.',
+    asset_import_conflict: 'این درخواست منبع قبلاً با محتوای دیگری ثبت شده است.',
+    asset_permission_denied: 'فقط مالک می‌تواند مجوز یا وضعیت این منبع را تغییر دهد.',
     feedback_permission_denied: 'فقط مالک می‌تواند Feedback و Preference Model را مدیریت کند.',
     preference_not_found: 'این پیشنهاد ترجیح دیگر در دسترس نیست.',
     invalid_status: 'وضعیت این پیشنهاد قبلاً تغییر کرده است؛ Snapshot تازه را دریافت کنید.',

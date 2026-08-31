@@ -314,7 +314,7 @@ export type TextAssetRecord = Readonly<{
 export type TextAssetSnapshot = Readonly<{
   generatedAt: string;
   persistence: 'memory' | 'postgres' | 'ephemeral';
-  summary: Readonly<{ assets: number; evidenceItems: number; assertions: number }>;
+  summary: Readonly<{ assets: number; evidenceItems: number; assertions: number; dataRights: number }>;
   records: readonly TextAssetRecord[];
 }>;
 
@@ -346,6 +346,18 @@ export type TextAssetImportResult = Readonly<{
   outcome: 'applied' | 'already_applied';
   persistence: 'memory' | 'postgres' | 'ephemeral';
   record: TextAssetRecord;
+}>;
+
+export type TextAssetRightOperation = 'revoke_brand_usage' | 'delete';
+
+export type TextAssetRightResult = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  assetId: string;
+  operation: TextAssetRightOperation;
+  brandUsage: false;
+  deleted: boolean;
+  occurredAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
 }>;
 
 export type AccountDataExport = Readonly<{
@@ -422,6 +434,34 @@ export async function importTextAsset(input: Readonly<{
     throw new WorkbenchApiError(200, 'invalid_response');
   }
   return payload as TextAssetImportResult;
+}
+
+export async function applyTextAssetRight(input: Readonly<{
+  requestId: string;
+  assetId: string;
+  operation: TextAssetRightOperation;
+  reason: string;
+}>): Promise<TextAssetRightResult> {
+  const payload = await requestJson(`/api/assets/text/${encodeURIComponent(input.assetId)}/rights`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestId: input.requestId,
+      operation: input.operation,
+      reason: input.reason,
+    }),
+  });
+  if (
+    !isRecord(payload) ||
+    (payload['outcome'] !== 'applied' && payload['outcome'] !== 'already_applied') ||
+    typeof payload['assetId'] !== 'string' ||
+    (payload['operation'] !== 'revoke_brand_usage' && payload['operation'] !== 'delete') ||
+    payload['brandUsage'] !== false || typeof payload['deleted'] !== 'boolean' ||
+    typeof payload['occurredAt'] !== 'string' || !isPersistence(payload['persistence'])
+  ) {
+    throw new WorkbenchApiError(200, 'invalid_response');
+  }
+  return payload as TextAssetRightResult;
 }
 
 export async function loadStrategyContext(signal?: AbortSignal): Promise<StrategyContextSnapshot> {
@@ -898,6 +938,7 @@ function isTextAssetSnapshot(payload: unknown): payload is TextAssetSnapshot {
     typeof payload['summary']['assets'] === 'number' &&
     typeof payload['summary']['evidenceItems'] === 'number' &&
     typeof payload['summary']['assertions'] === 'number' &&
+    typeof payload['summary']['dataRights'] === 'number' &&
     payload['records'].every(isTextAssetRecord)
   );
 }

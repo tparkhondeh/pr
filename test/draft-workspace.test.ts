@@ -205,7 +205,7 @@ describe('evidence-bound draft workspace', () => {
       }),
     ]));
 
-    await expect(service.create({
+    const approvedAssetDraft = await service.create({
       actorId: owner,
       requestId: 'draft_from_approved_asset',
       sourceKind: 'text_asset',
@@ -215,7 +215,28 @@ describe('evidence-bound draft workspace', () => {
       takeaway: 'اعتماد از ادعای بزرگ نه، از تجربه قابل‌ردیابی ساخته می‌شود.',
       publicDraftingConsent: true,
       occurredAt: now,
-    })).resolves.toMatchObject({ snapshot: { source: { kind: 'text_asset', ref: approvedAssetRef } } });
+    });
+    expect(approvedAssetDraft).toMatchObject({
+      snapshot: { source: { kind: 'text_asset', ref: approvedAssetRef } },
+    });
+    await assets.applyRight({
+      actorId: owner,
+      requestId: 'asset_draft_revoke_approved',
+      assetId: approvedAssetRef,
+      operation: 'revoke_brand_usage',
+      reason: 'این منبع دیگر برای تحلیل برند استفاده نشود.',
+      occurredAt: new Date(now.getTime() + 500),
+    });
+    expect((await service.sources(owner, new Date(now.getTime() + 500))).records).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ ref: approvedAssetRef })]),
+    );
+    await expect(service.approve({
+      actorId: owner,
+      requestId: 'draft_approve_after_asset_revoke',
+      draftId: approvedAssetDraft.snapshot.draftId,
+      expectedRevision: approvedAssetDraft.snapshot.revision,
+      occurredAt: new Date(now.getTime() + 500),
+    })).rejects.toMatchObject({ reason: 'source_not_available' });
 
     const later = await assets.importText({
       actorId: owner,

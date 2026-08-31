@@ -8,9 +8,11 @@ import {
 } from '../account/audit-trail.js';
 import {
   TextAssetConflictError,
+  TextAssetNotFoundError,
   TextAssetPermissionError,
   TextAssetValidationError,
   type TextAssetIntakeService,
+  type TextAssetRightOperation,
   type TextAssetSnapshot,
 } from '../assets/text-asset-intake.js';
 import {
@@ -70,7 +72,7 @@ export type ApplicationDependencies = Readonly<{
   >;
   learning?: Pick<FeedbackLearningService, 'snapshot' | 'rejectDraft' | 'decide'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
-  assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText'>;
+  assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
   resolveActor?: (request: IncomingMessage) => UserId | undefined;
   tenantId?: TenantId;
@@ -158,6 +160,12 @@ export function createRequestHandler(
 
     if (request.method === 'POST' && path === '/api/assets/text') {
       await handleTextAssetImport(request, response, dependencies);
+      return;
+    }
+
+    const assetRight = path.match(/^\/api\/assets\/text\/([^/]+)\/rights$/u);
+    if (request.method === 'POST' && assetRight?.[1]) {
+      await handleTextAssetRight(request, response, dependencies, decodeURIComponent(assetRight[1]));
       return;
     }
 
@@ -584,6 +592,62 @@ async function handleTextAssetImport(
   }
 }
 
+async function handleTextAssetRight(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+  assetId: string,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.assets) {
+    sendJson(response, 503, { error: 'asset_intake_unavailable' });
+    return;
+  }
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const operation = body['operation'];
+    const reason = body['reason'];
+    if (
+      typeof requestId !== 'string' || !isTextAssetRightOperation(operation) ||
+      typeof reason !== 'string'
+    ) {
+      sendJson(response, 400, { error: 'invalid_asset_right' });
+      return;
+    }
+    const occurredAt = now(dependencies);
+    const result = await dependencies.assets.applyRight({
+      actorId,
+      requestId,
+      assetId,
+      operation,
+      reason,
+      occurredAt,
+    });
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `asset.right:${requestId}`,
+      eventType: `asset.${operation}`,
+      resourceType: 'asset',
+      resourceId: assetId,
+      purpose: 'personal_understanding',
+      decision: operation,
+      metadata: { requestId, operation, reason, deleted: result.deleted },
+      occurredAt,
+    });
+    sendJson(response, 200, {
+      ...result,
+      occurredAt: result.occurredAt.toISOString(),
+    });
+  } catch (error: unknown) {
+    sendTextAssetError(response, error);
+  }
+}
+
 function serializeTextAssetSnapshot(snapshot: TextAssetSnapshot): Record<string, unknown> {
   return {
     generatedAt: snapshot.generatedAt.toISOString(),
@@ -610,6 +674,10 @@ function isTextAssetPermissions(value: unknown): value is Readonly<{
   return record['personalUnderstanding'] === true && typeof record['brandUsage'] === 'boolean';
 }
 
+function isTextAssetRightOperation(value: unknown): value is TextAssetRightOperation {
+  return value === 'revoke_brand_usage' || value === 'delete';
+}
+
 function sendTextAssetError(response: ServerResponse, error: unknown): void {
   if (error instanceof InvalidJsonBodyError || error instanceof TextAssetValidationError) {
     sendJson(response, 400, {
@@ -623,6 +691,10 @@ function sendTextAssetError(response: ServerResponse, error: unknown): void {
   }
   if (error instanceof TextAssetConflictError) {
     sendJson(response, 409, { error: 'asset_import_conflict' });
+    return;
+  }
+  if (error instanceof TextAssetNotFoundError) {
+    sendJson(response, 404, { error: 'asset_not_found' });
     return;
   }
   if (

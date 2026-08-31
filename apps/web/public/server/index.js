@@ -30,6 +30,9 @@ const memoryProposals = new Map();
 const memoryRightRequests = new Map();
 const auditEvents = new Map();
 const assetRequests = new Map();
+const assetRightRequests = new Map();
+const retiredAssetRequests = new Set();
+const retiredAssetContentHashes = new Set();
 const textAssets = new Map();
 
 const groundedActions = [
@@ -172,8 +175,14 @@ export default {
           ? json({ outcome: 'already_applied', persistence: 'ephemeral', record: repeated.record })
           : json({ error: 'asset_import_conflict' }, 409);
       }
+      if (retiredAssetRequests.has(body.requestId)) {
+        return json({ error: 'asset_import_conflict' }, 409);
+      }
       const integritySha256 = await sha256(normalized.content);
-      if ([...textAssets.values()].some((asset) => asset.integritySha256 === integritySha256)) {
+      if (
+        retiredAssetContentHashes.has(integritySha256) ||
+        [...textAssets.values()].some((asset) => asset.integritySha256 === integritySha256)
+      ) {
         return json({ error: 'asset_import_conflict' }, 409);
       }
       const record = {
@@ -204,6 +213,53 @@ export default {
         occurredAt: record.importedAt,
       });
       return json({ outcome: 'applied', persistence: 'ephemeral', record }, 201);
+    }
+
+    const assetRightMatch = url.pathname.match(/^\/api\/assets\/text\/([0-9a-f-]{36})\/rights$/i);
+    if (request.method === 'POST' && assetRightMatch?.[1]) {
+      const body = await readJson(request);
+      if (
+        typeof body?.requestId !== 'string' ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) ||
+        (body.operation !== 'revoke_brand_usage' && body.operation !== 'delete') ||
+        !validText(body.reason, 3, 500)
+      ) return json({ error: 'invalid_asset_right' }, 400);
+      const fingerprint = await sha256(JSON.stringify({
+        assetId: assetRightMatch[1], operation: body.operation, reason: body.reason.trim(),
+      }));
+      const repeated = assetRightRequests.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json({ ...repeated.result, outcome: 'already_applied' })
+          : json({ error: 'asset_import_conflict' }, 409);
+      }
+      const asset = textAssets.get(assetRightMatch[1]);
+      if (!asset) return json({ error: 'asset_not_found' }, 404);
+      if (body.operation === 'revoke_brand_usage') {
+        asset.permissions = { personalUnderstanding: true, brandUsage: false };
+      } else {
+        textAssets.delete(asset.assetId);
+        for (const [requestId, request] of assetRequests.entries()) {
+          if (request.record.assetId === asset.assetId) {
+            retiredAssetRequests.add(requestId);
+            assetRequests.delete(requestId);
+          }
+        }
+        retiredAssetContentHashes.add(asset.integritySha256);
+      }
+      const result = {
+        outcome: 'applied', persistence: 'ephemeral', assetId: asset.assetId,
+        operation: body.operation, brandUsage: false, deleted: body.operation === 'delete',
+        occurredAt: new Date().toISOString(),
+      };
+      assetRightRequests.set(body.requestId, { fingerprint, result });
+      recordAudit(`asset.right:${body.requestId}`, {
+        eventType: `asset.${body.operation}`, resourceType: 'asset', resourceId: asset.assetId,
+        purpose: 'personal_understanding', decision: body.operation,
+        metadata: { requestId: body.requestId, operation: body.operation, reason: body.reason.trim() },
+        occurredAt: result.occurredAt,
+      });
+      return json(result);
     }
 
     const draftRejection = url.pathname.match(/^\/api\/feedback\/drafts\/([0-9a-f-]{36})\/reject$/i);
@@ -716,7 +772,10 @@ function assetSnapshot() {
   return {
     generatedAt: new Date().toISOString(),
     persistence: 'ephemeral',
-    summary: { assets: records.length, evidenceItems: records.length, assertions: records.length },
+    summary: {
+      assets: records.length, evidenceItems: records.length, assertions: records.length,
+      dataRights: assetRightRequests.size,
+    },
     records,
   };
 }
@@ -726,6 +785,7 @@ function modelMaturity() {
   const memory = memorySnapshot();
   const activeMemory = memory.records.filter((record) => record.lifecycle.status === 'active');
   const controlledMemory = memory.records.some((record) => record.lifecycle.status !== 'active');
+  const exercisedDataControl = controlledMemory || assetRightRequests.size > 0;
   const sourceTypes = new Set([
     ...assets.records.map((record) => record.sourceType),
     ...activeMemory.flatMap((record) => record.provenance.sourceTypes),
@@ -734,7 +794,7 @@ function modelMaturity() {
     importedEvidence: Math.min(45, assets.summary.evidenceItems * 15),
     confirmedSelfReports: Math.min(30, activeMemory.length * 10),
     sourceDiversity: Math.min(15, sourceTypes.size * 8),
-    exercisedDataControl: controlledMemory ? 10 : 0,
+    exercisedDataControl: exercisedDataControl ? 10 : 0,
   };
   return {
     percent: Math.min(100, Object.values(components).reduce((total, value) => total + value, 0)),
@@ -1048,7 +1108,10 @@ function auditSnapshot() {
     summary: {
       total: auditEvents.size,
       approvals: events.filter((event) => event.decision === 'approved').length,
-      dataRights: events.filter((event) => event.eventType.startsWith('memory.')).length,
+      dataRights: events.filter((event) => (
+        event.eventType.startsWith('memory.') ||
+        event.eventType === 'asset.revoke_brand_usage' || event.eventType === 'asset.delete'
+      )).length,
       exports: events.filter((event) => event.eventType.endsWith('exported')).length,
     },
     events,

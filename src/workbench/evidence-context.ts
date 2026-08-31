@@ -69,7 +69,7 @@ export function calculateOwnerEvidenceContext(
     importedEvidence: Math.min(45, assets.summary.evidenceItems * 15),
     confirmedSelfReports: Math.min(30, activeMemory.length * 10),
     sourceDiversity: Math.min(15, sourceTypes.size * 8),
-    exercisedDataControl: controlledMemory ? 10 : 0,
+    exercisedDataControl: controlledMemory || assets.summary.dataRights > 0 ? 10 : 0,
   };
   const evidenceCount = assets.summary.evidenceItems + activeMemory.reduce(
     (total, record) => total + record.provenance.evidenceCount,

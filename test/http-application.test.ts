@@ -754,6 +754,7 @@ describe('operational endpoints', () => {
       }),
     }, dependencies);
     expect(grounded.status).toBe(201);
+    const groundedPayload = await grounded.json() as { record: { assetId: string } };
     const groundedSnapshot = await workbench.snapshot();
     expect(groundedSnapshot.evidence).toMatchObject({
       state: 'grounded', strategyEvidenceCount: 1, withheldEvidenceCount: 1,
@@ -761,8 +762,65 @@ describe('operational endpoints', () => {
     expect(groundedSnapshot.actions[0]).toMatchObject({
       id: 'conversation', evidenceState: 'grounded', interaction: 'approve',
     });
+
+    const revokeBody = {
+      requestId: 'asset_http_revoke_brand',
+      operation: 'revoke_brand_usage',
+      reason: 'دیگر در تحلیل برند استفاده نشود.',
+    };
+    const revoked = await request(
+      `/api/assets/text/${groundedPayload.record.assetId}/rights`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(revokeBody),
+      },
+      dependencies,
+    );
+    expect(revoked.status).toBe(200);
+    await expect(revoked.json()).resolves.toMatchObject({
+      outcome: 'applied', operation: 'revoke_brand_usage', brandUsage: false, deleted: false,
+    });
+    const repeatedRevoke = await request(
+      `/api/assets/text/${groundedPayload.record.assetId}/rights`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(revokeBody),
+      },
+      dependencies,
+    );
+    await expect(repeatedRevoke.json()).resolves.toMatchObject({ outcome: 'already_applied' });
+    expect((await workbench.snapshot()).evidence).toMatchObject({
+      state: 'insufficient', strategyEvidenceCount: 0, withheldEvidenceCount: 2,
+    });
+
+    const deleted = await request(
+      `/api/assets/text/${groundedPayload.record.assetId}/rights`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'asset_http_delete',
+          operation: 'delete',
+          reason: 'این منبع و مشتقات فعال آن حذف شوند.',
+        }),
+      },
+      dependencies,
+    );
+    await expect(deleted.json()).resolves.toMatchObject({ deleted: true });
+    const afterDelete = await request('/api/onboarding', () => ({ ready: true }), undefined, dependencies);
+    await expect(afterDelete.json()).resolves.toMatchObject({
+      modelMaturity: { components: { exercisedDataControl: 10 } },
+      assets: { summary: { assets: 1, evidenceItems: 1, assertions: 1, dataRights: 2 } },
+      strategyReadiness: { evidenceCount: 0, withheldEvidenceCount: 1 },
+    });
     const activity = await auditTrail.snapshot(owner, fixedTime);
     expect(activity.events.filter((event) => event.eventType === 'asset.text_imported')).toHaveLength(2);
+    expect(activity.summary.dataRights).toBe(2);
   });
 
   it('exposes an owner audit trail and a portable, auditable account export', async () => {

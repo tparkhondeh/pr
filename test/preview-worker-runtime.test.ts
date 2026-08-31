@@ -220,21 +220,43 @@ describe('private preview worker draft runtime', () => {
     };
     const assetResponse = await post('/api/assets/text', assetRequest);
     expect(assetResponse.status).toBe(201);
-    await expect(assetResponse.json()).resolves.toMatchObject({
+    const privateAsset = await assetResponse.json() as {
+      record: { assetId: string; sourceType: string; dataClass: string };
+    };
+    expect(privateAsset).toMatchObject({
       outcome: 'applied',
       record: { sourceType: 'text_asset', dataClass: 'confidential' },
     });
     const repeatedAsset = await post('/api/assets/text', assetRequest);
     expect(repeatedAsset.status).toBe(200);
     await expect(repeatedAsset.json()).resolves.toMatchObject({ outcome: 'already_applied' });
+    const revokedAsset = await post(`/api/assets/text/${approvedAsset.record.assetId}/rights`, {
+      requestId: 'asset_runtime_revoke_brand',
+      operation: 'revoke_brand_usage',
+      reason: 'این منبع دیگر برای تحلیل برند استفاده نشود.',
+    });
+    expect(revokedAsset.status).toBe(200);
+    await expect(revokedAsset.json()).resolves.toMatchObject({
+      operation: 'revoke_brand_usage', brandUsage: false, deleted: false,
+    });
+    const deletedAsset = await post(`/api/assets/text/${privateAsset.record.assetId}/rights`, {
+      requestId: 'asset_runtime_delete',
+      operation: 'delete',
+      reason: 'این منبع خصوصی حذف شود.',
+    });
+    expect(deletedAsset.status).toBe(200);
+    await expect(deletedAsset.json()).resolves.toMatchObject({ deleted: true });
+    const replayedDeletedAsset = await post('/api/assets/text', assetRequest);
+    expect(replayedDeletedAsset.status).toBe(409);
+    await expect(replayedDeletedAsset.json()).resolves.toEqual({ error: 'asset_import_conflict' });
     const onboardingResponse = await worker.fetch(
       new Request('https://preview.example/api/onboarding'),
       env,
     );
     await expect(onboardingResponse.json()).resolves.toMatchObject({
-      modelMaturity: { evidenceCount: 3 },
-      strategyReadiness: { ready: true, evidenceCount: 2, withheldEvidenceCount: 1 },
-      assets: { summary: { assets: 3, evidenceItems: 3, assertions: 3 } },
+      modelMaturity: { evidenceCount: 2, components: { exercisedDataControl: 10 } },
+      strategyReadiness: { ready: true, evidenceCount: 1, withheldEvidenceCount: 1 },
+      assets: { summary: { assets: 2, evidenceItems: 2, assertions: 2, dataRights: 2 } },
     });
 
     const accountExportResponse = await worker.fetch(

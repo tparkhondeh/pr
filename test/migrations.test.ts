@@ -58,6 +58,10 @@ const draftSourceMigrationPath = fileURLToPath(
   new URL('../db/migrations/0013_draft_source_provenance.sql', import.meta.url),
 );
 const draftSourceSql = readFileSync(draftSourceMigrationPath, 'utf8');
+const assetRightsMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0014_text_asset_rights.sql', import.meta.url),
+);
+const assetRightsSql = readFileSync(assetRightsMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -247,5 +251,14 @@ describe('foundation migration', () => {
     expect(draftSourceSql).toContain("source_kind IN ('memory', 'text_asset')");
     expect(draftSourceSql).toContain('ADD COLUMN approved_evidence_ids text[] NOT NULL');
     expect(draftSourceSql).toContain('CREATE INDEX draft_artifacts_source_idx');
+  });
+
+  it('adds idempotent tenant-isolated text asset rights requests', () => {
+    defineMigration('0014_text_asset_rights', assetRightsSql);
+    expect(assetRightsSql).toContain('CREATE TABLE app.asset_rights_requests');
+    expect(assetRightsSql).toContain("operation IN ('revoke_brand_usage', 'delete')");
+    expect(assetRightsSql).toContain('UNIQUE (tenant_id, owner_user_id, client_ref)');
+    expect(assetRightsSql).toContain('ALTER TABLE app.asset_rights_requests FORCE ROW LEVEL SECURITY');
+    expect(assetRightsSql).toContain('CREATE POLICY asset_rights_requests_tenant_isolation');
   });
 });

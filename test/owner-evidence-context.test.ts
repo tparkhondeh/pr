@@ -9,7 +9,7 @@ function assets(brandUsage: boolean): TextAssetSnapshot {
   return {
     generatedAt: at,
     persistence: 'memory',
-    summary: { assets: 1, evidenceItems: 1, assertions: 1 },
+    summary: { assets: 1, evidenceItems: 1, assertions: 1, dataRights: 0 },
     records: [{
       requestId: 'asset_context_one',
       assetId: 'asset_context_one',

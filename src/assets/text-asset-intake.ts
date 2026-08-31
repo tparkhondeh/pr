@@ -30,6 +30,7 @@ export type TextAssetSnapshot = Readonly<{
     assets: number;
     evidenceItems: number;
     assertions: number;
+    dataRights: number;
   }>;
   records: readonly TextAssetRecord[];
 }>;
@@ -52,15 +53,40 @@ export type TextAssetImportResult = Readonly<{
   persistence: 'memory' | 'postgres';
 }>;
 
+export type TextAssetRightOperation = 'revoke_brand_usage' | 'delete';
+
+export type TextAssetRightCommand = Readonly<{
+  tenantId: TenantId;
+  actorId: UserId;
+  requestId: string;
+  assetId: string;
+  operation: TextAssetRightOperation;
+  reason: string;
+  occurredAt: Date;
+}>;
+
+export type TextAssetRightResult = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  assetId: string;
+  operation: TextAssetRightOperation;
+  brandUsage: false;
+  deleted: boolean;
+  occurredAt: Date;
+  persistence: 'memory' | 'postgres';
+}>;
+
 export interface TextAssetRepository {
   readonly persistence: 'memory' | 'postgres';
   importText(command: TextAssetImportCommand): Promise<Omit<TextAssetImportResult, 'persistence'>>;
+  applyRight(command: TextAssetRightCommand): Promise<Omit<TextAssetRightResult, 'persistence'>>;
   list(tenantId: TenantId, actorId: UserId): Promise<readonly TextAssetRecord[]>;
+  rightsCount(tenantId: TenantId, actorId: UserId): Promise<number>;
 }
 
 export class TextAssetValidationError extends Error {}
 export class TextAssetPermissionError extends Error {}
 export class TextAssetConflictError extends Error {}
+export class TextAssetNotFoundError extends Error {}
 
 export class TextAssetIntakeService {
   public constructor(
@@ -75,12 +101,22 @@ export class TextAssetIntakeService {
     return { ...result, persistence: this.repository.persistence };
   }
 
+  public async applyRight(input: Omit<TextAssetRightCommand, 'tenantId'>): Promise<TextAssetRightResult> {
+    this.assertOwner(input.actorId);
+    const command = normalizeRightCommand({ ...input, tenantId: this.identity.tenantId });
+    const result = await this.repository.applyRight(command);
+    return { ...result, persistence: this.repository.persistence };
+  }
+
   public async snapshot(actorId: UserId, generatedAt: Date): Promise<TextAssetSnapshot> {
     this.assertOwner(actorId);
     if (Number.isNaN(generatedAt.getTime())) {
       throw new TextAssetValidationError('Asset snapshot time is invalid.');
     }
-    const records = await this.repository.list(this.identity.tenantId, actorId);
+    const [records, dataRights] = await Promise.all([
+      this.repository.list(this.identity.tenantId, actorId),
+      this.repository.rightsCount(this.identity.tenantId, actorId),
+    ]);
     return {
       generatedAt,
       persistence: this.repository.persistence,
@@ -88,6 +124,7 @@ export class TextAssetIntakeService {
         assets: records.length,
         evidenceItems: new Set(records.map((record) => record.evidenceId)).size,
         assertions: new Set(records.map((record) => record.assertionId)).size,
+        dataRights,
       },
       records,
     };
@@ -103,11 +140,20 @@ type StoredRequest = Readonly<{ fingerprint: string; record: TextAssetRecord }>;
 export class InMemoryTextAssetRepository implements TextAssetRepository {
   public readonly persistence = 'memory' as const;
   readonly #requests = new Map<string, StoredRequest>();
+  readonly #assetKeys = new Map<string, string>();
+  readonly #retiredRequests = new Map<string, string>();
+  readonly #rightRequests = new Map<string, Readonly<{
+    fingerprint: string;
+    result: Omit<TextAssetRightResult, 'persistence'>;
+  }>>();
   readonly #contentHashes = new Set<string>();
 
   public importText(command: TextAssetImportCommand): Promise<Omit<TextAssetImportResult, 'persistence'>> {
     const key = `${command.tenantId}:${command.actorId}:${command.requestId}`;
     const fingerprint = commandFingerprint(command);
+    if (this.#retiredRequests.has(key)) {
+      return Promise.reject(new TextAssetConflictError('Deleted asset import cannot be replayed.'));
+    }
     const existing = this.#requests.get(key);
     if (existing) {
       if (existing.fingerprint !== fingerprint) {
@@ -136,7 +182,46 @@ export class InMemoryTextAssetRepository implements TextAssetRepository {
     };
     this.#contentHashes.add(`${command.tenantId}:${integritySha256}`);
     this.#requests.set(key, { fingerprint, record });
+    this.#assetKeys.set(`${command.tenantId}:${command.actorId}:${record.assetId}`, key);
     return Promise.resolve({ outcome: 'applied', record });
+  }
+
+  public applyRight(command: TextAssetRightCommand): Promise<Omit<TextAssetRightResult, 'persistence'>> {
+    const rightKey = `${command.tenantId}:${command.actorId}:${command.requestId}`;
+    const fingerprint = rightCommandFingerprint(command);
+    const repeated = this.#rightRequests.get(rightKey);
+    if (repeated) {
+      if (repeated.fingerprint !== fingerprint) {
+        return Promise.reject(new TextAssetConflictError('Asset right request has conflicting content.'));
+      }
+      return Promise.resolve({ ...repeated.result, outcome: 'already_applied' });
+    }
+    const assetKey = `${command.tenantId}:${command.actorId}:${command.assetId}`;
+    const importKey = this.#assetKeys.get(assetKey);
+    const stored = importKey ? this.#requests.get(importKey) : undefined;
+    if (!importKey || !stored) return Promise.reject(new TextAssetNotFoundError());
+
+    if (command.operation === 'revoke_brand_usage') {
+      const record: TextAssetRecord = {
+        ...stored.record,
+        permissions: { personalUnderstanding: true, brandUsage: false },
+      };
+      this.#requests.set(importKey, { ...stored, record });
+    } else {
+      this.#requests.delete(importKey);
+      this.#assetKeys.delete(assetKey);
+      this.#retiredRequests.set(importKey, stored.fingerprint);
+    }
+    const result: Omit<TextAssetRightResult, 'persistence'> = {
+      outcome: 'applied',
+      assetId: command.assetId,
+      operation: command.operation,
+      brandUsage: false,
+      deleted: command.operation === 'delete',
+      occurredAt: command.occurredAt,
+    };
+    this.#rightRequests.set(rightKey, { fingerprint, result });
+    return Promise.resolve(result);
   }
 
   public list(tenantId: TenantId, actorId: UserId): Promise<readonly TextAssetRecord[]> {
@@ -148,11 +233,29 @@ export class InMemoryTextAssetRepository implements TextAssetRepository {
         .sort((left, right) => right.importedAt.getTime() - left.importedAt.getTime()),
     );
   }
+
+  public rightsCount(tenantId: TenantId, actorId: UserId): Promise<number> {
+    const prefix = `${tenantId}:${actorId}:`;
+    return Promise.resolve([...this.#rightRequests.keys()].filter((key) => key.startsWith(prefix)).length);
+  }
 }
 
 type RequestRow = Readonly<{
   request_sha256: string;
   result_snapshot: unknown;
+  asset_deleted_at: Date | string | null;
+}>;
+
+type RightRequestRow = Readonly<{
+  request_sha256: string;
+  result_snapshot: unknown;
+}>;
+
+type RightAssetRow = Readonly<{
+  request_id: string;
+  assertion_id: string;
+  result_snapshot: unknown;
+  asset_deleted_at: Date | string | null;
 }>;
 
 type AssetRow = Readonly<{
@@ -188,15 +291,22 @@ export class PostgresTextAssetRepository implements TextAssetRepository {
       ]);
       const fingerprint = commandFingerprint(command);
       const existing = await transaction.query<RequestRow>(
-        `SELECT request_sha256, result_snapshot
-           FROM app.asset_intake_requests
-          WHERE tenant_id = $1 AND owner_user_id = $2 AND client_ref = $3`,
+        `SELECT request.request_sha256, request.result_snapshot,
+                asset.deleted_at AS asset_deleted_at
+           FROM app.asset_intake_requests request
+           JOIN app.assets asset
+             ON asset.tenant_id = request.tenant_id AND asset.id = request.asset_id
+          WHERE request.tenant_id = $1 AND request.owner_user_id = $2
+            AND request.client_ref = $3`,
         [this.context.tenantId, this.context.ownerUserId, command.requestId],
       );
       const existingRow = existing.rows[0];
       if (existingRow) {
         if (existingRow.request_sha256 !== fingerprint) {
           throw new TextAssetConflictError('Asset request ID has conflicting content.');
+        }
+        if (existingRow.asset_deleted_at) {
+          throw new TextAssetConflictError('Deleted asset import cannot be replayed.');
         }
         return { outcome: 'already_applied', record: recordFromSnapshot(existingRow.result_snapshot) };
       }
@@ -326,6 +436,168 @@ export class PostgresTextAssetRepository implements TextAssetRepository {
     });
   }
 
+  public applyRight(command: TextAssetRightCommand): Promise<Omit<TextAssetRightResult, 'persistence'>> {
+    this.assertContext(command);
+    return this.runner.transaction(async (transaction) => {
+      await setTenantContext(transaction, this.context.tenantId);
+      await transaction.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
+        `${this.context.tenantId}:${this.context.ownerUserId}:asset-right:${command.requestId}`,
+      ]);
+      const fingerprint = rightCommandFingerprint(command);
+      const repeated = await transaction.query<RightRequestRow>(
+        `SELECT request_sha256, result_snapshot
+           FROM app.asset_rights_requests
+          WHERE tenant_id = $1 AND owner_user_id = $2 AND client_ref = $3`,
+        [this.context.tenantId, this.context.ownerUserId, command.requestId],
+      );
+      const repeatedRow = repeated.rows[0];
+      if (repeatedRow) {
+        if (repeatedRow.request_sha256 !== fingerprint) {
+          throw new TextAssetConflictError('Asset right request has conflicting content.');
+        }
+        return { ...rightResultFromSnapshot(repeatedRow.result_snapshot), outcome: 'already_applied' };
+      }
+
+      const source = await transaction.query<RightAssetRow>(
+        `SELECT request.id::text AS request_id,
+                request.assertion_id::text AS assertion_id,
+                request.result_snapshot,
+                asset.deleted_at AS asset_deleted_at
+           FROM app.asset_intake_requests request
+           JOIN app.assets asset
+             ON asset.tenant_id = request.tenant_id AND asset.id = request.asset_id
+          WHERE request.tenant_id = $1 AND request.owner_user_id = $2
+            AND request.asset_id = $3::uuid`,
+        [this.context.tenantId, this.context.ownerUserId, command.assetId],
+      );
+      const sourceRow = source.rows[0];
+      if (!sourceRow || sourceRow.asset_deleted_at) throw new TextAssetNotFoundError();
+      const record = recordFromSnapshot(sourceRow.result_snapshot);
+      const audience = `assertion:${sourceRow.assertion_id}`;
+      const result: Omit<TextAssetRightResult, 'persistence'> = {
+        outcome: 'applied',
+        assetId: command.assetId,
+        operation: command.operation,
+        brandUsage: false,
+        deleted: command.operation === 'delete',
+        occurredAt: command.occurredAt,
+      };
+
+      if (command.operation === 'revoke_brand_usage') {
+        const updatedRecord: TextAssetRecord = {
+          ...record,
+          permissions: { personalUnderstanding: true, brandUsage: false },
+        };
+        await transaction.query(
+          `UPDATE app.asset_intake_requests
+              SET result_snapshot = $4::jsonb
+            WHERE tenant_id = $1 AND owner_user_id = $2 AND asset_id = $3::uuid`,
+          [
+            this.context.tenantId,
+            this.context.ownerUserId,
+            command.assetId,
+            JSON.stringify(serializeRecord(updatedRecord)),
+          ],
+        );
+        await transaction.query(
+          `UPDATE app.consent_grants
+              SET revoked_at = $4
+            WHERE tenant_id = $1 AND subject_user_id = $2
+              AND audience = $3 AND purpose = 'brand_usage'
+              AND revoked_at IS NULL`,
+          [this.context.tenantId, this.context.ownerUserId, audience, command.occurredAt],
+        );
+      } else {
+        await transaction.query(
+          `UPDATE app.assets SET deleted_at = $4
+            WHERE tenant_id = $1 AND owner_user_id = $2 AND id = $3::uuid`,
+          [this.context.tenantId, this.context.ownerUserId, command.assetId, command.occurredAt],
+        );
+        await transaction.query(
+          `UPDATE app.evidence_items SET deleted_at = $4
+            WHERE tenant_id = $1 AND id = $3::uuid
+              AND asset_id = $2::uuid`,
+          [this.context.tenantId, record.assetId, record.evidenceId, command.occurredAt],
+        );
+        await transaction.query(
+          `UPDATE app.assertions SET deleted_at = $4, valid_to = COALESCE(valid_to, $4)
+            WHERE tenant_id = $1 AND subject_ref = $2 AND id = $3::uuid`,
+          [this.context.tenantId, this.context.ownerUserId, record.assertionId, command.occurredAt],
+        );
+        await transaction.query(
+          `UPDATE app.consent_grants
+              SET revoked_at = $4
+            WHERE tenant_id = $1 AND subject_user_id = $2
+              AND audience = $3 AND revoked_at IS NULL`,
+          [this.context.tenantId, this.context.ownerUserId, audience, command.occurredAt],
+        );
+        await transaction.query(
+          `UPDATE app.asset_intake_requests
+              SET result_snapshot = $4::jsonb
+            WHERE tenant_id = $1 AND owner_user_id = $2 AND asset_id = $3::uuid`,
+          [
+            this.context.tenantId,
+            this.context.ownerUserId,
+            command.assetId,
+            JSON.stringify({ assetId: command.assetId, deleted: true, deletedAt: command.occurredAt.toISOString() }),
+          ],
+        );
+      }
+
+      await transaction.query(
+        `INSERT INTO app.asset_rights_requests (
+           tenant_id, owner_user_id, client_ref, request_sha256, asset_id,
+           operation, reason, result_snapshot, created_at
+         ) VALUES ($1, $2, $3, $4, $5::uuid, $6, $7, $8::jsonb, $9)`,
+        [
+          this.context.tenantId,
+          this.context.ownerUserId,
+          command.requestId,
+          fingerprint,
+          command.assetId,
+          command.operation,
+          command.reason,
+          JSON.stringify(serializeRightResult(result)),
+          command.occurredAt,
+        ],
+      );
+      const metadata = JSON.stringify({
+        requestId: command.requestId,
+        operation: command.operation,
+        reason: command.reason,
+        deleted: result.deleted,
+      });
+      await transaction.query(
+        `INSERT INTO app.audit_events (
+           tenant_id, actor_user_id, event_type, resource_type, resource_id,
+           purpose, decision, metadata, occurred_at
+         ) VALUES ($1, $2, $3, 'asset', $4, 'personal_understanding', $5, $6::jsonb, $7)`,
+        [
+          this.context.tenantId,
+          this.context.ownerUserId,
+          `asset.${command.operation}`,
+          command.assetId,
+          command.operation,
+          metadata,
+          command.occurredAt,
+        ],
+      );
+      await transaction.query(
+        `INSERT INTO app.outbox_events (
+           tenant_id, aggregate_type, aggregate_id, event_type, payload, available_at
+         ) VALUES ($1, 'asset', $2, $3, $4::jsonb, $5)`,
+        [
+          this.context.tenantId,
+          command.assetId,
+          `asset.${command.operation}`,
+          metadata,
+          command.occurredAt,
+        ],
+      );
+      return result;
+    });
+  }
+
   public list(tenantId: TenantId, actorId: UserId): Promise<readonly TextAssetRecord[]> {
     if (tenantId !== this.context.tenantId || actorId !== this.context.ownerUserId) {
       return Promise.reject(new TextAssetPermissionError());
@@ -358,7 +630,25 @@ export class PostgresTextAssetRepository implements TextAssetRepository {
     });
   }
 
-  private assertContext(command: TextAssetImportCommand): void {
+  public rightsCount(tenantId: TenantId, actorId: UserId): Promise<number> {
+    if (tenantId !== this.context.tenantId || actorId !== this.context.ownerUserId) {
+      return Promise.reject(new TextAssetPermissionError());
+    }
+    return this.runner.transaction(async (transaction) => {
+      await setTenantContext(transaction, this.context.tenantId);
+      const result = await transaction.query<{ count: string | number }>(
+        `SELECT count(*) AS count
+           FROM app.asset_rights_requests
+          WHERE tenant_id = $1 AND owner_user_id = $2`,
+        [this.context.tenantId, this.context.ownerUserId],
+      );
+      const count = Number(result.rows[0]?.count ?? 0);
+      if (!Number.isSafeInteger(count) || count < 0) throw new Error('Invalid asset rights count.');
+      return count;
+    });
+  }
+
+  private assertContext(command: Readonly<{ tenantId: TenantId; actorId: UserId }>): void {
     if (command.tenantId !== this.context.tenantId || command.actorId !== this.context.ownerUserId) {
       throw new TextAssetPermissionError();
     }
@@ -394,6 +684,21 @@ function normalizeCommand(command: TextAssetImportCommand): TextAssetImportComma
   return { ...command, title, content, assertionText };
 }
 
+function normalizeRightCommand(command: TextAssetRightCommand): TextAssetRightCommand {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/u.test(command.requestId)) {
+    throw new TextAssetValidationError('Asset right request ID is invalid.');
+  }
+  if (!command.assetId.trim()) throw new TextAssetValidationError('Asset ID is required.');
+  const reason = command.reason.trim();
+  if (reason.length < 3 || reason.length > 500) {
+    throw new TextAssetValidationError('Asset right reason must be 3-500 characters.');
+  }
+  if (Number.isNaN(command.occurredAt.getTime())) {
+    throw new TextAssetValidationError('Asset right date is invalid.');
+  }
+  return { ...command, assetId: command.assetId.trim(), reason };
+}
+
 function commandFingerprint(command: TextAssetImportCommand): string {
   return textSha256(JSON.stringify({
     tenantId: command.tenantId,
@@ -406,6 +711,16 @@ function commandFingerprint(command: TextAssetImportCommand): string {
   }));
 }
 
+function rightCommandFingerprint(command: TextAssetRightCommand): string {
+  return textSha256(JSON.stringify({
+    tenantId: command.tenantId,
+    actorId: command.actorId,
+    assetId: command.assetId,
+    operation: command.operation,
+    reason: command.reason,
+  }));
+}
+
 function textSha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -415,6 +730,33 @@ function serializeRecord(record: TextAssetRecord): Record<string, unknown> {
     ...record,
     occurredAt: record.occurredAt.toISOString(),
     importedAt: record.importedAt.toISOString(),
+  };
+}
+
+function serializeRightResult(
+  result: Omit<TextAssetRightResult, 'persistence'>,
+): Record<string, unknown> {
+  return { ...result, occurredAt: result.occurredAt.toISOString() };
+}
+
+function rightResultFromSnapshot(value: unknown): Omit<TextAssetRightResult, 'persistence'> {
+  if (!isRecord(value)) throw new Error('Stored asset right result is invalid.');
+  const operation = value['operation'];
+  if (
+    typeof value['assetId'] !== 'string' ||
+    (operation !== 'revoke_brand_usage' && operation !== 'delete') ||
+    value['brandUsage'] !== false ||
+    typeof value['deleted'] !== 'boolean'
+  ) {
+    throw new Error('Stored asset right result is invalid.');
+  }
+  return {
+    outcome: value['outcome'] === 'already_applied' ? 'already_applied' : 'applied',
+    assetId: value['assetId'],
+    operation,
+    brandUsage: false,
+    deleted: value['deleted'],
+    occurredAt: toDate(value['occurredAt'], 'Asset right'),
   };
 }
 
