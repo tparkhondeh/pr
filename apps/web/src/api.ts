@@ -133,6 +133,38 @@ export type DraftExport = Readonly<{
   draft: DraftWorkspaceSnapshot;
 }>;
 
+export type PreferenceDecision = 'applied' | 'rejected' | 'revoked';
+
+export type FeedbackLearningSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  summary: Readonly<{
+    recentEvents: number;
+    proposed: number;
+    applied: number;
+  }>;
+  recentEvents: readonly Readonly<{
+    id: string;
+    artifactType: string;
+    artifactId: string;
+    eventType: 'accepted' | 'rejected' | 'edited' | 'regret' | 'energy_report';
+    signalKey?: string;
+    signalValue?: unknown;
+    occurredAt: string;
+  }>[];
+  preferences: readonly Readonly<{
+    id: string;
+    preferenceKey: string;
+    proposedValue: unknown;
+    evidenceEventIds: readonly string[];
+    rationale: string;
+    confidence: number;
+    status: 'proposed' | 'applied' | 'rejected' | 'revoked';
+    proposedAt: string;
+    decidedAt?: string;
+  }>[];
+}>;
+
 export type ConversationTurnResult = Readonly<{
   assistantMessage: string;
   followUpQuestion: string;
@@ -339,6 +371,43 @@ export async function exportDraft(input: Readonly<{
   return payload as DraftExport;
 }
 
+export async function loadFeedbackLearning(signal?: AbortSignal): Promise<FeedbackLearningSnapshot> {
+  const payload = await requestJson('/api/feedback', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isFeedbackLearningSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function rejectDraftFeedback(input: Readonly<{
+  draftId: string;
+  requestId: string;
+  reason: string;
+}>): Promise<FeedbackLearningSnapshot> {
+  const payload = await requestJson(`/api/feedback/drafts/${encodeURIComponent(input.draftId)}/reject`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: input.requestId, reason: input.reason }),
+  });
+  if (!isFeedbackLearningSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function decideLearnedPreference(input: Readonly<{
+  proposalId: string;
+  requestId: string;
+  decision: PreferenceDecision;
+}>): Promise<FeedbackLearningSnapshot> {
+  const payload = await requestJson(`/api/feedback/preferences/${encodeURIComponent(input.proposalId)}/decision`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: input.requestId, decision: input.decision }),
+  });
+  if (!isFeedbackLearningSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
 export async function approveWorkbenchAction(actionId: string): Promise<WorkbenchSnapshot> {
   return requestWorkbench('/api/workbench/approval', {
     method: 'POST',
@@ -514,6 +583,24 @@ function isDraftWorkspaceSnapshot(payload: unknown): payload is DraftWorkspaceSn
     payload['publicDraftingConsent'] === true && typeof payload['sourceAvailable'] === 'boolean' &&
     typeof payload['staleStrategy'] === 'boolean' && typeof payload['updatedAt'] === 'string' &&
     (payload['persistence'] === 'memory' || payload['persistence'] === 'postgres' || payload['persistence'] === 'ephemeral')
+  );
+}
+
+function isFeedbackLearningSnapshot(payload: unknown): payload is FeedbackLearningSnapshot {
+  if (!isRecord(payload) || !isRecord(payload['summary']) ||
+      !Array.isArray(payload['recentEvents']) || !Array.isArray(payload['preferences'])) return false;
+  const summary = payload['summary'];
+  return (
+    typeof payload['generatedAt'] === 'string' &&
+    (payload['persistence'] === 'memory' || payload['persistence'] === 'postgres' || payload['persistence'] === 'ephemeral') &&
+    typeof summary['recentEvents'] === 'number' && typeof summary['proposed'] === 'number' &&
+    typeof summary['applied'] === 'number' &&
+    payload['recentEvents'].every((event) => isRecord(event) && typeof event['id'] === 'string' &&
+      typeof event['artifactId'] === 'string' && typeof event['eventType'] === 'string' && typeof event['occurredAt'] === 'string') &&
+    payload['preferences'].every((preference) => isRecord(preference) && typeof preference['id'] === 'string' &&
+      typeof preference['preferenceKey'] === 'string' && Array.isArray(preference['evidenceEventIds']) &&
+      typeof preference['rationale'] === 'string' && typeof preference['confidence'] === 'number' &&
+      typeof preference['status'] === 'string' && typeof preference['proposedAt'] === 'string')
   );
 }
 

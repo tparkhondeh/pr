@@ -84,3 +84,13 @@ Approval و Export را متوقف می‌کند. API این جریان از `GE
 `POST /api/drafts`، `PUT /api/drafts/:id`، `POST /api/drafts/:id/approve` و
 `POST /api/drafts/:id/export` تشکیل شده است. انتشار مستقیم در این مرحله عمداً وجود
 ندارد و Export فایل متنی آخرین Human-in-the-Loop است.
+
+هر ذخیره ویرایش Draft به Feedback Engine متصل است. سیستم فقط تغییرهای مادی و
+توضیح‌پذیر مانند کوتاه‌کردن متن/تیتر، کاهش میان‌تیتر یا حذف پرسش پایانی را به‌عنوان
+Signal ثبت می‌کند. یک Edit یا Reject منفرد Voice Model را تغییر نمی‌دهد؛ پس از دست‌کم
+سه Signal هم‌جهت، یک Preference Proposal همراه Evidence و Confidence ساخته می‌شود.
+کاربر از نمای «یادگیری» می‌تواند Proposal را Apply یا Reject کند و هر Preference
+اعمال‌شده را بعداً Revoke کند. Preference اعمال‌شده در Draft بعدی Adaptation را جهت
+می‌دهد، اما Guard ادعا و تأیید انسانی را دور نمی‌زند. مسیرهای این بخش
+`GET /api/feedback`، `POST /api/feedback/drafts/:id/reject` و
+`POST /api/feedback/preferences/:id/decision` هستند.

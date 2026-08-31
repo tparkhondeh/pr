@@ -17,6 +17,15 @@ import {
   MemoryProposalPermissionError,
 } from '../conversation/intake.js';
 import type { ConversationIntakeService } from '../conversation/intake.js';
+import {
+  FeedbackConflictError,
+  FeedbackNotFoundError,
+  FeedbackPermissionError,
+  FeedbackValidationError,
+  type FeedbackLearningService,
+  type FeedbackLearningSnapshot,
+  type PreferenceDecision,
+} from '../feedback/workspace.js';
 import type { TenantId, UserId } from '../kernel/identity.js';
 import {
   StrategyContextConflictError,
@@ -40,6 +49,7 @@ export type ApplicationDependencies = Readonly<{
   workbench?: Pick<WorkbenchService, 'snapshot' | 'approve'>;
   strategy?: Pick<StrategyContextService, 'snapshot' | 'save'>;
   drafts?: Pick<ContentDraftService, 'snapshot' | 'create' | 'edit' | 'approve' | 'export'>;
+  learning?: Pick<FeedbackLearningService, 'snapshot' | 'rejectDraft' | 'decide'>;
   resolveActor?: (request: IncomingMessage) => UserId | undefined;
   tenantId?: TenantId;
   conversation?: Pick<
@@ -101,6 +111,23 @@ export function createRequestHandler(
 
     if (request.method === 'GET' && path === '/api/drafts/current') {
       await handleDraftSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/feedback') {
+      await handleFeedbackSnapshot(request, response, dependencies);
+      return;
+    }
+
+    const draftRejection = path.match(/^\/api\/feedback\/drafts\/([0-9a-f-]{36})\/reject$/iu);
+    if (request.method === 'POST' && draftRejection?.[1]) {
+      await handleDraftRejection(request, response, dependencies, draftRejection[1]);
+      return;
+    }
+
+    const preferenceDecision = path.match(/^\/api\/feedback\/preferences\/([0-9a-f-]{36})\/decision$/iu);
+    if (request.method === 'POST' && preferenceDecision?.[1]) {
+      await handlePreferenceDecision(request, response, dependencies, preferenceDecision[1]);
       return;
     }
 
@@ -167,6 +194,159 @@ export function createRequestHandler(
 
     sendJson(response, 404, { error: 'not_found' });
   };
+}
+
+async function handleFeedbackSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = feedbackActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.learning?.snapshot(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Learning service disappeared.');
+    sendJson(response, 200, serializeFeedback(snapshot));
+  } catch (error: unknown) {
+    sendFeedbackError(response, error);
+  }
+}
+
+async function handleDraftRejection(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+  draftId: string,
+): Promise<void> {
+  const actorId = feedbackActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const reason = body['reason'];
+    if (typeof requestId !== 'string' || typeof reason !== 'string') {
+      sendJson(response, 400, { error: 'invalid_feedback_input' });
+      return;
+    }
+    const draft = await dependencies.drafts?.snapshot(actorId, now(dependencies));
+    if (!draft || draft.draftId !== draftId) {
+      sendJson(response, 404, { error: 'draft_not_found' });
+      return;
+    }
+    const snapshot = await dependencies.learning?.rejectDraft({
+      actorId,
+      requestId,
+      draftId,
+      reason,
+      occurredAt: now(dependencies),
+    });
+    if (!snapshot) throw new Error('Learning service disappeared.');
+    sendJson(response, 200, serializeFeedback(snapshot));
+  } catch (error: unknown) {
+    sendFeedbackError(response, error);
+  }
+}
+
+async function handlePreferenceDecision(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+  proposalId: string,
+): Promise<void> {
+  const actorId = feedbackActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const decision = body['decision'];
+    if (typeof requestId !== 'string' || !isPreferenceDecision(decision)) {
+      sendJson(response, 400, { error: 'invalid_feedback_input' });
+      return;
+    }
+    const snapshot = await dependencies.learning?.decide({
+      actorId,
+      requestId,
+      proposalId,
+      decision,
+      occurredAt: now(dependencies),
+    });
+    if (!snapshot) throw new Error('Learning service disappeared.');
+    sendJson(response, 200, serializeFeedback(snapshot));
+  } catch (error: unknown) {
+    sendFeedbackError(response, error);
+  }
+}
+
+function feedbackActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.learning) {
+    sendJson(response, 503, { error: 'feedback_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function serializeFeedback(snapshot: FeedbackLearningSnapshot): Record<string, unknown> {
+  return {
+    generatedAt: snapshot.generatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    summary: snapshot.summary,
+    recentEvents: snapshot.recentEvents.map((event) => ({
+      id: event.id,
+      artifactType: event.artifactType,
+      artifactId: event.artifactId,
+      eventType: event.eventType,
+      ...(event.signalKey ? { signalKey: event.signalKey, signalValue: event.signalValue } : {}),
+      occurredAt: event.occurredAt.toISOString(),
+    })),
+    preferences: snapshot.preferences.map((preference) => ({
+      id: preference.id,
+      preferenceKey: preference.preferenceKey,
+      proposedValue: preference.proposedValue,
+      evidenceEventIds: preference.evidenceEventIds,
+      rationale: preference.rationale,
+      confidence: preference.confidence,
+      status: preference.status,
+      proposedAt: preference.proposedAt.toISOString(),
+      ...(preference.decidedAt ? { decidedAt: preference.decidedAt.toISOString() } : {}),
+    })),
+  };
+}
+
+function sendFeedbackError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof FeedbackValidationError) {
+    sendJson(response, 400, { error: error instanceof InvalidJsonBodyError ? error.code : 'invalid_feedback_input' });
+    return;
+  }
+  if (error instanceof FeedbackPermissionError) {
+    sendJson(response, 403, { error: 'feedback_permission_denied' });
+    return;
+  }
+  if (error instanceof FeedbackNotFoundError) {
+    sendJson(response, 404, { error: 'preference_not_found' });
+    return;
+  }
+  if (error instanceof FeedbackConflictError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  sendJson(response, 500, { error: 'feedback_failed' });
+}
+
+function isPreferenceDecision(value: unknown): value is PreferenceDecision {
+  return value === 'applied' || value === 'rejected' || value === 'revoked';
+}
+
+function now(dependencies: ApplicationDependencies): Date {
+  return (dependencies.clock ?? (() => new Date()))();
 }
 
 async function handleDraftSnapshot(

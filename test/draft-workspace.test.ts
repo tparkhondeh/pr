@@ -8,6 +8,10 @@ import {
 } from '../src/claims/workspace.js';
 import { ConversationIntakeService } from '../src/conversation/intake.js';
 import type { SqlQueryResult, SqlTransaction, SqlTransactionRunner } from '../src/database/sql.js';
+import {
+  FeedbackLearningService,
+  InMemoryFeedbackLearningRepository,
+} from '../src/feedback/workspace.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
 import {
   InMemoryStrategyContextRepository,
@@ -52,14 +56,19 @@ async function fixture() {
     confirmedAt: now,
   });
   await workbench.approve('essay', owner, now);
+  const learning = new FeedbackLearningService(
+    new InMemoryFeedbackLearningRepository(),
+    { tenantId: tenant, ownerUserId: owner },
+  );
   const service = new ContentDraftService(
     new InMemoryDraftWorkspaceRepository(),
     { tenantId: tenant, ownerUserId: owner },
     conversation,
     workbench,
     strategy,
+    learning,
   );
-  return { service, conversation, proposalId: turn.memoryProposal.id };
+  return { service, conversation, learning, proposalId: turn.memoryProposal.id };
 }
 
 describe('evidence-bound draft workspace', () => {
@@ -140,6 +149,31 @@ describe('evidence-bound draft workspace', () => {
       publicDraftingConsent: false,
       occurredAt: now,
     })).rejects.toThrow('Explicit public drafting consent');
+  });
+
+  it('records an edit as owner feedback without auto-applying a preference', async () => {
+    const { service, learning, proposalId } = await fixture();
+    const created = await service.create({
+      actorId: owner,
+      requestId: 'draft_feedback_create',
+      sourceProposalId: proposalId,
+      channel: 'linkedin',
+      narrativeAngle: 'یک تیتر طولانی برای ثبت الگوی ویرایش کاربر',
+      takeaway: 'یک برداشت شخصی و قابل‌ردیابی که برای آزمون به اندازه کافی توضیح دارد. '.repeat(8),
+      publicDraftingConsent: true,
+      occurredAt: now,
+    });
+    await service.edit({
+      actorId: owner,
+      requestId: 'draft_feedback_edit',
+      draftId: created.snapshot.draftId,
+      expectedRevision: created.snapshot.revision,
+      body: `تیتر کوتاه\n\n${created.snapshot.source.statement}\n\nیک برداشت کوتاه و صادقانه.`,
+      occurredAt: now,
+    });
+    const feedback = await learning.snapshot(owner, now);
+    expect(feedback.recentEvents.some((event) => event.eventType === 'edited')).toBe(true);
+    expect(feedback.summary.applied).toBe(0);
   });
 });
 

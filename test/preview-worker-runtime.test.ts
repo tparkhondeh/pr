@@ -45,8 +45,8 @@ describe('private preview worker draft runtime', () => {
       requestId: 'draft_runtime_create',
       sourceProposalId: proposalId,
       channel: 'linkedin',
-      narrativeAngle: 'وقتی شفافیت از قطعیت مهم‌تر است',
-      takeaway: 'گفت‌وگوی مستقیم می‌تواند ابهام را به یک تصمیم مسئولانه تبدیل کند.',
+      narrativeAngle: 'وقتی شفافیت از نمایش قطعیت مهم‌تر است و تصمیم مسئولانه می‌سازد',
+      takeaway: 'گفت‌وگوی مستقیم می‌تواند ابهام را به یک تصمیم مسئولانه تبدیل کند. '.repeat(20),
       publicDraftingConsent: true,
     };
     const createdResponse = await post('/api/drafts', createRequest);
@@ -58,9 +58,40 @@ describe('private preview worker draft runtime', () => {
     };
     expect(created.status).toBe('awaiting_approval');
 
+    let edited = created;
+    const statement = 'در یک پروژه واقعی، ابهام را با گفت‌وگوی مستقیم به تصمیم قابل اجرا تبدیل کردم.';
+    for (const [index, repeat] of [32, 20, 11].entries()) {
+      const editedResponse = await worker.fetch(
+        new Request(`https://preview.example/api/drafts/${created.draftId}`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: `draft_runtime_edit_${String(index)}`,
+            expectedRevision: edited.revision,
+            body: `تیتر کوتاه\n\n${statement}\n\n${'برداشت روشن و صادقانه. '.repeat(repeat)}`,
+          }),
+        }),
+        env,
+      );
+      expect(editedResponse.status).toBe(200);
+      edited = await editedResponse.json() as typeof created;
+    }
+    const feedbackResponse = await worker.fetch(new Request('https://preview.example/api/feedback'), env);
+    const feedback = await feedbackResponse.json() as {
+      summary: { proposed: number };
+      preferences: Array<{ id: string; preferenceKey: string }>;
+    };
+    expect(feedback.summary.proposed).toBeGreaterThan(0);
+    const preference = feedback.preferences.find((item) => item.preferenceKey === 'voice.draft_length');
+    if (!preference) throw new Error('Expected preview preference proposal.');
+    expect((await post(`/api/feedback/preferences/${preference.id}/decision`, {
+      requestId: 'preference_runtime_apply',
+      decision: 'applied',
+    })).status).toBe(200);
+
     const approvedResponse = await post(`/api/drafts/${created.draftId}/approve`, {
       requestId: 'draft_runtime_approve',
-      expectedRevision: created.revision,
+      expectedRevision: edited.revision,
     });
     const approved = await approvedResponse.json() as { revision: number; status: string };
     expect(approvedResponse.status).toBe(200);

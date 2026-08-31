@@ -3,6 +3,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ConversationIntakeService } from '../src/conversation/intake.js';
 import { ContentDraftService, InMemoryDraftWorkspaceRepository } from '../src/claims/workspace.js';
 import {
+  FeedbackLearningService,
+  InMemoryFeedbackLearningRepository,
+} from '../src/feedback/workspace.js';
+import {
   createRequestHandler,
   type ApplicationDependencies,
 } from '../src/http/application.js';
@@ -547,5 +551,55 @@ describe('operational endpoints', () => {
     expect(exported.content).toBe(created.body);
     expect(exported.filename).toMatch(/\.txt$/u);
     expect(exported.draft.status).toBe('exported');
+  });
+
+  it('exposes preference proposals for explicit apply and reversible decisions', async () => {
+    const activeTenant = tenantId('tenant_primary');
+    const owner = userId('owner_primary');
+    const learning = new FeedbackLearningService(
+      new InMemoryFeedbackLearningRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    const before = `یک تیتر طولانی برای آزمون یادگیری\n\n${'متن '.repeat(80)}`;
+    const after = `تیتر کوتاه\n\n${'متن '.repeat(20)}`;
+    for (const [index, requestId] of ['feedback_http_one', 'feedback_http_two', 'feedback_http_three'].entries()) {
+      await learning.recordDraftEdit({
+        actorId: owner,
+        requestId,
+        draftId: `draft_http_${String(index)}`,
+        before,
+        after,
+        occurredAt: new Date(`2026-08-${String(index + 1).padStart(2, '0')}T20:00:00Z`),
+      });
+    }
+    const dependencies: ApplicationDependencies = {
+      learning,
+      resolveActor: () => owner,
+      clock: () => new Date('2026-08-31T20:00:00Z'),
+    };
+    const snapshotResponse = await request('/api/feedback', () => ({ ready: true }), undefined, dependencies);
+    const snapshot = await snapshotResponse.json() as {
+      summary: { proposed: number };
+      preferences: Array<{ id: string; status: string }>;
+    };
+    expect(snapshotResponse.status).toBe(200);
+    expect(snapshot.summary.proposed).toBeGreaterThan(0);
+    const proposal = snapshot.preferences[0];
+    if (!proposal) throw new Error('Expected HTTP preference proposal.');
+
+    const decisionResponse = await request(
+      `/api/feedback/preferences/${proposal.id}/decision`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: 'preference_http_apply', decision: 'applied' }),
+      },
+      dependencies,
+    );
+    expect(decisionResponse.status).toBe(200);
+    await expect(decisionResponse.json()).resolves.toMatchObject({
+      summary: { applied: 1 },
+    });
   });
 });

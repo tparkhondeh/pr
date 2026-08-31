@@ -8,6 +8,11 @@ import {
 import { ConversationIntakeService } from './conversation/intake.js';
 import { PostgresConversationMemoryRepository } from './conversation/repository.js';
 import { PostgresRuntime } from './database/postgres.js';
+import {
+  FeedbackLearningService,
+  InMemoryFeedbackLearningRepository,
+  PostgresFeedbackLearningRepository,
+} from './feedback/workspace.js';
 import { createRequestHandler } from './http/application.js';
 import { tenantId, userId } from './kernel/identity.js';
 import {
@@ -73,12 +78,23 @@ const draftRepository = postgres && environment.database
       ownerUserId: environment.database.ownerUserId,
     })
   : new InMemoryDraftWorkspaceRepository();
+const learningRepository = postgres && environment.database
+  ? new PostgresFeedbackLearningRepository(postgres, {
+      tenantId: environment.database.tenantId,
+      ownerUserId: environment.database.ownerUserId,
+    })
+  : new InMemoryFeedbackLearningRepository();
+const learning = new FeedbackLearningService(learningRepository, {
+  tenantId: activeTenant,
+  ownerUserId: owner,
+});
 const drafts = new ContentDraftService(
   draftRepository,
   { tenantId: activeTenant, ownerUserId: owner },
   conversation,
   workbench,
   strategy,
+  learning,
 );
 const requestHandler = createRequestHandler(
   () => postgres?.readiness() ?? { ready: true },
@@ -86,6 +102,7 @@ const requestHandler = createRequestHandler(
     workbench,
     strategy,
     drafts,
+    learning,
     conversation,
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity

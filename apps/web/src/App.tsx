@@ -1,5 +1,6 @@
 import {
   ArrowUpLeft,
+  BrainCircuit,
   BookOpenText,
   Check,
   ChevronLeft,
@@ -16,8 +17,10 @@ import {
   Network,
   PencilLine,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
   Sparkles,
+  ThumbsDown,
   TriangleAlert,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type SyntheticEvent } from 'react';
@@ -30,16 +33,20 @@ import {
   createDraft,
   editDraft,
   exportDraft,
+  decideLearnedPreference,
   loadDraftWorkspace,
+  loadFeedbackLearning,
   loadPersonalMemory,
   loadStrategyContext,
   loadWorkbench,
+  rejectDraftFeedback,
   saveStrategyContext,
   submitConversationTurn,
   type AppliedMemoryRight,
   type ConversationTurnResult,
   type DraftChannel,
   type DraftWorkspaceSnapshot,
+  type FeedbackLearningSnapshot,
   type MemoryRightKind,
   type PersonalMemoryRecord,
   type PersonalMemorySnapshot,
@@ -67,7 +74,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'memory' | 'strategy' | 'draft'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'memory' | 'strategy' | 'draft' | 'learning'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +104,9 @@ export function App() {
   const [draftSnapshot, setDraftSnapshot] = useState<DraftWorkspaceSnapshot | null>(null);
   const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [draftViewError, setDraftViewError] = useState<string | null>(null);
+  const [feedbackSnapshot, setFeedbackSnapshot] = useState<FeedbackLearningSnapshot | null>(null);
+  const [feedbackViewState, setFeedbackViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
+  const [feedbackViewError, setFeedbackViewError] = useState<string | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState('loading');
@@ -182,6 +192,19 @@ export function App() {
     }
   }, []);
 
+  const refreshFeedback = useCallback(async (signal?: AbortSignal) => {
+    setFeedbackViewState('loading');
+    setFeedbackViewError(null);
+    try {
+      setFeedbackSnapshot(await loadFeedbackLearning(signal));
+      setFeedbackViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setFeedbackViewError(errorMessage(caught));
+      setFeedbackViewState('error');
+    }
+  }, []);
+
   const createDraftWorkspace = async (input: Readonly<{
     sourceProposalId: string;
     channel: DraftChannel;
@@ -215,6 +238,7 @@ export function App() {
           body: body ?? draftSnapshot.body,
         });
         setDraftSnapshot(next);
+        await refreshFeedback();
       } else if (operation === 'approve') {
         const next = await approveDraft({
           draftId: draftSnapshot.draftId,
@@ -235,6 +259,41 @@ export function App() {
     } catch (caught: unknown) {
       setDraftViewError(errorMessage(caught));
       setDraftViewState('error');
+    }
+  };
+
+  const rejectCurrentDraft = async (reason: string) => {
+    if (!draftSnapshot || feedbackViewState === 'mutating') return;
+    setFeedbackViewState('mutating');
+    setDraftViewError(null);
+    try {
+      const next = await rejectDraftFeedback({
+        draftId: draftSnapshot.draftId,
+        requestId: `draft_reject_${crypto.randomUUID()}`,
+        reason,
+      });
+      setFeedbackSnapshot(next);
+      setFeedbackViewState('ready');
+    } catch (caught: unknown) {
+      setDraftViewError(errorMessage(caught));
+      setFeedbackViewState('error');
+    }
+  };
+
+  const decidePreference = async (proposalId: string, decision: 'applied' | 'rejected' | 'revoked') => {
+    if (feedbackViewState === 'mutating') return;
+    setFeedbackViewState('mutating');
+    setFeedbackViewError(null);
+    try {
+      setFeedbackSnapshot(await decideLearnedPreference({
+        proposalId,
+        requestId: `preference_${crypto.randomUUID()}`,
+        decision,
+      }));
+      setFeedbackViewState('ready');
+    } catch (caught: unknown) {
+      setFeedbackViewError(errorMessage(caught));
+      setFeedbackViewState('error');
     }
   };
 
@@ -361,6 +420,12 @@ export function App() {
     { label: 'حافظه من', icon: Fingerprint, view: 'memory' as const },
     { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
     { label: 'پیش‌نویس', icon: PencilLine, view: 'draft' as const },
+    {
+      label: 'یادگیری',
+      icon: BrainCircuit,
+      view: 'learning' as const,
+      badge: feedbackSnapshot?.summary.proposed ? String(feedbackSnapshot.summary.proposed) : undefined,
+    },
     { label: 'روابط', icon: Network },
     {
       label: 'تأییدها',
@@ -384,6 +449,7 @@ export function App() {
                 if (view === 'memory') void refreshMemory();
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
+                if (view === 'learning') void refreshFeedback();
               }}
               type="button"
             >
@@ -410,6 +476,8 @@ export function App() {
                 ? 'جهت را شما تعیین می‌کنید.'
                 : activeView === 'draft'
                   ? 'از شاهد تا متن قابل‌دفاع.'
+                  : activeView === 'learning'
+                    ? 'سیستم پیشنهاد می‌دهد؛ شما تصمیم می‌گیرید.'
                 : 'حرکت بعدی، نه پست بعدی.'}</h1>
           </div>
           <div className="top-actions">
@@ -446,6 +514,7 @@ export function App() {
             onCreate={createDraftWorkspace}
             onEdit={(body) => mutateDraft('edit', body)}
             onExport={() => mutateDraft('export')}
+            onReject={rejectCurrentDraft}
             onGoToContentAction={() => {
               setSelected('essay');
               setActiveView('today');
@@ -454,6 +523,14 @@ export function App() {
             snapshot={draftSnapshot}
             state={draftViewState}
             workbench={snapshot}
+          />
+        ) : activeView === 'learning' ? (
+          <FeedbackLearningPanel
+            error={feedbackViewError}
+            onDecide={decidePreference}
+            onRefresh={() => refreshFeedback()}
+            snapshot={feedbackSnapshot}
+            state={feedbackViewState}
           />
         ) : (
           <>
@@ -824,6 +901,7 @@ function DraftWorkspacePanel({
   onEdit,
   onExport,
   onGoToContentAction,
+  onReject,
   onRefresh,
   snapshot,
   state,
@@ -842,6 +920,7 @@ function DraftWorkspacePanel({
   onEdit: (body: string) => Promise<void>;
   onExport: () => Promise<void>;
   onGoToContentAction: () => void;
+  onReject: (reason: string) => Promise<void>;
   onRefresh: () => Promise<void>;
   snapshot: DraftWorkspaceSnapshot | null;
   state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
@@ -858,6 +937,7 @@ function DraftWorkspacePanel({
   const [takeaway, setTakeaway] = useState('اعتماد با صداقت درباره ابهام ساخته می‌شود، نه با نمایش قطعیت.');
   const [consent, setConsent] = useState(false);
   const [body, setBody] = useState(snapshot?.body ?? '');
+  const [rejectionReason, setRejectionReason] = useState('');
 
   useEffect(() => {
     if (snapshot) setBody(snapshot.body);
@@ -1015,12 +1095,149 @@ function DraftWorkspacePanel({
               <Download size={16} /> {snapshot.status === 'exported' ? 'خروجی گرفته شد' : 'Export فایل متنی'}
             </button>
           </div>
+          <div className="draft-rejection">
+            <label htmlFor="draft-rejection-reason">اگر این نسخه مناسب نیست، دلیل رد را ثبت کنید</label>
+            <textarea
+              id="draft-rejection-reason"
+              maxLength={1000}
+              onChange={(event) => { setRejectionReason(event.target.value); }}
+              placeholder="مثلاً: لحن بیش از حد رسمی است یا تیتر طولانی است…"
+              rows={3}
+              value={rejectionReason}
+            />
+            <button
+              disabled={state === 'mutating' || rejectionReason.trim().length < 3}
+              onClick={() => {
+                void onReject(rejectionReason.trim()).then(() => { setRejectionReason(''); });
+              }}
+              type="button"
+            >
+              <ThumbsDown size={15} /> ثبت رد؛ بدون تغییر خودکار هویت
+            </button>
+          </div>
           <small>هیچ Publish یا ارسال بیرونی انجام نمی‌شود.</small>
         </aside>
       </div>
       {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
     </section>
   );
+}
+
+function FeedbackLearningPanel({
+  error,
+  onDecide,
+  onRefresh,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onDecide: (proposalId: string, decision: 'applied' | 'rejected' | 'revoked') => Promise<void>;
+  onRefresh: () => Promise<void>;
+  snapshot: FeedbackLearningSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
+}>) {
+  if ((state === 'idle' || state === 'loading') && !snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <LoaderCircle className="spin" size={24} />
+        <h2>در حال بازیابی سیگنال‌های یادگیری…</h2>
+        <p>ویرایش‌ها و ردهای شما از Metricهای سطحی جدا نگه داشته می‌شوند.</p>
+      </section>
+    );
+  }
+  if (!snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <TriangleAlert size={25} />
+        <h2>مدل ترجیح در دسترس نیست</h2>
+        <p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p>
+        <button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button>
+      </section>
+    );
+  }
+  return (
+    <section className="learning-view" aria-label="یادگیری برگشت‌پذیر از بازخورد">
+      <header className="draft-head">
+        <div>
+          <p className="overline">Feedback → Evidence → Preference Proposal</p>
+          <h2>یادگیری تحت کنترل شما</h2>
+          <p>یک ویرایش منفرد هویت یا Voice Model را تغییر نمی‌دهد؛ فقط الگوهای تکرارشده به پیشنهاد قابل‌رد و قابل‌لغو تبدیل می‌شوند.</p>
+        </div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button">
+          <RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی
+        </button>
+      </header>
+      <div className="learning-summary">
+        <div><span>سیگنال‌های اخیر</span><strong>{snapshot.summary.recentEvents}</strong></div>
+        <div><span>منتظر تصمیم شما</span><strong>{snapshot.summary.proposed}</strong></div>
+        <div><span>ترجیحات اعمال‌شده</span><strong>{snapshot.summary.applied}</strong></div>
+      </div>
+      <div className="learning-grid">
+        <div className="preference-list">
+          <h3>پیشنهادهای Preference Model</h3>
+          {snapshot.preferences.length === 0 ? (
+            <div className="learning-empty"><BrainCircuit size={25} /><p>هنوز سه ویرایش هم‌جهت برای ساخت پیشنهاد وجود ندارد.</p></div>
+          ) : snapshot.preferences.map((preference) => (
+            <article className={`preference-card ${preference.status}`} key={preference.id}>
+              <div className="preference-topline">
+                <span>{preferenceLabel(preference.preferenceKey, preference.proposedValue)}</span>
+                <b>{preferenceStatusLabel(preference.status)}</b>
+              </div>
+              <p>{preference.rationale}</p>
+              <small>{preference.evidenceEventIds.length} سیگنال قابل‌ردیابی · اطمینان {formatConfidence(preference.confidence)}</small>
+              <div className="preference-actions">
+                {preference.status === 'proposed' ? (
+                  <>
+                    <button disabled={state === 'mutating'} onClick={() => void onDecide(preference.id, 'applied')} type="button"><Check size={15} /> اعمال</button>
+                    <button className="secondary" disabled={state === 'mutating'} onClick={() => void onDecide(preference.id, 'rejected')} type="button"><ThumbsDown size={15} /> رد پیشنهاد</button>
+                  </>
+                ) : null}
+                {preference.status === 'applied' ? (
+                  <button className="secondary" disabled={state === 'mutating'} onClick={() => void onDecide(preference.id, 'revoked')} type="button"><RotateCcw size={15} /> لغو اثر</button>
+                ) : null}
+              </div>
+            </article>
+          ))}
+        </div>
+        <aside className="feedback-events">
+          <h3>چرا سیستم چنین برداشتی دارد؟</h3>
+          {snapshot.recentEvents.length === 0 ? <p>هنوز Edit یا Reject ثبت نشده است.</p> : (
+            <ol>
+              {snapshot.recentEvents.slice(0, 12).map((event) => (
+                <li key={event.id}>
+                  <span>{event.eventType === 'rejected' ? 'رد Draft' : feedbackSignalLabel(event.signalKey, event.signalValue)}</span>
+                  <time>{formatDate(event.occurredAt)}</time>
+                </li>
+              ))}
+            </ol>
+          )}
+          <small><ShieldCheck size={14} /> هیچ ترجیحی از Like/View یا یک Edit منفرد به‌صورت خودکار اعمال نمی‌شود.</small>
+        </aside>
+      </div>
+      {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
+    </section>
+  );
+}
+
+function preferenceLabel(key: string, value: unknown): string {
+  return feedbackSignalLabel(key, value);
+}
+
+function feedbackSignalLabel(key: string | undefined, value: unknown): string {
+  const token = `${key ?? ''}:${typeof value === 'string' ? value : ''}`;
+  const labels: Readonly<Record<string, string>> = {
+    'voice.draft_length:shorter': 'متن‌های کوتاه‌تر',
+    'voice.draft_length:longer': 'متن‌های مبسوط‌تر',
+    'voice.headline_length:shorter': 'تیترهای کوتاه‌تر',
+    'voice.heading_density:lower': 'میان‌تیترهای کمتر',
+    'voice.question_cta:omit': 'بدون پرسش پایانی',
+  };
+  return labels[token] ?? (key ? 'ویرایش سبکی ثبت‌شده' : 'ویرایش بدون الگوی قطعی');
+}
+
+function preferenceStatusLabel(status: FeedbackLearningSnapshot['preferences'][number]['status']): string {
+  const labels = { proposed: 'منتظر تصمیم', applied: 'اعمال‌شده', rejected: 'رد‌شده', revoked: 'لغوشده' } as const;
+  return labels[status];
 }
 
 const draftChannelOptions: readonly Readonly<{ value: DraftChannel; label: string }>[] = [
@@ -1362,6 +1579,12 @@ function errorMessage(error: unknown): string {
     guard_failed: 'Claim Check قرمز است و این نسخه قابل تأیید نیست.',
     strategy_changed: 'استراتژی تغییر کرده است؛ Draft باید با جهت جدید دوباره ساخته شود.',
     draft_not_approved: 'قبل از Export باید همین Revision را تأیید کنید.',
+    feedback_unavailable: 'سرویس یادگیری از بازخورد در دسترس نیست.',
+    invalid_feedback_input: 'دلیل رد یا تصمیم Preference معتبر نیست.',
+    feedback_permission_denied: 'فقط مالک می‌تواند Feedback و Preference Model را مدیریت کند.',
+    preference_not_found: 'این پیشنهاد ترجیح دیگر در دسترس نیست.',
+    invalid_status: 'وضعیت این پیشنهاد قبلاً تغییر کرده است؛ Snapshot تازه را دریافت کنید.',
+    feedback_failed: 'ثبت بازخورد کامل نشد؛ دوباره تلاش کنید.',
     invalid_response: 'پاسخ API با قرارداد Workbench هم‌خوان نیست.',
   };
   return messages[error.code] ?? 'در پردازش درخواست خطایی رخ داد.';

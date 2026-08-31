@@ -23,6 +23,9 @@ let strategy = {
 const strategyRequests = new Map();
 let currentDraft = null;
 const draftRequests = new Map();
+const feedbackEvents = new Map();
+const preferenceProposals = new Map();
+const feedbackRequests = new Map();
 const memoryProposals = new Map();
 const memoryRightRequests = new Map();
 
@@ -99,6 +102,68 @@ export default {
       return json(currentDraft ? draftSnapshot() : null);
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/feedback') {
+      return json(feedbackSnapshot());
+    }
+
+    const draftRejection = url.pathname.match(/^\/api\/feedback\/drafts\/([0-9a-f-]{36})\/reject$/i);
+    if (request.method === 'POST' && draftRejection?.[1]) {
+      const body = await readJson(request);
+      if (!validFeedbackRequest(body) || !validText(body.reason, 3, 1000)) {
+        return json({ error: 'invalid_feedback_input' }, 400);
+      }
+      if (!currentDraft || currentDraft.draftId !== draftRejection[1]) {
+        return json({ error: 'draft_not_found' }, 404);
+      }
+      const fingerprint = JSON.stringify({ operation: 'rejected', draftId: draftRejection[1], reason: body.reason.trim() });
+      const repeated = reserveFeedbackRequest(body.requestId, fingerprint);
+      if (repeated === 'mismatch') return json({ error: 'idempotency_mismatch' }, 409);
+      if (!repeated) {
+        feedbackEvents.set(`feedback_${body.requestId}`, {
+          id: `feedback_${body.requestId}`,
+          artifactType: 'draft',
+          artifactId: draftRejection[1],
+          eventType: 'rejected',
+          signalKey: 'draft.rejection_reason',
+          signalValue: body.reason.trim(),
+          occurredAt: new Date().toISOString(),
+        });
+      }
+      return json(feedbackSnapshot());
+    }
+
+    const preferenceDecision = url.pathname.match(/^\/api\/feedback\/preferences\/([0-9a-f-]{36})\/decision$/i);
+    if (request.method === 'POST' && preferenceDecision?.[1]) {
+      const body = await readJson(request);
+      if (!validFeedbackRequest(body) || !['applied', 'rejected', 'revoked'].includes(body.decision)) {
+        return json({ error: 'invalid_feedback_input' }, 400);
+      }
+      const preference = preferenceProposals.get(preferenceDecision[1]);
+      if (!preference) return json({ error: 'preference_not_found' }, 404);
+      const fingerprint = JSON.stringify({ operation: 'decide', proposalId: preference.id, decision: body.decision });
+      const existingRequest = feedbackRequests.get(body.requestId);
+      if (existingRequest) {
+        return existingRequest === fingerprint
+          ? json(feedbackSnapshot())
+          : json({ error: 'idempotency_mismatch' }, 409);
+      }
+      if (body.decision === 'revoked' ? preference.status !== 'applied' : preference.status !== 'proposed') {
+        return json({ error: 'invalid_status' }, 409);
+      }
+      feedbackRequests.set(body.requestId, fingerprint);
+      if (body.decision === 'applied') {
+        for (const existing of preferenceProposals.values()) {
+          if (existing.id !== preference.id && existing.preferenceKey === preference.preferenceKey && existing.status === 'applied') {
+            existing.status = 'revoked';
+            existing.decidedAt = new Date().toISOString();
+          }
+        }
+      }
+      preference.status = body.decision;
+      preference.decidedAt = new Date().toISOString();
+      return json(feedbackSnapshot());
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/drafts') {
       const body = await readJson(request);
       if (!validDraftCreate(body)) return json({ error: 'invalid_draft_input' }, 400);
@@ -123,7 +188,13 @@ export default {
       if (!usableDraftSource(source)) return json({ error: 'source_not_available' }, 409);
       const draftId = crypto.randomUUID();
       const claimId = crypto.randomUUID();
-      const draftBody = composePlatformDraft(body.channel, body.narrativeAngle.trim(), source.text, body.takeaway.trim());
+      const draftBody = composePlatformDraft(
+        body.channel,
+        body.narrativeAngle.trim(),
+        source.text,
+        body.takeaway.trim(),
+        appliedPreferences(),
+      );
       const guard = reviewDraftBody(draftBody, body.channel, source.text, claimId);
       currentDraft = {
         draftId,
@@ -159,6 +230,7 @@ export default {
       if (repeated?.snapshot) return json({ outcome: 'already_applied', ...repeated.snapshot });
       const gate = draftMutationGate(draftEdit[1], body.expectedRevision);
       if (gate) return json({ error: gate }, gate === 'draft_not_found' ? 404 : 409);
+      const previousBody = currentDraft.body;
       const guard = reviewDraftBody(body.body.trim(), currentDraft.channel, currentDraft.source.statement, currentDraft.claimId);
       currentDraft = {
         ...currentDraft,
@@ -171,6 +243,7 @@ export default {
         updatedAt: new Date().toISOString(),
       };
       rememberDraftRequest(body.requestId, 'edit', { ...body, draftId: draftEdit[1] }, currentDraft);
+      recordEditFeedback(body.requestId, currentDraft.draftId, previousBody, currentDraft.body);
       return json({ outcome: 'applied', ...draftSnapshot() });
     }
 
@@ -550,13 +623,134 @@ function rememberDraftRequest(requestId, operation, value, snapshot) {
   });
 }
 
-function composePlatformDraft(channel, angle, statement, takeaway) {
-  if (channel === 'x') return `${angle}\n\n${statement}\n\nبرداشت من: ${takeaway}`;
-  if (channel === 'youtube') return `Hook\n${angle}\n\nروایت واقعی\n${statement}\n\nجمع‌بندی و دعوت به گفت‌وگو\n${takeaway}`;
-  if (channel === 'podcast') return `آغاز اپیزود\n${angle}\n\nروایت و زمینه\n${statement}\n\nبرداشت شخصی\n${takeaway}`;
-  if (channel === 'newsletter' || channel === 'blog') return `# ${angle}\n\n## روایت\n${statement}\n\n## برداشت من\n${takeaway}`;
-  if (channel === 'instagram') return `${angle}\n\n${statement}\n\nبرداشت من:\n${takeaway}\n\n#روایت_واقعی`;
-  return `${angle}\n\n${statement}\n\nبرداشت من:\n${takeaway}\n\nنظر شما چیست؟`;
+function composePlatformDraft(channel, angle, statement, takeaway, preferences = {}) {
+  const adaptedAngle = preferences['voice.headline_length'] === 'shorter' ? shorten(angle, 72) : angle;
+  const adaptedTakeaway = preferences['voice.draft_length'] === 'shorter' ? shorten(takeaway, 180) : takeaway;
+  if (channel === 'x') return `${adaptedAngle}\n\n${statement}\n\nبرداشت من: ${adaptedTakeaway}`;
+  if (channel === 'youtube') return `Hook\n${adaptedAngle}\n\nروایت واقعی\n${statement}\n\nجمع‌بندی و دعوت به گفت‌وگو\n${adaptedTakeaway}`;
+  if (channel === 'podcast') return `آغاز اپیزود\n${adaptedAngle}\n\nروایت و زمینه\n${statement}\n\nبرداشت شخصی\n${adaptedTakeaway}`;
+  if (channel === 'newsletter' || channel === 'blog') return `# ${adaptedAngle}\n\n## روایت\n${statement}\n\n## برداشت من\n${adaptedTakeaway}`;
+  if (channel === 'instagram') return `${adaptedAngle}\n\n${statement}\n\nبرداشت من:\n${adaptedTakeaway}\n\n#روایت_واقعی`;
+  const question = preferences['voice.question_cta'] === 'omit' ? '' : '\n\nنظر شما چیست؟';
+  return `${adaptedAngle}\n\n${statement}\n\nبرداشت من:\n${adaptedTakeaway}${question}`;
+}
+
+function feedbackSnapshot() {
+  const recentEvents = [...feedbackEvents.values()]
+    .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+    .slice(0, 50);
+  const preferences = [...preferenceProposals.values()]
+    .sort((left, right) => right.proposedAt.localeCompare(left.proposedAt));
+  return {
+    generatedAt: new Date().toISOString(),
+    persistence: 'ephemeral',
+    summary: {
+      recentEvents: recentEvents.length,
+      proposed: preferences.filter((item) => item.status === 'proposed').length,
+      applied: preferences.filter((item) => item.status === 'applied').length,
+    },
+    recentEvents,
+    preferences,
+  };
+}
+
+function recordEditFeedback(requestId, draftId, before, after) {
+  const fingerprint = JSON.stringify({ operation: 'edited', draftId, after });
+  const repeated = reserveFeedbackRequest(requestId, fingerprint);
+  if (repeated) return;
+  const signals = analyzeDraftEdit(before, after);
+  const values = signals.length ? signals : [{ key: undefined, value: undefined, rationale: undefined }];
+  values.forEach((signal, index) => {
+    const id = `feedback_${requestId}_${String(index)}`;
+    feedbackEvents.set(id, {
+      id,
+      artifactType: 'draft',
+      artifactId: draftId,
+      eventType: 'edited',
+      ...(signal.key ? { signalKey: signal.key, signalValue: signal.value } : {}),
+      occurredAt: new Date().toISOString(),
+    });
+  });
+  for (const signal of signals) maybeProposePreference(signal, requestId);
+}
+
+function maybeProposePreference(signal, requestId) {
+  const evidence = [...feedbackEvents.values()].filter((event) =>
+    event.eventType === 'edited' && event.signalKey === signal.key && event.signalValue === signal.value,
+  );
+  if (evidence.length < 3) return;
+  const active = [...preferenceProposals.values()].some((item) =>
+    item.preferenceKey === signal.key && item.proposedValue === signal.value &&
+    (item.status === 'proposed' || item.status === 'applied'),
+  );
+  if (active) return;
+  const id = crypto.randomUUID();
+  preferenceProposals.set(id, {
+    id,
+    preferenceKey: signal.key,
+    proposedValue: signal.value,
+    evidenceEventIds: evidence.map((event) => event.id),
+    rationale: `${String(evidence.length)} ویرایش هم‌جهت ثبت شده است. ${signal.rationale} این فقط یک پیشنهاد است و بدون تأیید مالک اعمال نمی‌شود.`,
+    confidence: Math.min(0.95, evidence.length / 5),
+    status: 'proposed',
+    proposedAt: new Date().toISOString(),
+  });
+}
+
+function analyzeDraftEdit(before, after) {
+  const previous = before.trim();
+  const next = after.trim();
+  if (previous === next) return [];
+  const signals = [];
+  const difference = next.length - previous.length;
+  if (difference <= -20 && next.length <= previous.length * 0.82) {
+    signals.push({ key: 'voice.draft_length', value: 'shorter', rationale: 'کاربر متن را به‌طور معنادار کوتاه کرده است.' });
+  } else if (difference >= 20 && next.length >= previous.length * 1.18) {
+    signals.push({ key: 'voice.draft_length', value: 'longer', rationale: 'کاربر متن را به‌طور معنادار بسط داده است.' });
+  }
+  const oldHeadline = firstLine(previous);
+  const newHeadline = firstLine(next);
+  if (oldHeadline.length - newHeadline.length >= 8 && newHeadline.length <= oldHeadline.length * 0.8) {
+    signals.push({ key: 'voice.headline_length', value: 'shorter', rationale: 'کاربر تیتر را کوتاه‌تر کرده است.' });
+  }
+  if (headingCount(next) < headingCount(previous)) {
+    signals.push({ key: 'voice.heading_density', value: 'lower', rationale: 'کاربر تعداد تیترهای میانی را کاهش داده است.' });
+  }
+  if (/[؟?]\s*$/u.test(previous) && !/[؟?]\s*$/u.test(next)) {
+    signals.push({ key: 'voice.question_cta', value: 'omit', rationale: 'کاربر پرسش پایانی را حذف کرده است.' });
+  }
+  return signals;
+}
+
+function appliedPreferences() {
+  return Object.fromEntries(
+    [...preferenceProposals.values()]
+      .filter((item) => item.status === 'applied')
+      .map((item) => [item.preferenceKey, item.proposedValue]),
+  );
+}
+
+function reserveFeedbackRequest(requestId, fingerprint) {
+  const existing = feedbackRequests.get(requestId);
+  if (existing) return existing === fingerprint ? 'repeated' : 'mismatch';
+  feedbackRequests.set(requestId, fingerprint);
+  return null;
+}
+
+function validFeedbackRequest(body) {
+  return typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId);
+}
+
+function firstLine(value) {
+  return value.split(/\r?\n/u).find((line) => line.trim().length > 0)?.trim() ?? '';
+}
+
+function headingCount(value) {
+  return value.split(/\r?\n/u).filter((line) => /^#{1,6}\s+/u.test(line.trim())).length;
+}
+
+function shorten(value, maximum) {
+  return value.length <= maximum ? value : `${value.slice(0, maximum - 1).trimEnd()}…`;
 }
 
 function reviewDraftBody(body, channel, statement, claimId) {

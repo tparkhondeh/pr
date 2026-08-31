@@ -46,6 +46,10 @@ const draftWorkspaceMigrationPath = fileURLToPath(
   new URL('../db/migrations/0010_draft_workspace.sql', import.meta.url),
 );
 const draftWorkspaceSql = readFileSync(draftWorkspaceMigrationPath, 'utf8');
+const feedbackWorkspaceMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0011_feedback_workspace.sql', import.meta.url),
+);
+const feedbackWorkspaceSql = readFileSync(feedbackWorkspaceMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -204,5 +208,16 @@ describe('foundation migration', () => {
     expect(draftWorkspaceSql).toContain('ADD COLUMN strategy_revision bigint');
     expect(draftWorkspaceSql).toContain('ADD COLUMN revision bigint NOT NULL DEFAULT 1');
     expect(draftWorkspaceSql).toContain("operation IN ('create', 'edit', 'approve', 'export')");
+  });
+
+  it('adds idempotent tenant-isolated feedback requests and active preference protection', () => {
+    defineMigration('0011_feedback_workspace', feedbackWorkspaceSql);
+    expect(feedbackWorkspaceSql).toContain('CREATE TABLE app.feedback_learning_requests');
+    expect(feedbackWorkspaceSql).toContain(
+      'ALTER TABLE app.feedback_learning_requests FORCE ROW LEVEL SECURITY',
+    );
+    expect(feedbackWorkspaceSql).toContain('CREATE POLICY feedback_learning_requests_tenant_isolation');
+    expect(feedbackWorkspaceSql).toContain("operation IN ('edited', 'rejected', 'decide')");
+    expect(feedbackWorkspaceSql).toContain('preference_proposals_one_active_value_idx');
   });
 });

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { ConversationIntakeService } from '../conversation/intake.js';
 import type { PersonalMemoryRecord } from '../conversation/repository.js';
 import type { SqlTransaction, SqlTransactionRunner } from '../database/sql.js';
+import type { FeedbackLearningService } from '../feedback/workspace.js';
 import type { TenantId, UserId } from '../kernel/identity.js';
 import { evidenceId } from '../memory/personal-memory.js';
 import type { StrategyContextService } from '../strategy/context.js';
@@ -124,6 +125,7 @@ export class ContentDraftService {
     private readonly conversation: Pick<ConversationIntakeService, 'memorySnapshot'>,
     private readonly workbench: Pick<WorkbenchService, 'snapshot'>,
     private readonly strategy: Pick<StrategyContextService, 'snapshot'>,
+    private readonly learning?: Pick<FeedbackLearningService, 'recordDraftEdit' | 'appliedPreferences'>,
   ) {}
 
   public async snapshot(actorId: UserId, at: Date): Promise<DraftWorkspaceSnapshot | null> {
@@ -162,11 +164,13 @@ export class ContentDraftService {
     const strategy = await this.strategy.snapshot(input.actorId);
     const source = await this.findSource(input.actorId, input.sourceProposalId, input.occurredAt);
     if (!isUsableSource(source)) throw new DraftBlockedError('source_not_available');
+    const preferences = await this.learning?.appliedPreferences(input.actorId, input.occurredAt) ?? {};
     const body = composePlatformDraft(
       input.channel,
       input.narrativeAngle.trim(),
       source.text,
       input.takeaway.trim(),
+      preferences,
     );
     const draftId = deterministicUuid(`draft:${this.identity.tenantId}:${input.requestId}`);
     const claimId = deterministicUuid(`claim:${this.identity.tenantId}:${input.requestId}`);
@@ -227,7 +231,7 @@ export class ContentDraftService {
       current.source,
       input.occurredAt,
     );
-    return this.repository.edit({
+    const result = await this.repository.edit({
       tenantId: this.identity.tenantId,
       actorId: input.actorId,
       requestId: input.requestId,
@@ -237,6 +241,15 @@ export class ContentDraftService {
       body: input.body.trim(),
       guard,
     });
+    await this.learning?.recordDraftEdit({
+      actorId: input.actorId,
+      requestId: input.requestId,
+      draftId: current.draftId,
+      before: current.body,
+      after: result.snapshot.body,
+      occurredAt: input.occurredAt,
+    });
+    return result;
   }
 
   public async approve(input: Omit<TransitionDraftCommand, 'tenantId'>): Promise<DraftRepositoryResult> {
@@ -648,21 +661,34 @@ function composePlatformDraft(
   angle: string,
   statement: string,
   takeaway: string,
+  preferences: Readonly<Record<string, unknown>>,
 ): string {
-  if (channel === 'x') return `${angle}\n\n${statement}\n\nبرداشت من: ${takeaway}`;
+  const adaptedAngle = preferences['voice.headline_length'] === 'shorter'
+    ? shorten(angle, 72)
+    : angle;
+  const adaptedTakeaway = preferences['voice.draft_length'] === 'shorter'
+    ? shorten(takeaway, 180)
+    : takeaway;
+  if (channel === 'x') return `${adaptedAngle}\n\n${statement}\n\nبرداشت من: ${adaptedTakeaway}`;
   if (channel === 'youtube') {
-    return `Hook\n${angle}\n\nروایت واقعی\n${statement}\n\nجمع‌بندی و دعوت به گفت‌وگو\n${takeaway}`;
+    return `Hook\n${adaptedAngle}\n\nروایت واقعی\n${statement}\n\nجمع‌بندی و دعوت به گفت‌وگو\n${adaptedTakeaway}`;
   }
   if (channel === 'podcast') {
-    return `آغاز اپیزود\n${angle}\n\nروایت و زمینه\n${statement}\n\nبرداشت شخصی\n${takeaway}`;
+    return `آغاز اپیزود\n${adaptedAngle}\n\nروایت و زمینه\n${statement}\n\nبرداشت شخصی\n${adaptedTakeaway}`;
   }
   if (channel === 'newsletter' || channel === 'blog') {
-    return `# ${angle}\n\n## روایت\n${statement}\n\n## برداشت من\n${takeaway}`;
+    return `# ${adaptedAngle}\n\n## روایت\n${statement}\n\n## برداشت من\n${adaptedTakeaway}`;
   }
   if (channel === 'instagram') {
-    return `${angle}\n\n${statement}\n\nبرداشت من:\n${takeaway}\n\n#روایت_واقعی`;
+    return `${adaptedAngle}\n\n${statement}\n\nبرداشت من:\n${adaptedTakeaway}\n\n#روایت_واقعی`;
   }
-  return `${angle}\n\n${statement}\n\nبرداشت من:\n${takeaway}\n\nنظر شما چیست؟`;
+  const question = preferences['voice.question_cta'] === 'omit' ? '' : '\n\nنظر شما چیست؟';
+  return `${adaptedAngle}\n\n${statement}\n\nبرداشت من:\n${adaptedTakeaway}${question}`;
+}
+
+function shorten(value: string, maximum: number): string {
+  if (value.length <= maximum) return value;
+  return `${value.slice(0, maximum - 1).trimEnd()}…`;
 }
 
 function reviewBody(
