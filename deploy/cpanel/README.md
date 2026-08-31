@@ -6,8 +6,9 @@
 - Document Root: `/home/wealthos/pr.wealthos.ir`
 - Node API: `127.0.0.1:31056` زیر PM2 با Bundle مستقل `runtime/main.cjs`
 - Frontend: خروجی `apps/web/dist`
-- Access: اجباری از طریق HTTP Basic Auth؛ فایل رمز خارج از Document Root در
-  `/home/wealthos/apps/pr/runtime/.htpasswd`
+- Access: اجباری از طریق HTTP Basic Auth؛ فایل Hash در
+  `/home/wealthos/pr.wealthos.ir/.htpasswd` است، با ACL فقط برای Worker وب و Deny
+  صریح در Apache. مقدار Password هیچ‌وقت وارد Git یا Archive نمی‌شود.
 
 `.htaccess` فقط `/api`، `/health` و `/ready` را به Node داخلی Proxy می‌کند و سایر
 درخواست‌ها را به SPA می‌فرستد. اگر `mod_proxy` یا Proxy از `.htaccess` روی Host مجاز

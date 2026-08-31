@@ -3,8 +3,12 @@ DirectoryIndex index.html
 
 AuthType Basic
 AuthName "WealthOS PR Private Preview"
-AuthUserFile /home/wealthos/apps/pr/runtime/.htpasswd
+AuthUserFile /home/wealthos/pr.wealthos.ir/.htpasswd
 Require valid-user
+
+<Files ".htpasswd">
+  Require all denied
+</Files>
 
 RewriteEngine On
 RewriteRule ^api(?:/(.*))?$ http://127.0.0.1:31056/api/$1 [P,L,NE]
