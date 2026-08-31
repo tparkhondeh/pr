@@ -10,6 +10,10 @@ const migrationPath = fileURLToPath(
   new URL('../db/migrations/0001_foundation.sql', import.meta.url),
 );
 const sql = readFileSync(migrationPath, 'utf8');
+const classificationMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0002_assertion_data_class.sql', import.meta.url),
+);
+const classificationSql = readFileSync(classificationMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -47,5 +51,16 @@ describe('foundation migration', () => {
         [migration],
       );
     }).toThrow('Applied migration changed');
+  });
+
+  it('adds assertion classification in an append-only migration', () => {
+    const migration = defineMigration(
+      '0002_assertion_data_class',
+      classificationSql,
+    );
+    expect(migration.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(classificationSql).toContain(
+      "ADD COLUMN data_class app.data_class NOT NULL DEFAULT 'confidential'",
+    );
   });
 });

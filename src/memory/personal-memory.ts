@@ -1,4 +1,5 @@
 import type { TenantId, UserId } from '../kernel/identity.js';
+import type { DataClass } from '../kernel/policy.js';
 
 declare const evidenceIdBrand: unique symbol;
 declare const assertionIdBrand: unique symbol;
@@ -29,6 +30,7 @@ export type Assertion = Readonly<{
   predicate: string;
   value: unknown;
   epistemicType: EpistemicType;
+  dataClass: DataClass;
   confidence?: number;
   confidenceRationale?: string | undefined;
   evidence: readonly EvidenceRelation[];

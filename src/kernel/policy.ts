@@ -28,10 +28,12 @@ export type PermissionGrant = PolicyRequest &
     revokedAt?: Date;
   }>;
 
-export type PolicyDecision = Readonly<{
-  allowed: boolean;
-  reason: 'matching_grant' | 'no_matching_grant' | 'expired' | 'revoked';
-}>;
+export type PolicyDecision =
+  | Readonly<{ allowed: true; reason: 'matching_grant' }>
+  | Readonly<{
+      allowed: false;
+      reason: 'no_matching_grant' | 'expired' | 'revoked';
+    }>;
 
 export function decidePolicy(
   request: PolicyRequest,
@@ -56,4 +58,3 @@ export function decidePolicy(
   }
   return { allowed: true, reason: 'matching_grant' };
 }
-

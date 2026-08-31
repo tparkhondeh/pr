@@ -20,6 +20,7 @@ function assertion(overrides: Partial<Parameters<typeof createAssertion>[0]> = {
     predicate: 'values.curiosity',
     value: true,
     epistemicType: 'hypothesis',
+    dataClass: 'confidential',
     confidence: 0.7,
     confidenceRationale: 'Supported by repeated behavioral examples.',
     evidence: [
@@ -83,4 +84,3 @@ describe('personal memory assertion lifecycle', () => {
     );
   });
 });
-
