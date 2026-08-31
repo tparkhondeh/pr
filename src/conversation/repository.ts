@@ -452,7 +452,7 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
              app.conversation_threads.updated_at,
              EXCLUDED.updated_at
            )
-           RETURNING id
+           RETURNING id, external_ref
          ), inserted AS (
            INSERT INTO app.conversation_turns (
              tenant_id, thread_id, actor_user_id, client_ref, user_text,
@@ -475,8 +475,7 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
                 turn.orchestration_snapshot = $10::jsonb AS orchestration_matches
            FROM selected
            JOIN app.conversation_turns turn ON turn.id = selected.id AND turn.tenant_id = $1
-           JOIN app.conversation_threads thread
-             ON thread.id = turn.thread_id AND thread.tenant_id = turn.tenant_id`,
+           JOIN thread ON thread.id = turn.thread_id`,
         [
           this.context.tenantId,
           this.context.ownerUserId,

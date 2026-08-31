@@ -131,6 +131,7 @@ describe('Postgres conversation memory repository', () => {
     expect(transaction.queries[0]?.sql).toContain("set_config('app.tenant_id'");
     expect(transaction.queries[1]?.sql).toContain('app.conversation_turns');
     expect(transaction.queries[1]?.sql).toContain('orchestration_snapshot = $10::jsonb');
+    expect(transaction.queries[1]?.sql).toContain('JOIN thread ON thread.id = turn.thread_id');
     expect(transaction.queries[2]?.sql).toContain('app.memory_proposals');
   });
 
