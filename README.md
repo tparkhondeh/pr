@@ -32,3 +32,13 @@ pnpm dev
 ```
 
 Health endpoint پس از اجرا: `GET /health`
+
+## اجرای Workbench وب
+
+```bash
+pnpm web:dev
+```
+
+Workbench فعلی حلقه تصمیم MVP را نمایش می‌دهد: Goal، سه Action شامل عدم اقدام،
+Attention Budget، Evidence، Risk و Approval انسانی. داده‌های این View فعلاً نمایشی‌اند؛
+اتصال آن به API و PostgreSQL در Increment بعد انجام می‌شود.
