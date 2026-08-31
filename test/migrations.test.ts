@@ -54,6 +54,10 @@ const textAssetMigrationPath = fileURLToPath(
   new URL('../db/migrations/0012_text_asset_intake.sql', import.meta.url),
 );
 const textAssetSql = readFileSync(textAssetMigrationPath, 'utf8');
+const draftSourceMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0013_draft_source_provenance.sql', import.meta.url),
+);
+const draftSourceSql = readFileSync(draftSourceMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -235,5 +239,13 @@ describe('foundation migration', () => {
     expect(textAssetSql).toContain('UNIQUE (tenant_id, owner_user_id, client_ref)');
     expect(textAssetSql).toContain('request_sha256 text NOT NULL');
     expect(textAssetSql).toContain('result_snapshot jsonb NOT NULL');
+  });
+
+  it('records whether a draft source is memory or a text asset', () => {
+    defineMigration('0013_draft_source_provenance', draftSourceSql);
+    expect(draftSourceSql).toContain('ADD COLUMN source_kind text NOT NULL');
+    expect(draftSourceSql).toContain("source_kind IN ('memory', 'text_asset')");
+    expect(draftSourceSql).toContain('ADD COLUMN approved_evidence_ids text[] NOT NULL');
+    expect(draftSourceSql).toContain('CREATE INDEX draft_artifacts_source_idx');
   });
 });

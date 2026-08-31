@@ -51,23 +51,75 @@ describe('private preview worker draft runtime', () => {
     expect((await post(`/api/memory/proposals/${proposalId}/confirm`, {
       permissions: {
         personalUnderstanding: true,
-        brandUsage: false,
+        brandUsage: true,
         publicUsage: false,
       },
     })).status).toBe(200);
-    expect((await post('/api/assets/text', {
+    const approvedAssetResponse = await post('/api/assets/text', {
       requestId: 'asset_runtime_brand_basis',
       title: 'مبنای واقعی تحلیل برند',
       content: 'در یک تجربه واقعی، گفت‌وگوی مستقیم باعث شد ابهام به تصمیمی مسئولانه و قابل اجرا تبدیل شود.',
       assertionText: 'گفت‌وگوی مستقیم را ابزاری برای تبدیل ابهام به تصمیم مسئولانه می‌دانم.',
       occurredAt: '2026-08-19T12:00:00.000Z',
       permissions: { personalUnderstanding: true, brandUsage: true },
-    })).status).toBe(201);
+    });
+    expect(approvedAssetResponse.status).toBe(201);
+    const approvedAsset = await approvedAssetResponse.json() as {
+      record: { assetId: string; evidenceId: string };
+    };
     expect((await post('/api/workbench/approval', { actionId: 'essay' })).status).toBe(200);
+
+    const approvedWorkbench = await worker.fetch(
+      new Request('https://preview.example/api/workbench'),
+      env,
+    );
+    const approvedSnapshot = await approvedWorkbench.json() as {
+      workflow: { approvedEvidenceIds: string[] };
+    };
+    expect(approvedSnapshot.workflow.approvedEvidenceIds).toEqual(expect.arrayContaining([
+      'evidence_turn_runtime',
+      approvedAsset.record.evidenceId,
+    ]));
+
+    const lateAssetResponse = await post('/api/assets/text', {
+      requestId: 'asset_runtime_after_approval',
+      title: 'منبع جدید پس از تأیید',
+      content: 'این منبع پس از تأیید اقدام اضافه شده و نباید بدون تأیید دوباره وارد همان Draft شود.',
+      assertionText: 'این منبع پس از تأیید اقدام ثبت شده است.',
+      occurredAt: '2026-08-19T13:00:00.000Z',
+      permissions: { personalUnderstanding: true, brandUsage: true },
+    });
+    expect(lateAssetResponse.status).toBe(201);
+    const lateAsset = await lateAssetResponse.json() as {
+      record: { assetId: string; evidenceId: string };
+    };
+    const lateSourcesResponse = await worker.fetch(
+      new Request('https://preview.example/api/drafts/sources'),
+      env,
+    );
+    const lateSources = await lateSourcesResponse.json() as {
+      records: Array<{ ref: string }>;
+    };
+    expect(lateSources.records.some((source) => source.ref === lateAsset.record.assetId)).toBe(true);
+    expect(approvedSnapshot.workflow.approvedEvidenceIds).not.toContain(lateAsset.record.evidenceId);
+    const lateSourceDraft = await post('/api/drafts', {
+      requestId: 'draft_runtime_late_source',
+      sourceKind: 'text_asset',
+      sourceRef: lateAsset.record.assetId,
+      channel: 'linkedin',
+      narrativeAngle: 'منبع جدید باید تأیید تازه داشته باشد',
+      takeaway: 'Evidence جدید به تأیید قبلی سرایت نمی‌کند.',
+      publicDraftingConsent: true,
+    });
+    expect(lateSourceDraft.status).toBe(409);
+    await expect(lateSourceDraft.json()).resolves.toEqual({
+      error: 'source_not_authorized_for_action',
+    });
 
     const createRequest = {
       requestId: 'draft_runtime_create',
-      sourceProposalId: proposalId,
+      sourceKind: 'memory',
+      sourceRef: proposalId,
       channel: 'linkedin',
       narrativeAngle: 'وقتی شفافیت از نمایش قطعیت مهم‌تر است و تصمیم مسئولانه می‌سازد',
       takeaway: 'گفت‌وگوی مستقیم می‌تواند ابهام را به یک تصمیم مسئولانه تبدیل کند. '.repeat(20),
@@ -180,9 +232,9 @@ describe('private preview worker draft runtime', () => {
       env,
     );
     await expect(onboardingResponse.json()).resolves.toMatchObject({
-      modelMaturity: { evidenceCount: 2 },
-      strategyReadiness: { ready: true, evidenceCount: 1, withheldEvidenceCount: 1 },
-      assets: { summary: { assets: 2, evidenceItems: 2, assertions: 2 } },
+      modelMaturity: { evidenceCount: 3 },
+      strategyReadiness: { ready: true, evidenceCount: 2, withheldEvidenceCount: 1 },
+      assets: { summary: { assets: 3, evidenceItems: 3, assertions: 3 } },
     });
 
     const accountExportResponse = await worker.fetch(

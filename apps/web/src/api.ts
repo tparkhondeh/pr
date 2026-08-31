@@ -13,6 +13,7 @@ export type WorkbenchAction = Readonly<{
   benefits: readonly string[];
   risks: readonly string[];
   prerequisites: readonly string[];
+  evidenceIds: readonly string[];
   evidenceCount: number;
   confidence: number;
   riskLevel: 'low' | 'medium' | 'high';
@@ -68,6 +69,7 @@ export type WorkbenchSnapshot = Readonly<{
       | 'cancelled';
     revision: number;
     approvedActionId?: string;
+    approvedEvidenceIds?: readonly string[];
     approvedAt?: string;
   }>;
 }>;
@@ -99,6 +101,23 @@ export type StrategyContextSnapshot = EditableStrategyContext & Readonly<{
 }>;
 
 export type DraftChannel = 'linkedin' | 'instagram' | 'x' | 'youtube' | 'podcast' | 'newsletter' | 'blog';
+export type DraftSourceKind = 'memory' | 'text_asset';
+
+export type DraftSourceRecord = Readonly<{
+  kind: DraftSourceKind;
+  ref: string;
+  label: string;
+  assertionId: string;
+  statement: string;
+  evidenceIds: readonly string[];
+  sourceTypes: readonly string[];
+}>;
+
+export type DraftSourceSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'mixed' | 'ephemeral';
+  records: readonly DraftSourceRecord[];
+}>;
 
 export type DraftWorkspaceSnapshot = Readonly<{
   draftId: string;
@@ -118,12 +137,7 @@ export type DraftWorkspaceSnapshot = Readonly<{
       message: string;
     }>[];
   }>;
-  source: Readonly<{
-    proposalId: string;
-    assertionId: string;
-    statement: string;
-    evidenceIds: readonly string[];
-  }>;
+  source: DraftSourceRecord;
   publicDraftingConsent: true;
   sourceAvailable: boolean;
   staleStrategy: boolean;
@@ -443,9 +457,19 @@ export async function loadDraftWorkspace(signal?: AbortSignal): Promise<DraftWor
   return payload;
 }
 
+export async function loadDraftSources(signal?: AbortSignal): Promise<DraftSourceSnapshot> {
+  const payload = await requestJson('/api/drafts/sources', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isDraftSourceSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
 export async function createDraft(input: Readonly<{
   requestId: string;
-  sourceProposalId: string;
+  sourceKind: DraftSourceKind;
+  sourceRef: string;
   channel: DraftChannel;
   narrativeAngle: string;
   takeaway: string;
@@ -591,7 +615,10 @@ export async function submitConversationTurn(input: Readonly<{
   return payload;
 }
 
-export async function confirmMemoryProposal(proposalId: string): Promise<ConfirmedMemory> {
+export async function confirmMemoryProposal(
+  proposalId: string,
+  brandUsage: boolean,
+): Promise<ConfirmedMemory> {
   const payload = await requestJson(
     `/api/memory/proposals/${encodeURIComponent(proposalId)}/confirm`,
     {
@@ -603,7 +630,7 @@ export async function confirmMemoryProposal(proposalId: string): Promise<Confirm
       body: JSON.stringify({
         permissions: {
           personalUnderstanding: true,
-          brandUsage: false,
+          brandUsage,
           publicUsage: false,
         },
       }),
@@ -690,6 +717,13 @@ function isWorkbenchSnapshot(payload: unknown): payload is WorkbenchSnapshot {
     typeof goal['title'] === 'string' &&
     isRecord(workflow) &&
     typeof workflow['status'] === 'string' &&
+    (
+      workflow['approvedEvidenceIds'] === undefined ||
+      (
+        Array.isArray(workflow['approvedEvidenceIds']) &&
+        workflow['approvedEvidenceIds'].every((id) => typeof id === 'string')
+      )
+    ) &&
     isRecord(runtime) &&
     typeof runtime['source'] === 'string' &&
     isRecord(evidence) &&
@@ -706,6 +740,8 @@ function isWorkbenchAction(value: unknown): value is WorkbenchAction {
   return (
     typeof value['id'] === 'string' && typeof value['title'] === 'string' &&
     typeof value['rationale'] === 'string' && typeof value['evidenceCount'] === 'number' &&
+    Array.isArray(value['evidenceIds']) &&
+    value['evidenceIds'].every((evidence) => typeof evidence === 'string') &&
     (value['evidenceState'] === 'insufficient' || value['evidenceState'] === 'grounded') &&
     Array.isArray(value['evidenceSourceTypes']) &&
     (
@@ -751,11 +787,31 @@ function isDraftWorkspaceSnapshot(payload: unknown): payload is DraftWorkspaceSn
     typeof payload['status'] === 'string' &&
     (guard['classification'] === 'green' || guard['classification'] === 'yellow' || guard['classification'] === 'red') &&
     typeof guard['mayRequestApproval'] === 'boolean' && Array.isArray(guard['violations']) &&
-    typeof source['proposalId'] === 'string' && typeof source['assertionId'] === 'string' &&
-    typeof source['statement'] === 'string' && Array.isArray(source['evidenceIds']) &&
+    isDraftSourceRecord(source) &&
     payload['publicDraftingConsent'] === true && typeof payload['sourceAvailable'] === 'boolean' &&
     typeof payload['staleStrategy'] === 'boolean' && typeof payload['updatedAt'] === 'string' &&
     (payload['persistence'] === 'memory' || payload['persistence'] === 'postgres' || payload['persistence'] === 'ephemeral')
+  );
+}
+
+function isDraftSourceSnapshot(payload: unknown): payload is DraftSourceSnapshot {
+  return (
+    isRecord(payload) && typeof payload['generatedAt'] === 'string' &&
+    (
+      payload['persistence'] === 'memory' || payload['persistence'] === 'postgres' ||
+      payload['persistence'] === 'mixed' || payload['persistence'] === 'ephemeral'
+    ) &&
+    Array.isArray(payload['records']) && payload['records'].every(isDraftSourceRecord)
+  );
+}
+
+function isDraftSourceRecord(value: unknown): value is DraftSourceRecord {
+  return (
+    isRecord(value) && (value['kind'] === 'memory' || value['kind'] === 'text_asset') &&
+    typeof value['ref'] === 'string' && typeof value['label'] === 'string' &&
+    typeof value['assertionId'] === 'string' && typeof value['statement'] === 'string' &&
+    Array.isArray(value['evidenceIds']) && value['evidenceIds'].every((id) => typeof id === 'string') &&
+    Array.isArray(value['sourceTypes']) && value['sourceTypes'].every((type) => typeof type === 'string')
   );
 }
 

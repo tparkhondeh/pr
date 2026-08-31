@@ -131,6 +131,7 @@ const drafts = new ContentDraftService(
   workbench,
   strategy,
   learning,
+  assets,
 );
 const requestHandler = createRequestHandler(
   () => postgres?.readiness() ?? { ready: true },

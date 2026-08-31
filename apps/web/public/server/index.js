@@ -105,6 +105,10 @@ export default {
       return json(currentDraft ? draftSnapshot() : null);
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/drafts/sources') {
+      return json(draftSourceSnapshot());
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/feedback') {
       return json(feedbackSnapshot());
     }
@@ -282,26 +286,36 @@ export default {
         if (repeated.snapshot.strategyRevision !== strategy.revision) {
           return json({ error: 'strategy_changed' }, 409);
         }
-        if (!usableDraftSource(memoryProposals.get(repeated.snapshot.source.proposalId))) {
+        const repeatedSource = resolveDraftSource(
+          repeated.snapshot.source.kind,
+          repeated.snapshot.source.ref,
+        );
+        if (!repeatedSource) {
           return json({ error: 'source_not_available' }, 409);
+        }
+        if (!sourceAuthorizedForContentAction(repeatedSource)) {
+          return json({ error: 'source_not_authorized_for_action' }, 409);
         }
         return json({ outcome: 'already_applied', ...repeated.snapshot });
       }
       if (approval?.actionId !== 'essay' || approval.strategyRevision !== strategy.revision) {
         return json({ error: 'content_action_not_approved' }, 409);
       }
-      const source = memoryProposals.get(body.sourceProposalId);
-      if (!usableDraftSource(source)) return json({ error: 'source_not_available' }, 409);
+      const source = resolveDraftSource(body.sourceKind, body.sourceRef);
+      if (!source) return json({ error: 'source_not_available' }, 409);
+      if (!sourceAuthorizedForContentAction(source)) {
+        return json({ error: 'source_not_authorized_for_action' }, 409);
+      }
       const draftId = crypto.randomUUID();
       const claimId = crypto.randomUUID();
       const draftBody = composePlatformDraft(
         body.channel,
         body.narrativeAngle.trim(),
-        source.text,
+        source.statement,
         body.takeaway.trim(),
         appliedPreferences(),
       );
-      const guard = reviewDraftBody(draftBody, body.channel, source.text, claimId);
+      const guard = reviewDraftBody(draftBody, body.channel, source.statement, claimId);
       currentDraft = {
         draftId,
         claimId,
@@ -311,16 +325,10 @@ export default {
         body: draftBody,
         status: guard.mayRequestApproval ? 'awaiting_approval' : 'guard_failed',
         guard,
-        source: {
-          proposalId: source.id,
-          assertionId: source.activeAssertionId,
-          statement: source.text,
-          evidenceIds: [source.activeEvidenceId ?? `evidence_${source.id.slice('memory_'.length)}`],
-        },
+        source,
         publicDraftingConsent: true,
         updatedAt: new Date().toISOString(),
       };
-      source.permissions = { ...source.permissions, publicUsage: true };
       rememberDraftRequest(body.requestId, 'create', body, currentDraft);
       recordAudit(`draft.create:${body.requestId}`, {
         eventType: 'draft.created', resourceType: 'draft', resourceId: draftId,
@@ -373,8 +381,12 @@ export default {
       if (repeated?.error) return json({ error: repeated.error }, 409);
       if (repeated?.snapshot) {
         if (currentDraft?.strategyRevision !== strategy.revision) return json({ error: 'strategy_changed' }, 409);
-        if (!usableDraftSource(memoryProposals.get(currentDraft.source.proposalId))) {
+        const repeatedSource = resolveDraftSource(currentDraft.source.kind, currentDraft.source.ref);
+        if (!repeatedSource) {
           return json({ error: 'source_not_available' }, 409);
+        }
+        if (!sourceAuthorizedForContentAction(repeatedSource)) {
+          return json({ error: 'source_not_authorized_for_action' }, 409);
         }
         return operation === 'export'
           ? json(exportPayload('already_applied', repeated.snapshot))
@@ -475,6 +487,7 @@ export default {
       }
       approval ??= {
         actionId: action.id,
+        evidenceIds: [...action.evidenceIds],
         approvedAt: new Date().toISOString(),
         strategyRevision: strategy.revision,
       };
@@ -542,7 +555,7 @@ export default {
       const permissions = body?.permissions;
       if (
         permissions?.personalUnderstanding !== true ||
-        permissions?.brandUsage !== false ||
+        typeof permissions?.brandUsage !== 'boolean' ||
         permissions?.publicUsage !== false
       ) {
         return json({ error: 'memory_permission_denied' }, 403);
@@ -687,7 +700,11 @@ function snapshot() {
       status: effectiveApproval ? 'approved' : 'awaiting_approval',
       revision: effectiveApproval ? 2 : 1,
       ...(effectiveApproval
-        ? { approvedActionId: effectiveApproval.actionId, approvedAt: effectiveApproval.approvedAt }
+        ? {
+            approvedActionId: effectiveApproval.actionId,
+            approvedEvidenceIds: effectiveApproval.evidenceIds,
+            approvedAt: effectiveApproval.approvedAt,
+          }
         : {}),
     },
   };
@@ -786,12 +803,14 @@ function ownerEvidenceContext() {
 function workbenchActions(context) {
   if (context.strategy.evidenceIds.length === 0) return coldStartActions(context);
   return groundedActions.map((action) => {
-    const evidenceCount = action.kind === 'content'
-      ? context.strategy.evidenceIds.length
-      : Math.min(context.strategy.evidenceIds.length, action.kind === 'no_action' ? 1 : 2);
+    const evidenceIds = action.kind === 'content'
+      ? context.strategy.evidenceIds
+      : context.strategy.evidenceIds.slice(0, action.kind === 'no_action' ? 1 : 2);
+    const evidenceCount = evidenceIds.length;
     return {
       ...action,
       rationale: contextualRationale(action, evidenceCount),
+      evidenceIds,
       evidenceCount,
       confidence: Math.min(action.confidence, 0.5 + Math.min(0.3, evidenceCount * 0.1)),
       evidenceState: 'grounded',
@@ -810,7 +829,7 @@ function coldStartActions(context) {
         ? `${String(withheld)} شاهد فقط برای فهم شخصی ثبت شده، اما برای تحلیل برند مجوز ندارد.`
         : 'هنوز هیچ شاهد مالک‌محور و مجازی برای تحلیل برند وجود ندارد؛ قبل از پیشنهاد حرکت بیرونی، یک منبع واقعی ثبت کنید.',
       benefits: ['ساخت پایه قابل‌ردیابی برای تصمیم بعدی'], risks: ['ورود متن نامرتبط یا بیش‌ازحد حساس'],
-      prerequisites: ['انتخاب یک متن واقعی', 'تعیین صریح مجوز تحلیل برند'], evidenceCount: 0,
+      prerequisites: ['انتخاب یک متن واقعی', 'تعیین صریح مجوز تحلیل برند'], evidenceIds: [], evidenceCount: 0,
       confidence: 1, riskLevel: 'low', attentionCostMinutes: 10, energyCost: 1, feasible: true,
       utilityScore: null, opportunityCost: null, rank: 1, evidenceState: 'insufficient',
       evidenceSourceTypes: [], interaction: 'open_intake',
@@ -819,7 +838,7 @@ function coldStartActions(context) {
       id: 'reflect_first', kind: 'private_conversation', title: 'یک تجربه واقعی را در گفت‌وگو ثبت کن',
       rationale: 'اگر منبع آماده‌ای ندارید، یک تجربه مشخص را تعریف کنید؛ سیستم فقط با تأیید جداگانه آن را به حافظه تبدیل می‌کند.',
       benefits: ['شروع کم‌اصطکاک مدل شخصی'], risks: ['یک Self-report منفرد هنوز شاهد مستقل نیست'],
-      prerequisites: ['تعریف یک موقعیت مشخص', 'تأیید جداگانه حافظه'], evidenceCount: 0,
+      prerequisites: ['تعریف یک موقعیت مشخص', 'تأیید جداگانه حافظه'], evidenceIds: [], evidenceCount: 0,
       confidence: 1, riskLevel: 'low', attentionCostMinutes: 8, energyCost: 1, feasible: true,
       utilityScore: null, opportunityCost: null, rank: 2, evidenceState: 'insufficient',
       evidenceSourceTypes: [], interaction: 'open_conversation',
@@ -828,7 +847,7 @@ function coldStartActions(context) {
       id: 'wait', kind: 'no_action', title: 'تا رسیدن شاهد، اقدام عمومی نکن',
       rationale: `برای هدف «${strategy.goal.title}» هنوز Evidence مجاز کافی وجود ندارد؛ خودداری از توصیه عمومی از ساختن قطعیت کاذب معتبرتر است.`,
       benefits: ['پرهیز از توصیه و ادعای بدون پشتوانه'], risks: ['عقب‌افتادن یک پنجره زمانی کوتاه'],
-      prerequisites: ['بازبینی پس از ورود اولین منبع مجاز'], evidenceCount: 0,
+      prerequisites: ['بازبینی پس از ورود اولین منبع مجاز'], evidenceIds: [], evidenceCount: 0,
       confidence: 1, riskLevel: 'low', attentionCostMinutes: 0, energyCost: 1, feasible: true,
       utilityScore: null, opportunityCost: null, rank: 3, evidenceState: 'insufficient',
       evidenceSourceTypes: [], interaction: 'approve',
@@ -875,7 +894,8 @@ const draftChannels = ['linkedin', 'instagram', 'x', 'youtube', 'podcast', 'news
 function validDraftCreate(body) {
   return (
     typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) &&
-    typeof body.sourceProposalId === 'string' && draftChannels.includes(body.channel) &&
+    (body.sourceKind === 'memory' || body.sourceKind === 'text_asset') &&
+    typeof body.sourceRef === 'string' && draftChannels.includes(body.channel) &&
     validText(body.narrativeAngle, 3, 500) && validText(body.takeaway, 3, 2000) &&
     body.publicDraftingConsent === true
   );
@@ -886,17 +906,51 @@ function validDraftMutation(body) {
     Number.isSafeInteger(body.expectedRevision) && body.expectedRevision >= 1;
 }
 
-function usableDraftSource(source) {
+function draftSourceSnapshot() {
+  return {
+    generatedAt: new Date().toISOString(),
+    persistence: 'ephemeral',
+    records: [
+      ...[...textAssets.values()]
+        .filter((asset) => asset.permissions.brandUsage)
+        .map((asset) => ({
+          kind: 'text_asset', ref: asset.assetId, label: asset.title,
+          assertionId: asset.assertionId, statement: asset.assertionText,
+          evidenceIds: [asset.evidenceId], sourceTypes: ['text_asset'],
+        })),
+      ...[...memoryProposals.values()]
+        .filter((source) => usableMemoryDraftSource(source) && source.permissions.brandUsage)
+        .map((source) => ({
+          kind: 'memory', ref: source.id, label: source.text.slice(0, 120),
+          assertionId: source.activeAssertionId, statement: source.text,
+          evidenceIds: [source.activeEvidenceId ?? `evidence_${source.id.slice('memory_'.length)}`],
+          sourceTypes: [source.revisionCount > 1 ? 'user_correction' : 'conversation_turn'],
+        })),
+    ],
+  };
+}
+
+function usableMemoryDraftSource(source) {
   return Boolean(source?.confirmedAt && !source.deleted && !source.contestedAt &&
     !source.permissionsRevoked && typeof source.text === 'string');
 }
 
+function resolveDraftSource(kind, ref) {
+  return draftSourceSnapshot().records.find((source) => source.kind === kind && source.ref === ref);
+}
+
+function sourceAuthorizedForContentAction(source) {
+  if (approval?.actionId !== 'essay' || approval.strategyRevision !== strategy.revision) return false;
+  return Boolean(Array.isArray(approval.evidenceIds) && source.evidenceIds.length > 0 &&
+    source.evidenceIds.every((id) => approval.evidenceIds.includes(id)));
+}
+
 function draftSnapshot() {
-  const source = memoryProposals.get(currentDraft.source.proposalId);
+  const source = resolveDraftSource(currentDraft.source.kind, currentDraft.source.ref);
   return {
     ...currentDraft,
     persistence: 'ephemeral',
-    sourceAvailable: usableDraftSource(source),
+    sourceAvailable: Boolean(source && sourceAuthorizedForContentAction(source)),
     staleStrategy: currentDraft.strategyRevision !== strategy.revision,
   };
 }
@@ -905,7 +959,9 @@ function draftMutationGate(draftId, revision) {
   if (!currentDraft || currentDraft.draftId !== draftId) return 'draft_not_found';
   if (currentDraft.revision !== revision) return 'revision_changed';
   if (currentDraft.strategyRevision !== strategy.revision) return 'strategy_changed';
-  if (!usableDraftSource(memoryProposals.get(currentDraft.source.proposalId))) return 'source_not_available';
+  const source = resolveDraftSource(currentDraft.source.kind, currentDraft.source.ref);
+  if (!source) return 'source_not_available';
+  if (!sourceAuthorizedForContentAction(source)) return 'source_not_authorized_for_action';
   return null;
 }
 

@@ -478,6 +478,10 @@ describe('operational endpoints', () => {
     const activeTenant = tenantId('tenant_primary');
     const owner = userId('owner_primary');
     const conversation = new ConversationIntakeService();
+    const assets = new TextAssetIntakeService(new InMemoryTextAssetRepository(), {
+      tenantId: activeTenant,
+      ownerUserId: owner,
+    });
     const approval = new InMemoryWorkbenchApprovalRepository();
     const strategy = new StrategyContextService(
       new InMemoryStrategyContextRepository(defaultStrategyContext(activeTenant, owner), approval),
@@ -488,7 +492,12 @@ describe('operational endpoints', () => {
       approval,
       { tenantId: activeTenant, ownerUserId: owner },
       strategy,
-      groundedEvidence(fixedTime),
+      new OwnerEvidenceContextService(
+        assets,
+        conversation,
+        { tenantId: activeTenant, ownerUserId: owner },
+        () => fixedTime,
+      ),
     );
     const proposalResult = await conversation.submitTurn({
       tenantId: activeTenant,
@@ -504,7 +513,7 @@ describe('operational endpoints', () => {
       tenantId: activeTenant,
       actorId: owner,
       proposalId: proposalResult.memoryProposal.id,
-      permissions: { personalUnderstanding: true, brandUsage: false, publicUsage: false },
+      permissions: { personalUnderstanding: true, brandUsage: true, publicUsage: false },
       confirmedAt: fixedTime,
     });
     await workbench.approve('essay', owner, fixedTime);
@@ -514,12 +523,28 @@ describe('operational endpoints', () => {
       conversation,
       workbench,
       strategy,
+      undefined,
+      assets,
     );
     const dependencies: ApplicationDependencies = {
       drafts,
       resolveActor: () => owner,
       clock: () => fixedTime,
     };
+    const sourcesResponse = await request(
+      '/api/drafts/sources',
+      () => ({ ready: true }),
+      undefined,
+      dependencies,
+    );
+    expect(sourcesResponse.status).toBe(200);
+    await expect(sourcesResponse.json()).resolves.toMatchObject({
+      records: [{
+        kind: 'memory',
+        ref: proposalResult.memoryProposal.id,
+        evidenceIds: ['evidence_turn_http_draft'],
+      }],
+    });
     const createdResponse = await request(
       '/api/drafts',
       () => ({ ready: true }),
@@ -528,7 +553,8 @@ describe('operational endpoints', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           requestId: 'draft_http_create',
-          sourceProposalId: proposalResult.memoryProposal.id,
+          sourceKind: 'memory',
+          sourceRef: proposalResult.memoryProposal.id,
           channel: 'linkedin',
           narrativeAngle: 'شفافیت در تصمیم‌های دشوار',
           takeaway: 'اعتماد با صداقت درباره ابهام ساخته می‌شود.',

@@ -48,6 +48,7 @@ describe('strategy context lifecycle', () => {
     const approval = new InMemoryWorkbenchApprovalRepository();
     await approval.approve({
       actionId: 'conversation',
+      evidenceIds: ['evidence_strategy_context'],
       actorUserId: owner,
       occurredAt: changedAt,
       expectedRevision: 1,

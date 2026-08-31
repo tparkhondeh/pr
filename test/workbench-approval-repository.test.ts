@@ -44,6 +44,7 @@ const approvedRow = {
   revision: '2',
   strategy_revision: '1',
   approved_action_ref: 'conversation',
+  approved_evidence_ids: ['evidence_conversation'],
   approved_by: context.ownerUserId,
   approved_at: '2026-08-31T12:00:00.000Z',
 };
@@ -59,6 +60,7 @@ describe('Postgres workbench approval repository', () => {
 
     await expect(repository.find()).resolves.toMatchObject({
       actionId: 'conversation',
+      evidenceIds: ['evidence_conversation'],
       revision: 2,
     });
     expect(runner.transactions).toBe(1);
@@ -79,6 +81,7 @@ describe('Postgres workbench approval repository', () => {
 
     const result = await repository.approve({
       actionId: 'conversation',
+      evidenceIds: ['evidence_conversation'],
       actorUserId: context.ownerUserId,
       occurredAt: new Date('2026-08-31T12:00:00.000Z'),
       expectedRevision: 1,
@@ -88,7 +91,8 @@ describe('Postgres workbench approval repository', () => {
     expect(runner.transactions).toBe(1);
     expect(transaction.queries).toHaveLength(5);
     expect(transaction.queries[2]?.sql).toContain("status = 'awaiting_approval'");
-    expect(transaction.queries[2]?.sql).toContain('revision = $7');
+    expect(transaction.queries[2]?.sql).toContain('revision = $8');
+    expect(transaction.queries[2]?.values[4]).toEqual(['evidence_conversation']);
     expect(transaction.queries[3]?.sql).toContain('app.audit_events');
     expect(transaction.queries[4]?.sql).toContain('app.outbox_events');
   });
@@ -110,6 +114,7 @@ describe('Postgres workbench approval repository', () => {
 
     const result = await repository.approve({
       actionId: 'conversation',
+      evidenceIds: ['evidence_conversation'],
       actorUserId: context.ownerUserId,
       occurredAt: new Date('2026-08-31T12:01:00.000Z'),
       expectedRevision: 1,

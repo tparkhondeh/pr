@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  InMemoryTextAssetRepository,
+  TextAssetIntakeService,
+} from '../src/assets/text-asset-intake.js';
+import {
   ContentDraftService,
   DraftBlockedError,
   InMemoryDraftWorkspaceRepository,
@@ -19,8 +23,8 @@ import {
   defaultStrategyContext,
 } from '../src/strategy/context.js';
 import { InMemoryWorkbenchApprovalRepository } from '../src/workbench/approval-repository.js';
+import { OwnerEvidenceContextService } from '../src/workbench/evidence-context.js';
 import { createDefaultWorkbenchService } from '../src/workbench/workbench.js';
-import { groundedEvidence } from './support/grounded-evidence.js';
 
 const tenant = tenantId('11111111-1111-4111-8111-111111111111');
 const owner = userId('22222222-2222-4222-8222-222222222222');
@@ -28,6 +32,10 @@ const now = new Date('2026-08-31T18:00:00.000Z');
 
 async function fixture() {
   const conversation = new ConversationIntakeService();
+  const assets = new TextAssetIntakeService(new InMemoryTextAssetRepository(), {
+    tenantId: tenant,
+    ownerUserId: owner,
+  });
   const approval = new InMemoryWorkbenchApprovalRepository();
   const strategy = new StrategyContextService(
     new InMemoryStrategyContextRepository(defaultStrategyContext(tenant, owner), approval),
@@ -38,8 +46,23 @@ async function fixture() {
     approval,
     { tenantId: tenant, ownerUserId: owner },
     strategy,
-    groundedEvidence(now),
+    new OwnerEvidenceContextService(
+      assets,
+      conversation,
+      { tenantId: tenant, ownerUserId: owner },
+      () => now,
+    ),
   );
+  const approvedAsset = await assets.importText({
+    actorId: owner,
+    requestId: 'asset_draft_approved',
+    title: 'یادداشت تصمیم شفاف',
+    content: 'این یادداشت یک تجربه واقعی از ترجیح شفافیت بر نمایش‌گری در یک تصمیم دشوار را ثبت می‌کند.',
+    assertionText: 'در یک تصمیم دشوار، شفافیت بر نمایش‌گری ترجیح داده شد.',
+    occurredAt: now,
+    importedAt: now,
+    permissions: { personalUnderstanding: true, brandUsage: true },
+  });
   const turn = await conversation.submitTurn({
     tenantId: tenant,
     actorId: owner,
@@ -54,7 +77,7 @@ async function fixture() {
     tenantId: tenant,
     actorId: owner,
     proposalId: turn.memoryProposal.id,
-    permissions: { personalUnderstanding: true, brandUsage: false, publicUsage: false },
+    permissions: { personalUnderstanding: true, brandUsage: true, publicUsage: false },
     confirmedAt: now,
   });
   await workbench.approve('essay', owner, now);
@@ -69,8 +92,18 @@ async function fixture() {
     workbench,
     strategy,
     learning,
+    assets,
   );
-  return { service, conversation, learning, proposalId: turn.memoryProposal.id };
+  return {
+    service,
+    conversation,
+    learning,
+    assets,
+    workbench,
+    approvedAssetRef: approvedAsset.record.assetId,
+    approvedAssetEvidenceId: approvedAsset.record.evidenceId,
+    proposalId: turn.memoryProposal.id,
+  };
 }
 
 describe('evidence-bound draft workspace', () => {
@@ -79,7 +112,8 @@ describe('evidence-bound draft workspace', () => {
     const created = await service.create({
       actorId: owner,
       requestId: 'draft_create_one',
-      sourceProposalId: proposalId,
+      sourceKind: 'memory',
+      sourceRef: proposalId,
       channel: 'linkedin',
       narrativeAngle: 'چرا کیفیت تصمیم از نمایش نتیجه مهم‌تر است؟',
       takeaway: 'اعتماد با صداقت در ابهام ساخته می‌شود.',
@@ -90,7 +124,7 @@ describe('evidence-bound draft workspace', () => {
       revision: 1,
       status: 'awaiting_approval',
       guard: { classification: 'green' },
-      source: { evidenceIds: ['evidence_turn_draft_source'] },
+      source: { kind: 'memory', ref: proposalId, evidenceIds: ['evidence_turn_draft_source'] },
     });
 
     const unsafe = await service.edit({
@@ -144,7 +178,8 @@ describe('evidence-bound draft workspace', () => {
     await expect(service.create({
       actorId: owner,
       requestId: 'draft_without_consent',
-      sourceProposalId: proposalId,
+      sourceKind: 'memory',
+      sourceRef: proposalId,
       channel: 'linkedin',
       narrativeAngle: 'یک روایت قابل‌ردیابی',
       takeaway: 'یک برداشت شخصی',
@@ -153,12 +188,83 @@ describe('evidence-bound draft workspace', () => {
     })).rejects.toThrow('Explicit public drafting consent');
   });
 
+  it('freezes exact evidence at approval and rejects sources added afterward', async () => {
+    const {
+      service,
+      assets,
+      workbench,
+      approvedAssetRef,
+      approvedAssetEvidenceId,
+    } = await fixture();
+    const approvedSources = await service.sources(owner, now);
+    expect(approvedSources.records).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'text_asset',
+        ref: approvedAssetRef,
+        evidenceIds: [approvedAssetEvidenceId],
+      }),
+    ]));
+
+    await expect(service.create({
+      actorId: owner,
+      requestId: 'draft_from_approved_asset',
+      sourceKind: 'text_asset',
+      sourceRef: approvedAssetRef,
+      channel: 'newsletter',
+      narrativeAngle: 'چطور شفافیت کیفیت یک تصمیم دشوار را بالا می‌برد؟',
+      takeaway: 'اعتماد از ادعای بزرگ نه، از تجربه قابل‌ردیابی ساخته می‌شود.',
+      publicDraftingConsent: true,
+      occurredAt: now,
+    })).resolves.toMatchObject({ snapshot: { source: { kind: 'text_asset', ref: approvedAssetRef } } });
+
+    const later = await assets.importText({
+      actorId: owner,
+      requestId: 'asset_draft_after_approval',
+      title: 'یادداشت جدید پس از تأیید',
+      content: 'این منبع بعد از تأیید اقدام محتوایی اضافه شده و نباید به‌صورت ضمنی وارد همان اقدام شود.',
+      assertionText: 'این تجربه بعد از تأیید اقدام ثبت شده است.',
+      occurredAt: new Date(now.getTime() + 1_000),
+      importedAt: new Date(now.getTime() + 1_000),
+      permissions: { personalUnderstanding: true, brandUsage: true },
+    });
+    await assets.importText({
+      actorId: owner,
+      requestId: 'asset_draft_without_brand_consent',
+      title: 'یادداشت فقط برای شناخت شخصی',
+      content: 'این یادداشت رضایت استفاده در برند ندارد و نباید در کاتالوگ منبع Draft نمایش داده شود.',
+      assertionText: 'این منبع فقط برای شناخت شخصی مجاز است.',
+      occurredAt: new Date(now.getTime() + 2_000),
+      importedAt: new Date(now.getTime() + 2_000),
+      permissions: { personalUnderstanding: true, brandUsage: false },
+    });
+
+    const sourcesAfterApproval = await service.sources(owner, new Date(now.getTime() + 3_000));
+    expect(sourcesAfterApproval.records.some((source) => source.ref === later.record.assetId)).toBe(true);
+    expect(sourcesAfterApproval.records.some((source) => source.ref === 'asset_asset_draft_without_brand_consent')).toBe(false);
+    const frozen = await workbench.snapshot();
+    expect(frozen.workflow.approvedEvidenceIds).toContain(approvedAssetEvidenceId);
+    expect(frozen.workflow.approvedEvidenceIds).not.toContain(later.record.evidenceId);
+
+    await expect(service.create({
+      actorId: owner,
+      requestId: 'draft_from_late_asset',
+      sourceKind: 'text_asset',
+      sourceRef: later.record.assetId,
+      channel: 'linkedin',
+      narrativeAngle: 'این منبع نباید بدون تأیید تازه استفاده شود',
+      takeaway: 'Evidence جدید به Approval قدیمی سرایت نمی‌کند.',
+      publicDraftingConsent: true,
+      occurredAt: new Date(now.getTime() + 3_000),
+    })).rejects.toMatchObject({ reason: 'source_not_authorized_for_action' });
+  });
+
   it('records an edit as owner feedback without auto-applying a preference', async () => {
     const { service, learning, proposalId } = await fixture();
     const created = await service.create({
       actorId: owner,
       requestId: 'draft_feedback_create',
-      sourceProposalId: proposalId,
+      sourceKind: 'memory',
+      sourceRef: proposalId,
       channel: 'linkedin',
       narrativeAngle: 'یک تیتر طولانی برای ثبت الگوی ویرایش کاربر',
       takeaway: 'یک برداشت شخصی و قابل‌ردیابی که برای آزمون به اندازه کافی توضیح دارد. '.repeat(8),
@@ -223,10 +329,13 @@ describe('Postgres draft workspace repository', () => {
       body: 'زاویه روایت\n\nیک تجربه واقعی\n\nبرداشت من',
       guard: { classification: 'green', mayRequestApproval: true, violations: [] },
       source: {
-        proposalId: 'memory_pg_source',
+        kind: 'memory',
+        ref: 'memory_pg_source',
+        label: 'یک تجربه واقعی',
         assertionId: '44444444-4444-4444-8444-444444444444',
         statement: 'یک تجربه واقعی',
         evidenceIds: [evidence],
+        sourceTypes: ['conversation_turn'],
       },
     };
 

@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
+import type { TextAssetIntakeService } from '../assets/text-asset-intake.js';
 import type { ConversationIntakeService } from '../conversation/intake.js';
-import type { PersonalMemoryRecord } from '../conversation/repository.js';
 import type { SqlTransaction, SqlTransactionRunner } from '../database/sql.js';
 import type { FeedbackLearningService } from '../feedback/workspace.js';
 import type { TenantId, UserId } from '../kernel/identity.js';
 import { evidenceId } from '../memory/personal-memory.js';
 import type { StrategyContextService } from '../strategy/context.js';
-import type { WorkbenchService } from '../workbench/workbench.js';
+import type { WorkbenchService, WorkbenchSnapshot } from '../workbench/workbench.js';
 import { proposeClaim, verifyClaim, type Claim } from './claim-registry.js';
 import { guardDraft, type DraftGuardResult, type GuardViolation } from './draft-guard.js';
 
@@ -18,6 +18,24 @@ export type DraftChannel =
   | 'podcast'
   | 'newsletter'
   | 'blog';
+
+export type DraftSourceKind = 'memory' | 'text_asset';
+
+export type DraftSourceRecord = Readonly<{
+  kind: DraftSourceKind;
+  ref: string;
+  label: string;
+  assertionId: string;
+  statement: string;
+  evidenceIds: readonly string[];
+  sourceTypes: readonly string[];
+}>;
+
+export type DraftSourceSnapshot = Readonly<{
+  generatedAt: Date;
+  persistence: 'memory' | 'postgres' | 'mixed';
+  records: readonly DraftSourceRecord[];
+}>;
 
 export type DraftWorkspacePersistence = 'memory' | 'postgres';
 export type DraftWorkspaceStatus = 'guard_failed' | 'awaiting_approval' | 'approved' | 'exported';
@@ -31,12 +49,7 @@ export type DraftWorkspaceSnapshot = Readonly<{
   body: string;
   status: DraftWorkspaceStatus;
   guard: DraftGuardResult;
-  source: Readonly<{
-    proposalId: string;
-    assertionId: string;
-    statement: string;
-    evidenceIds: readonly string[];
-  }>;
+  source: DraftSourceRecord;
   publicDraftingConsent: true;
   sourceAvailable: boolean;
   staleStrategy: boolean;
@@ -102,6 +115,7 @@ export class DraftBlockedError extends Error {
     public readonly reason:
       | 'content_action_not_approved'
       | 'source_not_available'
+      | 'source_not_authorized_for_action'
       | 'guard_failed'
       | 'strategy_changed'
       | 'draft_not_approved',
@@ -126,25 +140,74 @@ export class ContentDraftService {
     private readonly workbench: Pick<WorkbenchService, 'snapshot'>,
     private readonly strategy: Pick<StrategyContextService, 'snapshot'>,
     private readonly learning?: Pick<FeedbackLearningService, 'recordDraftEdit' | 'appliedPreferences'>,
+    private readonly assets?: Pick<TextAssetIntakeService, 'snapshot'>,
   ) {}
+
+  public async sources(actorId: UserId, at: Date): Promise<DraftSourceSnapshot> {
+    this.assertOwner(actorId);
+    const [memory, assets] = await Promise.all([
+      this.conversation.memorySnapshot({
+        tenantId: this.identity.tenantId,
+        actorId,
+        generatedAt: at,
+      }),
+      this.assets?.snapshot(actorId, at),
+    ]);
+    const memorySources: DraftSourceRecord[] = memory.records
+      .filter((record) => (
+        record.lifecycle.status === 'active' && record.text &&
+        record.consent.brandUsage && record.provenance.evidenceIds.length > 0
+      ))
+      .map((record) => ({
+        kind: 'memory',
+        ref: record.proposalId,
+        label: record.text?.slice(0, 120) ?? 'حافظه تأییدشده',
+        assertionId: record.assertionId,
+        statement: record.text ?? '',
+        evidenceIds: record.provenance.evidenceIds,
+        sourceTypes: record.provenance.sourceTypes,
+      }));
+    const assetSources: DraftSourceRecord[] = assets?.records
+      .filter((record) => record.permissions.brandUsage)
+      .map((record) => ({
+        kind: 'text_asset',
+        ref: record.assetId,
+        label: record.title,
+        assertionId: record.assertionId,
+        statement: record.assertionText,
+        evidenceIds: [record.evidenceId],
+        sourceTypes: [record.sourceType],
+      })) ?? [];
+    return {
+      generatedAt: at,
+      persistence: assets && assets.persistence !== memory.persistence
+        ? 'mixed'
+        : (assets?.persistence ?? memory.persistence),
+      records: [...assetSources, ...memorySources],
+    };
+  }
 
   public async snapshot(actorId: UserId, at: Date): Promise<DraftWorkspaceSnapshot | null> {
     this.assertOwner(actorId);
     const current = await this.repository.find();
     if (!current) return null;
     const strategy = await this.strategy.snapshot(actorId);
-    const source = await this.findSource(actorId, current.source.proposalId, at);
+    const [source, workbench] = await Promise.all([
+      this.findSource(actorId, current.source.kind, current.source.ref, at),
+      this.workbench.snapshot(),
+    ]);
     return {
       ...current,
       staleStrategy: strategy.revision !== current.strategyRevision,
-      sourceAvailable: isUsableSource(source),
+      sourceAvailable: Boolean(source && sourceAuthorizedForContentAction(workbench, source)),
     };
   }
 
   public async create(input: Readonly<{
     actorId: UserId;
     requestId: string;
-    sourceProposalId: string;
+    sourceKind: DraftSourceKind;
+    sourceRef: string;
     channel: DraftChannel;
     narrativeAngle: string;
     takeaway: string;
@@ -162,24 +225,27 @@ export class ContentDraftService {
       throw new DraftBlockedError('content_action_not_approved');
     }
     const strategy = await this.strategy.snapshot(input.actorId);
-    const source = await this.findSource(input.actorId, input.sourceProposalId, input.occurredAt);
-    if (!isUsableSource(source)) throw new DraftBlockedError('source_not_available');
+    const source = await this.findSource(
+      input.actorId,
+      input.sourceKind,
+      input.sourceRef,
+      input.occurredAt,
+    );
+    if (!source) throw new DraftBlockedError('source_not_available');
+    if (!sourceAuthorizedForContentAction(workbench, source)) {
+      throw new DraftBlockedError('source_not_authorized_for_action');
+    }
     const preferences = await this.learning?.appliedPreferences(input.actorId, input.occurredAt) ?? {};
     const body = composePlatformDraft(
       input.channel,
       input.narrativeAngle.trim(),
-      source.text,
+      source.statement,
       input.takeaway.trim(),
       preferences,
     );
     const draftId = deterministicUuid(`draft:${this.identity.tenantId}:${input.requestId}`);
     const claimId = deterministicUuid(`claim:${this.identity.tenantId}:${input.requestId}`);
-    const sourceValue = {
-      proposalId: source.proposalId,
-      assertionId: source.assertionId,
-      statement: source.text,
-      evidenceIds: source.provenance.evidenceIds,
-    };
+    const sourceValue = source;
     const guard = reviewBody(
       draftId,
       this.identity.tenantId,
@@ -219,8 +285,16 @@ export class ContentDraftService {
     const current = await this.requiredCurrent(input.draftId);
     const strategy = await this.strategy.snapshot(input.actorId);
     if (strategy.revision !== current.strategyRevision) throw new DraftBlockedError('strategy_changed');
-    const source = await this.findSource(input.actorId, current.source.proposalId, input.occurredAt);
-    if (!isUsableSource(source)) throw new DraftBlockedError('source_not_available');
+    const source = await this.findSource(
+      input.actorId,
+      current.source.kind,
+      current.source.ref,
+      input.occurredAt,
+    );
+    if (!source) throw new DraftBlockedError('source_not_available');
+    if (!sourceAuthorizedForContentAction(await this.workbench.snapshot(), source)) {
+      throw new DraftBlockedError('source_not_authorized_for_action');
+    }
     const guard = reviewBody(
       current.draftId,
       this.identity.tenantId,
@@ -287,8 +361,16 @@ export class ContentDraftService {
     }
     const strategy = await this.strategy.snapshot(input.actorId);
     if (strategy.revision !== current.strategyRevision) throw new DraftBlockedError('strategy_changed');
-    const source = await this.findSource(input.actorId, current.source.proposalId, input.occurredAt);
-    if (!isUsableSource(source)) throw new DraftBlockedError('source_not_available');
+    const source = await this.findSource(
+      input.actorId,
+      current.source.kind,
+      current.source.ref,
+      input.occurredAt,
+    );
+    if (!source) throw new DraftBlockedError('source_not_available');
+    if (!sourceAuthorizedForContentAction(await this.workbench.snapshot(), source)) {
+      throw new DraftBlockedError('source_not_authorized_for_action');
+    }
     return current;
   }
 
@@ -298,13 +380,15 @@ export class ContentDraftService {
     return current;
   }
 
-  private async findSource(actorId: UserId, proposalId: string, at: Date): Promise<PersonalMemoryRecord | undefined> {
-    const memory = await this.conversation.memorySnapshot({
-      tenantId: this.identity.tenantId,
-      actorId,
-      generatedAt: at,
-    });
-    return memory.records.find((record) => record.proposalId === proposalId);
+  private async findSource(
+    actorId: UserId,
+    kind: DraftSourceKind,
+    ref: string,
+    at: Date,
+  ): Promise<DraftSourceRecord | undefined> {
+    return (await this.sources(actorId, at)).records.find(
+      (record) => record.kind === kind && record.ref === ref,
+    );
   }
 
   private assertOwner(actorId: UserId): void {
@@ -421,6 +505,7 @@ type DraftRow = Readonly<{
   body: string;
   status: DraftWorkspaceStatus;
   guard_result: unknown;
+  source_kind: DraftSourceKind;
   source_proposal_ref: string;
   source_assertion_id: string;
   claim_id: string;
@@ -461,8 +546,9 @@ export class PostgresDraftWorkspaceRepository implements DraftWorkspaceRepositor
       const fingerprint = commandFingerprint('create', command);
       const repeated = await reserveRequest(transaction, this.context, command, 'create', fingerprint);
       if (repeated) return { outcome: 'already_applied', snapshot: repeated };
-      const sourceResult = await transaction.query<SourceRow>(
-        `SELECT active.id AS assertion_id, active.value AS assertion_value,
+      const sourceResult = command.source.kind === 'memory'
+        ? await transaction.query<SourceRow>(
+          `SELECT active.id AS assertion_id, active.value AS assertion_value,
                 COALESCE(jsonb_agg(DISTINCT link.evidence_id::text)
                   FILTER (WHERE evidence.deleted_at IS NULL), '[]'::jsonb) AS evidence_ids
            FROM app.memory_proposals proposal
@@ -482,12 +568,30 @@ export class PostgresDraftWorkspaceRepository implements DraftWorkspaceRepositor
                  AND grant_row.subject_user_id = proposal.subject_user_id
                  AND grant_row.resource_type = 'assertion'
                  AND grant_row.resource_id = active.id::text
-                 AND grant_row.purpose = 'personal_understanding'
+                 AND grant_row.purpose = 'brand_usage'
                  AND grant_row.operation = 'read' AND grant_row.revoked_at IS NULL
             )
           GROUP BY active.id, active.value`,
-        [this.context.tenantId, this.context.ownerUserId, command.source.proposalId],
-      );
+          [this.context.tenantId, this.context.ownerUserId, command.source.ref],
+        )
+        : await transaction.query<SourceRow>(
+          `SELECT assertion.id AS assertion_id, assertion.value AS assertion_value,
+                  jsonb_build_array(request.evidence_id::text) AS evidence_ids
+             FROM app.asset_intake_requests request
+             JOIN app.assets asset
+               ON asset.tenant_id = request.tenant_id AND asset.id = request.asset_id
+             JOIN app.evidence_items evidence
+               ON evidence.tenant_id = request.tenant_id AND evidence.id = request.evidence_id
+             JOIN app.assertions assertion
+               ON assertion.tenant_id = request.tenant_id AND assertion.id = request.assertion_id
+            WHERE request.tenant_id = $1 AND request.owner_user_id = $2
+              AND request.asset_id = $3::uuid
+              AND request.result_snapshot->'permissions'->>'brandUsage' = 'true'
+              AND asset.deleted_at IS NULL AND evidence.deleted_at IS NULL
+              AND assertion.deleted_at IS NULL AND assertion.contested_at IS NULL
+              AND assertion.valid_to IS NULL`,
+          [this.context.tenantId, this.context.ownerUserId, command.source.ref],
+        );
       const source = sourceResult.rows[0];
       if (!source || source.assertion_id !== command.source.assertionId || source.assertion_value !== command.source.statement) {
         throw new DraftBlockedError('source_not_available');
@@ -526,10 +630,10 @@ export class PostgresDraftWorkspaceRepository implements DraftWorkspaceRepositor
       await transaction.query(
         `INSERT INTO app.draft_artifacts (
            id, tenant_id, owner_user_id, workflow_id, channel, body, status,
-           guard_result, source_proposal_ref, source_assertion_id, strategy_revision,
+           guard_result, source_kind, source_proposal_ref, source_assertion_id, strategy_revision,
            revision, created_by, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, 1, $3, $12, $12)`,
-        [command.draftId, this.context.tenantId, this.context.ownerUserId, `draft:${command.draftId}`, command.channel, command.body, status, JSON.stringify(command.guard), command.source.proposalId, command.source.assertionId, command.strategyRevision, command.occurredAt],
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, 1, $3, $13, $13)`,
+        [command.draftId, this.context.tenantId, this.context.ownerUserId, `draft:${command.draftId}`, command.channel, command.body, status, JSON.stringify(command.guard), command.source.kind, command.source.ref, command.source.assertionId, command.strategyRevision, command.occurredAt],
       );
       await transaction.query(
         `INSERT INTO app.draft_claims (tenant_id, draft_id, claim_id, excerpt)
@@ -648,12 +752,18 @@ export const draftChannels: readonly DraftChannel[] = [
   'linkedin', 'instagram', 'x', 'youtube', 'podcast', 'newsletter', 'blog',
 ];
 
-function isUsableSource(source: PersonalMemoryRecord | undefined): source is PersonalMemoryRecord & { text: string } {
-  return Boolean(
-    source && source.lifecycle.status === 'active' && source.text &&
-    source.provenance.evidenceCount > 0 && source.provenance.evidenceIds.length > 0 &&
-    source.consent.personalUnderstanding,
-  );
+function sourceAuthorizedForContentAction(
+  workbench: WorkbenchSnapshot,
+  source: DraftSourceRecord,
+): boolean {
+  if (
+    workbench.workflow.status !== 'approved' ||
+    workbench.workflow.approvedActionId !== 'essay' ||
+    !workbench.workflow.approvedEvidenceIds ||
+    source.evidenceIds.length === 0
+  ) return false;
+  const authorized = new Set(workbench.workflow.approvedEvidenceIds);
+  return source.evidenceIds.every((id) => authorized.has(id));
 }
 
 function composePlatformDraft(
@@ -801,7 +911,7 @@ function createSnapshot(
 function draftSelectColumns(): string {
   return `SELECT draft.id AS draft_id, draft.revision, draft.strategy_revision,
                  draft.channel, draft.body, draft.status, draft.guard_result,
-                 draft.source_proposal_ref, draft.source_assertion_id,
+                 draft.source_kind, draft.source_proposal_ref, draft.source_assertion_id,
                  claim.id AS claim_id, claim.statement, evidence.evidence_ids,
                  draft.approved_at, draft.exported_at, draft.updated_at`;
 }
@@ -821,7 +931,7 @@ function draftUpdateCte(): string {
 function draftReturningColumns(): string {
   return `draft.id AS draft_id, draft.revision, draft.strategy_revision,
     draft.channel, draft.body, draft.status, draft.guard_result,
-    draft.source_proposal_ref, draft.source_assertion_id,
+    draft.source_kind, draft.source_proposal_ref, draft.source_assertion_id,
     (SELECT claim_id FROM claim_context) AS claim_id,
     (SELECT statement FROM claim_context) AS statement,
     (SELECT evidence_ids FROM claim_context) AS evidence_ids,
@@ -852,10 +962,13 @@ function rowToSnapshot(row: DraftRow, persistence: DraftWorkspacePersistence): D
     status: row.status,
     guard: parseGuard(row.guard_result),
     source: {
-      proposalId: row.source_proposal_ref,
+      kind: row.source_kind,
+      ref: row.source_proposal_ref,
+      label: row.statement.slice(0, 120),
       assertionId: row.source_assertion_id,
       statement: row.statement,
       evidenceIds: stringArray(row.evidence_ids, 'Draft evidence IDs'),
+      sourceTypes: [row.source_kind === 'text_asset' ? 'text_asset' : 'conversation_turn'],
     },
     publicDraftingConsent: true,
     sourceAvailable: true,
@@ -978,10 +1091,19 @@ function parseStoredSnapshot(value: unknown): DraftWorkspaceSnapshot {
     status: stringValue(record['status']) as DraftWorkspaceStatus,
     guard: parseGuard(record['guard']),
     source: {
-      proposalId: stringValue(sourceRecord['proposalId']),
+      kind: sourceRecord['kind'] === 'text_asset' ? 'text_asset' : 'memory',
+      ref: typeof sourceRecord['ref'] === 'string'
+        ? sourceRecord['ref']
+        : stringValue(sourceRecord['proposalId']),
+      label: typeof sourceRecord['label'] === 'string'
+        ? sourceRecord['label']
+        : stringValue(sourceRecord['statement']).slice(0, 120),
       assertionId: stringValue(sourceRecord['assertionId']),
       statement: stringValue(sourceRecord['statement']),
       evidenceIds: stringArray(sourceRecord['evidenceIds'], 'Draft evidence IDs'),
+      sourceTypes: Array.isArray(sourceRecord['sourceTypes'])
+        ? stringArray(sourceRecord['sourceTypes'], 'Draft source types')
+        : ['conversation_turn'],
     },
     publicDraftingConsent: true,
     sourceAvailable: record['sourceAvailable'] !== false,

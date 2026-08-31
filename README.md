@@ -94,15 +94,18 @@ PostgreSQL، Proposal انتخاب‌شده و تأیید آن همراه Eviden
 Workbench منقضی می‌شود تا تصمیم مبتنی بر جهت قدیمی بی‌صدا معتبر باقی نماند.
 
 نمای «پیش‌نویس» تنها پس از تأیید Action محتوایی Workbench فعال می‌شود. کاربر یک
-حافظه تأییدشده و دارای Evidence را انتخاب می‌کند، برای استفاده عمومی همان منبع
-رضایت صریح می‌دهد و Mother Idea را برای یکی از پلتفرم‌های LinkedIn، Instagram، X،
-YouTube، Podcast، Newsletter یا Blog می‌سازد. خروجی با Claim و Evidence قابل‌ردیابی
-است؛ ویرایش، Approval قبلی را باطل و Guard ادعا/فرمت را دوباره اجرا می‌کند و Export
-فقط برای نسخه سبز و تأییدشده مجاز است. تغییر Strategy یا Contest/Revoke/Delete منبع،
-Approval و Export را متوقف می‌کند. API این جریان از `GET /api/drafts/current`،
-`POST /api/drafts`، `PUT /api/drafts/:id`، `POST /api/drafts/:id/approve` و
-`POST /api/drafts/:id/export` تشکیل شده است. انتشار مستقیم در این مرحله عمداً وجود
-ندارد و Export فایل متنی آخرین Human-in-the-Loop است.
+منبع را از کاتالوگ owner-scoped حافظه‌های تأییدشده و Text Assetهای دارای مجوز
+`brandUsage` انتخاب می‌کند، برای Public Drafting همان Assertion و Channel رضایت صریح
+می‌دهد و Mother Idea را برای یکی از پلتفرم‌های LinkedIn، Instagram، X، YouTube،
+Podcast، Newsletter یا Blog می‌سازد. Evidenceهای هر Action در لحظه Approval فریز
+می‌شوند؛ بنابراین منبعی که بعداً اضافه شده—even با مجوز برند—بدون تأیید تازه وارد
+Draft قبلی نمی‌شود. خروجی با Claim، نوع منبع و Evidence دقیق قابل‌ردیابی است؛ ویرایش،
+Approval قبلی Draft را باطل و Guard ادعا/فرمت را دوباره اجرا می‌کند و Export فقط برای
+نسخه سبز و تأییدشده مجاز است. تغییر Strategy یا Contest/Revoke/Delete منبع، Approval
+و Export را متوقف می‌کند. API این جریان از `GET /api/drafts/sources`،
+`GET /api/drafts/current`، `POST /api/drafts`، `PUT /api/drafts/:id`،
+`POST /api/drafts/:id/approve` و `POST /api/drafts/:id/export` تشکیل شده است. انتشار
+مستقیم در این مرحله عمداً وجود ندارد و Export فایل متنی آخرین Human-in-the-Loop است.
 
 هر ذخیره ویرایش Draft به Feedback Engine متصل است. سیستم فقط تغییرهای مادی و
 توضیح‌پذیر مانند کوتاه‌کردن متن/تیتر، کاهش میان‌تیتر یا حذف پرسش پایانی را به‌عنوان

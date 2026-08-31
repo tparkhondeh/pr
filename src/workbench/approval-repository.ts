@@ -5,12 +5,14 @@ export type WorkbenchApprovalRecord = Readonly<{
   revision: number;
   strategyRevision: number;
   actionId: string;
+  evidenceIds: readonly string[];
   approvedBy: string;
   approvedAt: Date;
 }>;
 
 export type WorkbenchApprovalCommand = Readonly<{
   actionId: string;
+  evidenceIds: readonly string[];
   actorUserId: string;
   occurredAt: Date;
   expectedRevision: number;
@@ -57,6 +59,7 @@ export class InMemoryWorkbenchApprovalRepository implements WorkbenchApprovalRep
       revision: command.expectedRevision + 1,
       strategyRevision,
       actionId: command.actionId,
+      evidenceIds: [...command.evidenceIds],
       approvedBy: command.actorUserId,
       approvedAt: command.occurredAt,
     };
@@ -75,6 +78,7 @@ type ApprovalRow = Readonly<{
   revision: string | number;
   strategy_revision: string | number;
   approved_action_ref: string;
+  approved_evidence_ids: unknown;
   approved_by: string;
   approved_at: Date | string;
 }>;
@@ -95,7 +99,8 @@ export class PostgresWorkbenchApprovalRepository implements WorkbenchApprovalRep
     return this.runner.transaction(async (transaction) => {
       await setTenantContext(transaction, this.context.tenantId);
       const result = await transaction.query<ApprovalRow>(
-        `SELECT workflow_id, revision, strategy_revision, approved_action_ref, approved_by, approved_at
+        `SELECT workflow_id, revision, strategy_revision, approved_action_ref,
+                approved_evidence_ids, approved_by, approved_at
            FROM app.workbench_states
           WHERE tenant_id = $1
             AND owner_user_id = $2
@@ -132,21 +137,24 @@ export class PostgresWorkbenchApprovalRepository implements WorkbenchApprovalRep
             SET status = 'approved',
                 revision = revision + 1,
                 approved_action_ref = $4,
-                approved_by = $5,
-                approved_at = $6,
-                updated_at = $6
+                approved_evidence_ids = $5::text[],
+                approved_by = $6,
+                approved_at = $7,
+                updated_at = $7
           WHERE tenant_id = $1
             AND owner_user_id = $2
             AND workflow_id = $3
             AND status = 'awaiting_approval'
-            AND revision = $7
-            AND strategy_revision = $8
-        RETURNING workflow_id, revision, strategy_revision, approved_action_ref, approved_by, approved_at`,
+            AND revision = $8
+            AND strategy_revision = $9
+        RETURNING workflow_id, revision, strategy_revision, approved_action_ref,
+                  approved_evidence_ids, approved_by, approved_at`,
         [
           this.context.tenantId,
           this.context.ownerUserId,
           this.context.workflowId,
           command.actionId,
+          command.evidenceIds,
           command.actorUserId,
           command.occurredAt,
           command.expectedRevision,
@@ -178,6 +186,7 @@ export class PostgresWorkbenchApprovalRepository implements WorkbenchApprovalRep
                 strategy_revision = $4,
                 status = 'awaiting_approval',
                 approved_action_ref = NULL,
+                approved_evidence_ids = '{}'::text[],
                 approved_by = NULL,
                 approved_at = NULL,
                 updated_at = $5
@@ -193,7 +202,8 @@ export class PostgresWorkbenchApprovalRepository implements WorkbenchApprovalRep
     strategyRevision: number,
   ): Promise<WorkbenchApprovalRecord | null> {
     const result = await transaction.query<ApprovalRow>(
-      `SELECT workflow_id, revision, strategy_revision, approved_action_ref, approved_by, approved_at
+      `SELECT workflow_id, revision, strategy_revision, approved_action_ref,
+              approved_evidence_ids, approved_by, approved_at
          FROM app.workbench_states
         WHERE tenant_id = $1
           AND owner_user_id = $2
@@ -212,6 +222,7 @@ export class PostgresWorkbenchApprovalRepository implements WorkbenchApprovalRep
     const metadata = JSON.stringify({
       workflowId: record.workflowId,
       actionId: record.actionId,
+      evidenceIds: record.evidenceIds,
       revision: record.revision,
     });
     await transaction.query(
@@ -264,7 +275,15 @@ function toRecord(row: ApprovalRow): WorkbenchApprovalRecord {
     revision,
     strategyRevision,
     actionId: row.approved_action_ref,
+    evidenceIds: stringArray(row.approved_evidence_ids),
     approvedBy: row.approved_by,
     approvedAt,
   };
+}
+
+function stringArray(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    throw new Error('Invalid workbench approval evidence IDs.');
+  }
+  return value as string[];
 }

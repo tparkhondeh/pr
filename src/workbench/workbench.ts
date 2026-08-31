@@ -42,6 +42,7 @@ export type WorkbenchAction = Readonly<{
   benefits: readonly string[];
   risks: readonly string[];
   prerequisites: readonly string[];
+  evidenceIds: readonly string[];
   evidenceCount: number;
   confidence: number;
   riskLevel: 'low' | 'medium' | 'high';
@@ -84,6 +85,7 @@ export type WorkbenchSnapshot = Readonly<{
     status: WorkflowState['status'];
     revision: number;
     approvedActionId?: string;
+    approvedEvidenceIds?: readonly string[];
     approvedAt?: string;
   }>;
 }>;
@@ -193,6 +195,7 @@ export class WorkbenchService {
         status: effectiveApproval ? 'approved' : this.#awaitingWorkflow.status,
         revision: effectiveApproval?.revision ?? this.#awaitingWorkflow.revision,
         ...(effectiveApproval ? { approvedActionId: effectiveApproval.actionId } : {}),
+        ...(effectiveApproval ? { approvedEvidenceIds: effectiveApproval.evidenceIds } : {}),
         ...(effectiveApproval ? { approvedAt: effectiveApproval.approvedAt.toISOString() } : {}),
       },
     };
@@ -222,6 +225,9 @@ export class WorkbenchService {
     const option = this.#rankedOptions.find((candidate) => candidate.id === actionId);
     if (!option) throw new WorkbenchActionNotFoundError(actionId);
     if (!option.feasible) throw new WorkbenchApprovalConflictError('action_not_feasible');
+    const approvedEvidenceIds = evidence.strategy.evidenceIds.length > 0
+      ? toWorkbenchAction(option, strategy, evidence).evidenceIds
+      : [];
 
     evolveWorkflow(this.#awaitingWorkflow, {
       id: `workbench_today:approved:${actionId}`,
@@ -231,6 +237,7 @@ export class WorkbenchService {
     });
     const result = await this.#approvalRepository.approve({
       actionId,
+      evidenceIds: approvedEvidenceIds,
       actorUserId: actorId,
       occurredAt,
       expectedRevision: this.#awaitingWorkflow.revision,
@@ -364,6 +371,7 @@ function toWorkbenchAction(
     benefits: option.benefits,
     risks: option.risks,
     prerequisites: option.prerequisites,
+    evidenceIds: usableEvidenceIds,
     evidenceCount: usableEvidenceIds.length,
     confidence: groundedConfidence,
     riskLevel: option.riskScore < 30 ? 'low' : option.riskScore < 60 ? 'medium' : 'high',
@@ -409,6 +417,7 @@ function coldStartActions(
       benefits: ['ساخت پایه قابل‌ردیابی برای تصمیم بعدی'],
       risks: ['ورود متن نامرتبط یا بیش‌ازحد حساس'],
       prerequisites: ['انتخاب یک متن واقعی', 'تعیین صریح مجوز تحلیل برند'],
+      evidenceIds: [],
       evidenceCount: 0,
       confidence: 1,
       riskLevel: 'low',
@@ -430,6 +439,7 @@ function coldStartActions(
       benefits: ['شروع کم‌اصطکاک مدل شخصی'],
       risks: ['یک Self-report منفرد هنوز شاهد مستقل نیست'],
       prerequisites: ['تعریف یک موقعیت مشخص', 'تأیید جداگانه حافظه'],
+      evidenceIds: [],
       evidenceCount: 0,
       confidence: 1,
       riskLevel: 'low',
@@ -451,6 +461,7 @@ function coldStartActions(
       benefits: ['پرهیز از توصیه و ادعای بدون پشتوانه'],
       risks: ['عقب‌افتادن یک پنجره زمانی کوتاه'],
       prerequisites: ['بازبینی پس از ورود اولین منبع مجاز'],
+      evidenceIds: [],
       evidenceCount: 0,
       confidence: 1,
       riskLevel: 'low',

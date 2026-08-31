@@ -37,6 +37,7 @@ import {
   importTextAsset,
   decideLearnedPreference,
   loadDraftWorkspace,
+  loadDraftSources,
   loadFeedbackLearning,
   loadAuditTrail,
   loadOnboarding,
@@ -50,6 +51,8 @@ import {
   type AuditTrailSnapshot,
   type ConversationTurnResult,
   type DraftChannel,
+  type DraftSourceKind,
+  type DraftSourceSnapshot,
   type DraftWorkspaceSnapshot,
   type FeedbackLearningSnapshot,
   type MemoryRightKind,
@@ -93,6 +96,7 @@ export function App() {
     'idle' | 'sending' | 'confirming' | 'applying_right'
   >('idle');
   const [memoryConfirmed, setMemoryConfirmed] = useState(false);
+  const [memoryBrandUsage, setMemoryBrandUsage] = useState(false);
   const [memoryPersistence, setMemoryPersistence] = useState<
     'memory' | 'postgres' | 'ephemeral' | null
   >(null);
@@ -108,6 +112,7 @@ export function App() {
   const [strategyViewState, setStrategyViewState] = useState<'idle' | 'loading' | 'ready' | 'saving' | 'error'>('idle');
   const [strategyViewError, setStrategyViewError] = useState<string | null>(null);
   const [draftSnapshot, setDraftSnapshot] = useState<DraftWorkspaceSnapshot | null>(null);
+  const [draftSources, setDraftSources] = useState<DraftSourceSnapshot | null>(null);
   const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [draftViewError, setDraftViewError] = useState<string | null>(null);
   const [feedbackSnapshot, setFeedbackSnapshot] = useState<FeedbackLearningSnapshot | null>(null);
@@ -235,12 +240,12 @@ export function App() {
     setDraftViewState('loading');
     setDraftViewError(null);
     try {
-      const [draft, memory] = await Promise.all([
+      const [draft, sources] = await Promise.all([
         loadDraftWorkspace(signal),
-        loadPersonalMemory(signal),
+        loadDraftSources(signal),
       ]);
       setDraftSnapshot(draft);
-      setMemorySnapshot(memory);
+      setDraftSources(sources);
       setDraftViewState('ready');
     } catch (caught: unknown) {
       if (signal?.aborted) return;
@@ -295,7 +300,8 @@ export function App() {
   };
 
   const createDraftWorkspace = async (input: Readonly<{
-    sourceProposalId: string;
+    sourceKind: DraftSourceKind;
+    sourceRef: string;
     channel: DraftChannel;
     narrativeAngle: string;
     takeaway: string;
@@ -432,6 +438,7 @@ export function App() {
     setConversationState('sending');
     setError(null);
     setMemoryConfirmed(false);
+    setMemoryBrandUsage(false);
     setMemoryRightResult(null);
     try {
       const result = await submitConversationTurn({
@@ -455,10 +462,11 @@ export function App() {
     setConversationState('confirming');
     setError(null);
     try {
-      const confirmed = await confirmMemoryProposal(proposalId);
+      const confirmed = await confirmMemoryProposal(proposalId, memoryBrandUsage);
       setMemoryPersistence(confirmed.persistence);
       setMemoryConfirmed(true);
       setConversationState('idle');
+      await Promise.all([refresh(), refreshMemory()]);
     } catch (caught: unknown) {
       setError(errorMessage(caught));
       setConversationState('idle');
@@ -624,7 +632,6 @@ export function App() {
         ) : activeView === 'draft' ? (
           <DraftWorkspacePanel
             error={draftViewError}
-            memory={memorySnapshot}
             onApprove={() => mutateDraft('approve')}
             onCreate={createDraftWorkspace}
             onEdit={(body) => mutateDraft('edit', body)}
@@ -636,6 +643,7 @@ export function App() {
             }}
             onRefresh={() => refreshDraft()}
             snapshot={draftSnapshot}
+            sources={draftSources}
             state={draftViewState}
             workbench={snapshot}
           />
@@ -716,13 +724,23 @@ export function App() {
                 <span>{conversationResult.assistantMessage}</span>
                 <strong>{conversationResult.followUpQuestion}</strong>
                 {conversationResult.memoryProposal && !memoryConfirmed ? (
-                  <button
-                    disabled={conversationState !== 'idle'}
-                    onClick={() => void confirmMemory()}
-                    type="button"
-                  >
-                    {conversationState === 'confirming' ? 'در حال ثبت…' : 'تأیید ثبت فقط برای شناخت داخلی'}
-                  </button>
+                  <div className="memory-confirm-scope">
+                    <label className="memory-opt-in">
+                      <input
+                        checked={memoryBrandUsage}
+                        onChange={(event) => { setMemoryBrandUsage(event.target.checked); }}
+                        type="checkbox"
+                      />
+                      اجازه استفاده داخلی در تحلیل برند؛ این مجوز انتشار عمومی نیست.
+                    </label>
+                    <button
+                      disabled={conversationState !== 'idle'}
+                      onClick={() => void confirmMemory()}
+                      type="button"
+                    >
+                      {conversationState === 'confirming' ? 'در حال ثبت…' : 'تأیید حافظه با همین دامنه رضایت'}
+                    </button>
+                  </div>
                 ) : null}
                 {memoryConfirmed ? (
                   <>
@@ -733,7 +751,7 @@ export function App() {
                         : memoryPersistence === 'ephemeral'
                           ? ' حافظه موقت نسخه نمایشی'
                           : ' حافظه موقت این اجرا'} ثبت شد؛
-                      استفاده برند و عمومی خاموش است.
+                      استفاده برند {memoryBrandUsage ? 'برای تحلیل داخلی روشن' : 'خاموش'} و استفاده عمومی خاموش است.
                     </em>
                     <div className="memory-rights">
                       <strong>کنترل این حافظه همیشه با شماست</strong>
@@ -1039,7 +1057,6 @@ function StrategyPanel({
 
 function DraftWorkspacePanel({
   error,
-  memory,
   onApprove,
   onCreate,
   onEdit,
@@ -1048,14 +1065,15 @@ function DraftWorkspacePanel({
   onReject,
   onRefresh,
   snapshot,
+  sources,
   state,
   workbench,
 }: Readonly<{
   error: string | null;
-  memory: PersonalMemorySnapshot | null;
   onApprove: () => Promise<void>;
   onCreate: (input: Readonly<{
-    sourceProposalId: string;
+    sourceKind: DraftSourceKind;
+    sourceRef: string;
     channel: DraftChannel;
     narrativeAngle: string;
     takeaway: string;
@@ -1067,15 +1085,16 @@ function DraftWorkspacePanel({
   onReject: (reason: string) => Promise<void>;
   onRefresh: () => Promise<void>;
   snapshot: DraftWorkspaceSnapshot | null;
+  sources: DraftSourceSnapshot | null;
   state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
   workbench: WorkbenchSnapshot;
 }>) {
-  const activeSources = memory?.records.filter(
-    (record) => record.lifecycle.status === 'active' && record.text && record.provenance.evidenceCount > 0,
-  ) ?? [];
+  const activeSources = sources?.records ?? [];
   const contentApproved = workbench.workflow.status === 'approved' &&
     workbench.workflow.approvedActionId === 'essay';
-  const [sourceProposalId, setSourceProposalId] = useState(activeSources[0]?.proposalId ?? '');
+  const [sourceKey, setSourceKey] = useState(
+    activeSources[0] ? draftSourceKey(activeSources[0].kind, activeSources[0].ref) : '',
+  );
   const [channel, setChannel] = useState<DraftChannel>('linkedin');
   const [angle, setAngle] = useState('یک تجربه واقعی که نگاه من به تصمیم‌گیری را تغییر داد');
   const [takeaway, setTakeaway] = useState('اعتماد با صداقت درباره ابهام ساخته می‌شود، نه با نمایش قطعیت.');
@@ -1087,10 +1106,12 @@ function DraftWorkspacePanel({
     if (snapshot) setBody(snapshot.body);
   }, [snapshot]);
   useEffect(() => {
-    if (!sourceProposalId && activeSources[0]) setSourceProposalId(activeSources[0].proposalId);
-  }, [activeSources, sourceProposalId]);
+    if (!sourceKey && activeSources[0]) {
+      setSourceKey(draftSourceKey(activeSources[0].kind, activeSources[0].ref));
+    }
+  }, [activeSources, sourceKey]);
 
-  if ((state === 'loading' || state === 'idle') && !memory && !snapshot) {
+  if ((state === 'loading' || state === 'idle') && !sources && !snapshot) {
     return (
       <section className="memory-view-state" aria-live="polite">
         <LoaderCircle className="spin" size={24} />
@@ -1107,7 +1128,7 @@ function DraftWorkspacePanel({
           <div>
             <p className="overline">Evidence → Claim → Draft</p>
             <h2>ساخت اولین پیش‌نویس قابل‌ردیابی</h2>
-            <p>فقط یک حافظه فعال و تأییدشده می‌تواند وارد متن شود؛ مجوز استفاده عمومی نیز در همین مرحله جداگانه گرفته می‌شود.</p>
+            <p>فقط منبعی با Evidence و مجوز تحلیل برند می‌تواند وارد متن شود؛ مجوز Public Drafting نیز در همین مرحله جداگانه گرفته می‌شود.</p>
           </div>
           <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button">
             <RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی
@@ -1124,16 +1145,20 @@ function DraftWorkspacePanel({
           <div className="memory-empty">
             <Fingerprint size={28} />
             <h3>منبع قابل‌استفاده‌ای وجود ندارد</h3>
-            <p>ابتدا در گفت‌وگوی امروز یک حافظه را پیشنهاد و سپس صریحاً تأیید کنید.</p>
+            <p>یک متن را با مجوز تحلیل برند وارد کنید یا یک حافظه را با همین دامنه رضایت تأیید کنید.</p>
           </div>
         ) : (
           <form
             className="draft-create"
             onSubmit={(event) => {
               event.preventDefault();
-              if (!contentApproved || !sourceProposalId || !consent) return;
+              const source = activeSources.find(
+                (item) => draftSourceKey(item.kind, item.ref) === sourceKey,
+              );
+              if (!contentApproved || !source || !consent) return;
               void onCreate({
-                sourceProposalId,
+                sourceKind: source.kind,
+                sourceRef: source.ref,
                 channel,
                 narrativeAngle: angle,
                 takeaway,
@@ -1141,11 +1166,11 @@ function DraftWorkspacePanel({
               });
             }}
           >
-            <label className="draft-wide">حافظه و شاهد مبنا
-              <select onChange={(event) => { setSourceProposalId(event.target.value); }} value={sourceProposalId}>
+            <label className="draft-wide">منبع و شاهد مبنا
+              <select onChange={(event) => { setSourceKey(event.target.value); }} value={sourceKey}>
                 {activeSources.map((record) => (
-                  <option key={record.proposalId} value={record.proposalId}>
-                    {record.text?.slice(0, 90)} · {record.provenance.evidenceCount} شاهد
+                  <option key={draftSourceKey(record.kind, record.ref)} value={draftSourceKey(record.kind, record.ref)}>
+                    {record.kind === 'text_asset' ? 'متن' : 'حافظه'} · {record.label.slice(0, 90)} · {record.evidenceIds.length} شاهد
                   </option>
                 ))}
               </select>
@@ -2014,6 +2039,10 @@ function approvalLabel(
   return 'انتخاب و آماده‌سازی اقدام';
 }
 
+function draftSourceKey(kind: DraftSourceKind, ref: string): string {
+  return `${kind}:${ref}`;
+}
+
 function errorMessage(error: unknown): string {
   if (!(error instanceof WorkbenchApiError)) return 'خطای پیش‌بینی‌نشده رخ داد.';
   const messages: Readonly<Record<string, string>> = {
@@ -2039,6 +2068,7 @@ function errorMessage(error: unknown): string {
     draft_not_found: 'این Draft دیگر در Workspace جاری وجود ندارد.',
     content_action_not_approved: 'ابتدا اقدام محتوایی را در Workbench تأیید کنید.',
     source_not_available: 'حافظه یا Evidence مبنا حذف، محدود یا مورد اعتراض قرار گرفته است.',
+    source_not_authorized_for_action: 'منبع انتخاب‌شده همان Evidence مجازِ اقدام محتوایی نیست؛ پیشنهاد را با منبع مجاز دوباره بررسی کنید.',
     guard_failed: 'Claim Check قرمز است و این نسخه قابل تأیید نیست.',
     strategy_changed: 'استراتژی تغییر کرده است؛ Draft باید با جهت جدید دوباره ساخته شود.',
     draft_not_approved: 'قبل از Export باید همین Revision را تأیید کنید.',

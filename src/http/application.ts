@@ -22,6 +22,7 @@ import {
   draftChannels,
   type ContentDraftService,
   type DraftChannel,
+  type DraftSourceKind,
   type DraftWorkspaceSnapshot,
 } from '../claims/workspace.js';
 import {
@@ -63,7 +64,10 @@ export type ReadinessCheck = () =>
 export type ApplicationDependencies = Readonly<{
   workbench?: Pick<WorkbenchService, 'snapshot' | 'approve'>;
   strategy?: Pick<StrategyContextService, 'snapshot' | 'save'>;
-  drafts?: Pick<ContentDraftService, 'snapshot' | 'create' | 'edit' | 'approve' | 'export'>;
+  drafts?: Pick<
+    ContentDraftService,
+    'sources' | 'snapshot' | 'create' | 'edit' | 'approve' | 'export'
+  >;
   learning?: Pick<FeedbackLearningService, 'snapshot' | 'rejectDraft' | 'decide'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText'>;
@@ -129,6 +133,11 @@ export function createRequestHandler(
 
     if (request.method === 'GET' && path === '/api/drafts/current') {
       await handleDraftSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/drafts/sources') {
+      await handleDraftSources(request, response, dependencies);
       return;
     }
 
@@ -726,6 +735,25 @@ async function handleDraftSnapshot(
   }
 }
 
+async function handleDraftSources(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = draftActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.drafts?.sources(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Draft service disappeared.');
+    sendJson(response, 200, {
+      ...snapshot,
+      generatedAt: snapshot.generatedAt.toISOString(),
+    });
+  } catch (error: unknown) {
+    sendDraftError(response, error);
+  }
+}
+
 async function handleDraftCreate(
   request: IncomingMessage,
   response: ServerResponse,
@@ -736,13 +764,15 @@ async function handleDraftCreate(
   try {
     const body = await readJsonObject(request);
     const requestId = body['requestId'];
-    const sourceProposalId = body['sourceProposalId'];
+    const sourceKind = body['sourceKind'];
+    const sourceRef = body['sourceRef'];
     const channel = body['channel'];
     const narrativeAngle = body['narrativeAngle'];
     const takeaway = body['takeaway'];
     const publicDraftingConsent = body['publicDraftingConsent'];
     if (
-      typeof requestId !== 'string' || typeof sourceProposalId !== 'string' ||
+      typeof requestId !== 'string' || !isDraftSourceKind(sourceKind) ||
+      typeof sourceRef !== 'string' ||
       !isDraftChannel(channel) || typeof narrativeAngle !== 'string' ||
       typeof takeaway !== 'string' || typeof publicDraftingConsent !== 'boolean'
     ) {
@@ -753,7 +783,8 @@ async function handleDraftCreate(
     const result = await dependencies.drafts?.create({
       actorId,
       requestId,
-      sourceProposalId,
+      sourceKind,
+      sourceRef,
       channel,
       narrativeAngle,
       takeaway,
@@ -907,6 +938,10 @@ function draftActor(
 
 function isDraftChannel(value: unknown): value is DraftChannel {
   return typeof value === 'string' && draftChannels.includes(value as DraftChannel);
+}
+
+function isDraftSourceKind(value: unknown): value is DraftSourceKind {
+  return value === 'memory' || value === 'text_asset';
 }
 
 function serializeDraft(snapshot: DraftWorkspaceSnapshot): Record<string, unknown> {
