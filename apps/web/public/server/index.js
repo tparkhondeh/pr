@@ -3954,8 +3954,8 @@ function reviewDraftBody(body, channel, statement, claimId) {
   if (!body.includes(statement)) {
     violations.push({ code: 'missing_evidence_bound_claim', severity: 'red', claimId: 'draft', message: 'Evidence-bound claim is missing.' });
   }
-  if (/[0-9۰-۹]|در\s+سال|درآمد|فروش|تعداد|درصد|جایزه|مدرک|دانشگاه|شرکت|بنیان.?گذار|according\s+to|research\s+shows/iu.test(remaining)) {
-    violations.push({ code: 'claim_extraction_incomplete', severity: 'red', claimId: 'draft', message: 'Potential unbound fact detected.' });
+  if (/[0-9۰-۹]|در\s+سال|درآمد|فروش|تعداد|درصد|جایزه|مدرک|دانشگاه|شرکت|بنیان.?گذار|مدیرعامل|تحصیلات|سابقه|according\s+to|research\s+shows|revenue|sales|percent|award|degree|university|company|founder|chief\s+executive/iu.test(remaining)) {
+    violations.push({ code: 'potential_unbound_claim', severity: 'red', claimId: 'draft', message: 'Potential unbound fact detected.' });
   }
   if (body.length > platformProfiles[channel].hardMaximumCharacters) {
     violations.push({ code: 'channel_format_violation', severity: 'red', claimId, message: 'Channel length exceeded.' });

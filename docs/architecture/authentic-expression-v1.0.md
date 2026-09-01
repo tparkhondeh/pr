@@ -16,6 +16,8 @@ Anti-Generic AI Gate را در MVP می‌بندد، بدون اینکه یک Br
 - نبود Asset مجاز نتیجه را `block` می‌کند. کلیشه، ضعف جزئیات شخصی یا تعارض Voice نتیجه
   را `revise` می‌کند. `pass` به معنی Fact Check، Claim Approval یا Publish Approval نیست.
 - Review هیچ داده‌ای ذخیره و هیچ External Action اجرا نمی‌کند.
+- رفتار این Gate همراه Claim، هفت Platform و Learning در Release Set نسخه‌دار
+  `authentic-execution-eval-v1` سنجیده می‌شود؛ Raw Asset نباید در Report ظاهر شود.
 
 ## مرزهای قطعی MVP
 

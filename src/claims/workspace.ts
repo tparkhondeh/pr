@@ -9,7 +9,12 @@ import type { StrategyContextService } from '../strategy/context.js';
 import type { WorkbenchService, WorkbenchSnapshot } from '../workbench/workbench.js';
 import { proposeClaim, verifyClaim, type Claim, type ClaimStatus } from './claim-registry.js';
 import type { ClaimGovernanceRepository } from './governance.js';
-import { guardDraft, type DraftGuardResult, type GuardViolation } from './draft-guard.js';
+import {
+  guardDraft,
+  hasPotentialUnboundClaim,
+  type DraftGuardResult,
+  type GuardViolation,
+} from './draft-guard.js';
 import {
   composePlatformDraft,
   draftChannels,
@@ -805,7 +810,7 @@ function reviewBody(
   const claim = evidenceBoundClaim(claimId, tenantId, actorId, channel, source, at);
   const containsClaim = body.includes(source.statement);
   const remaining = body.replaceAll(source.statement, '');
-  const extractionComplete = !hasPotentialUnboundFact(remaining);
+  const extractionComplete = !hasPotentialUnboundClaim(remaining);
   const guard = guardDraft(
     {
       id: draftId,
@@ -859,10 +864,6 @@ function evidenceBoundClaim(
     actorId,
     at,
   );
-}
-
-function hasPotentialUnboundFact(text: string): boolean {
-  return /[0-9۰-۹]|در\s+سال|درآمد|فروش|تعداد|درصد|جایزه|مدرک|دانشگاه|شرکت|بنیان.?گذار|according\s+to|research\s+shows/iu.test(text);
 }
 
 function validateRequestId(value: string): void {

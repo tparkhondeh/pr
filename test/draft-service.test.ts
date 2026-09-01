@@ -126,6 +126,52 @@ describe('draft preparation pipeline', () => {
     expect(prepared.workflow.status).toBe('draft');
   });
 
+  it('blocks a model output that cites a valid claim id but omits its registered statement', async () => {
+    const gateway = new DeterministicModelGateway(
+      new Map([
+        [
+          'draft_request_one',
+          {
+            body: 'این متن به Claim معتبر اشاره ظاهری می‌کند، اما Statement آن را ندارد.',
+            claimExtractionComplete: true,
+            claims: [{ claimId: claim.id, excerpt: claim.statement }],
+          },
+        ],
+      ]),
+    );
+    const prepared = await prepareDraft(request(), {
+      grants: [grant],
+      claims: [claim],
+      modelGateway: gateway,
+      costLedger: new InMemoryCostLedger(100),
+    });
+    expect(prepared.guard.violations.map((item) => item.code)).toContain('claim_not_present_in_body');
+    expect(prepared.workflow.status).toBe('draft');
+  });
+
+  it('blocks an unbound numeric claim even if model extraction reports complete', async () => {
+    const gateway = new DeterministicModelGateway(
+      new Map([
+        [
+          'draft_request_one',
+          {
+            body: `${claim.statement}\nدرآمد شرکت ۵ برابر شد.`,
+            claimExtractionComplete: true,
+            claims: [{ claimId: claim.id, excerpt: claim.statement }],
+          },
+        ],
+      ]),
+    );
+    const prepared = await prepareDraft(request(), {
+      grants: [grant],
+      claims: [claim],
+      modelGateway: gateway,
+      costLedger: new InMemoryCostLedger(100),
+    });
+    expect(prepared.guard.violations.map((item) => item.code)).toContain('potential_unbound_claim');
+    expect(prepared.workflow.status).toBe('draft');
+  });
+
   it('denies before model use when public drafting permission is absent', async () => {
     await expect(
       prepareDraft(request(), {

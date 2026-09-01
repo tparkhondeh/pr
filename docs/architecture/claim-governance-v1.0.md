@@ -59,6 +59,11 @@ Draft Service پیش از Edit، Approval و Export وضعیت جاری Claim ر
 می‌خواند. Repository PostgreSQL نیز در Statement تغییر وضعیت Draft دوباره `verified` بودن
 Claim را بررسی می‌کند. این کنترل دوم، مسیر مستقیم Repository یا Race ساده را Fail-closed می‌کند.
 
+Claim Reference فقط با ID معتبر نمی‌شود: Excerpt باید دقیقاً با Statement ثبت‌شده برابر
+باشد و همان Statement باید داخل Body حضور داشته باشد. Body پس از حذف Statementهای متصل
+برای Claimهای حساس احتمالی دوباره اسکن می‌شود؛ بنابراین اعلام نادرست
+`claimExtractionComplete=true` از سوی Provider، Guard قطعی را دور نمی‌زند.
+
 ## محدودیت‌های نسخه اول
 
 - Verification نتیجه بازبینی انسانی ثبت‌شده است، نه تضمین حقیقت مطلق.

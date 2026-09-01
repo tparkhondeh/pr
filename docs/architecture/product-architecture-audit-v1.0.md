@@ -298,6 +298,13 @@ voice، narrative، claims، LinkedIn adaptation، approval/export و edit learn
 
 Gate: hallucinated public claims صفر در release set؛ edit distance و authenticity target؛ rollback فعال.
 
+وضعیت اجرا: `authentic-execution-eval-v1` اکنون ۳۱ Case نسخه‌دار فارسی/انگلیسی را در
+CI اجرا می‌کند: پنج حمله Hallucination با Approval صفر، هفت Platform با حفظ دقیق Claim،
+شش Authenticity Case و سه Learning Case برگشت‌پذیر. Claim Guard حضور Statement و تطابق
+دقیق Excerpt را مستقل از `claimExtractionComplete` مدل کنترل می‌کند. این Gate برای Golden
+Set فعلی سبز است؛ Edit Distance و Authenticity Target مبتنی بر رفتار واقعی کاربر تا
+جمع‌شدن نمونه‌های انسانی کافی همچنان در حالت collecting باقی می‌مانند.
+
 ### Phase 4 — External Intelligence
 
 research، bounded opportunity radar و connectorهای منتخب.

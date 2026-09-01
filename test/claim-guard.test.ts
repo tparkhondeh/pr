@@ -14,11 +14,14 @@ const tenant = tenantId('tenant_one');
 const author = userId('user_one');
 const now = new Date('2026-08-31T00:00:00Z');
 
-function claim(kind: ClaimKind = 'personal_fact'): Claim {
+function claim(
+  kind: ClaimKind = 'personal_fact',
+  statement = 'این یک ادعای قابل بررسی است.',
+): Claim {
   const proposed = proposeClaim({
     id: `claim_${kind}`,
     tenantId: tenant,
-    statement: 'این یک ادعای قابل بررسی است.',
+    statement,
     kind,
     dataClass: 'confidential',
     evidenceIds: kind === 'opinion' ? [] : [evidenceId('evidence_one')],
@@ -60,6 +63,38 @@ describe('claim registry and draft guard', () => {
       classification: 'red',
       mayRequestApproval: false,
     });
+  });
+
+  it('blocks a valid claim reference when its statement is absent from the body', () => {
+    const registered = claim();
+    const result = guardDraft({
+      ...draft(registered.id),
+      body: 'این متن هیچ‌کدام از Statementهای ثبت‌شده را در خود ندارد.',
+    }, [registered], now);
+    expect(result.violations.map((item) => item.code)).toContain('claim_not_present_in_body');
+    expect(result.mayRequestApproval).toBe(false);
+  });
+
+  it('blocks a shortened excerpt that does not exactly match the registered statement', () => {
+    const registered = claim();
+    const result = guardDraft({
+      ...draft(registered.id),
+      body: registered.statement,
+      claims: [{ claimId: registered.id, excerpt: 'ادعای قابل بررسی' }],
+    }, [registered], now);
+    expect(result.violations.map((item) => item.code)).toContain('claim_excerpt_mismatch');
+    expect(result.mayRequestApproval).toBe(false);
+  });
+
+  it('independently catches a sensitive unbound claim when extraction is reported complete', () => {
+    const registered = claim();
+    const result = guardDraft({
+      ...draft(registered.id),
+      body: `${registered.statement}\nدرآمد شرکت ۵ برابر شد.`,
+      claimExtractionComplete: true,
+    }, [registered], now);
+    expect(result.violations.map((item) => item.code)).toContain('potential_unbound_claim');
+    expect(result.mayRequestApproval).toBe(false);
   });
 
   it('fails closed when claim extraction has not completed', () => {
@@ -116,8 +151,8 @@ describe('claim registry and draft guard', () => {
   });
 
   it('requires projections to disclose that they are forecasts', () => {
-    const projection = claim('projection');
-    const result = guardDraft(draft(projection.id, 'فروش سال بعد دو برابر می‌شود.'), [projection], now);
+    const projection = claim('projection', 'فروش سال بعد دو برابر می‌شود.');
+    const result = guardDraft(draft(projection.id, projection.statement), [projection], now);
     expect(result.classification).toBe('yellow');
     expect(result.mayRequestApproval).toBe(true);
   });

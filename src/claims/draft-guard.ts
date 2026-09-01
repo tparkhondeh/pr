@@ -31,7 +31,10 @@ export type GuardViolation = Readonly<{
     | 'claim_extraction_incomplete'
     | 'missing_evidence_bound_claim'
     | 'channel_format_violation'
-    | 'projection_disclosure_required';
+    | 'projection_disclosure_required'
+    | 'claim_excerpt_mismatch'
+    | 'claim_not_present_in_body'
+    | 'potential_unbound_claim';
   severity: 'yellow' | 'red';
   claimId: string;
   message: string;
@@ -50,6 +53,7 @@ export function guardDraft(
 ): DraftGuardResult {
   const byId = new Map(registry.map((claim) => [claim.id, claim]));
   const violations: GuardViolation[] = [];
+  const boundStatements: string[] = [];
 
   if (!draft.claimExtractionComplete) {
     violations.push(
@@ -92,6 +96,22 @@ export function guardDraft(
       violations.push(red('cross_tenant_claim', claim.id, 'Claim belongs to another tenant.'));
       continue;
     }
+    if (reference.excerpt.trim() !== claim.statement.trim()) {
+      violations.push(red(
+        'claim_excerpt_mismatch',
+        claim.id,
+        'Claim excerpt does not exactly match the registered statement.',
+      ));
+    }
+    if (!draft.body.includes(claim.statement)) {
+      violations.push(red(
+        'claim_not_present_in_body',
+        claim.id,
+        'The registered claim statement is not present in the draft body.',
+      ));
+    } else if (reference.excerpt.trim() === claim.statement.trim()) {
+      boundStatements.push(claim.statement);
+    }
     const status = effectiveClaimStatus(claim, at);
     if (status === 'disputed') {
       violations.push(red('disputed_claim', claim.id, 'Claim is disputed.'));
@@ -125,6 +145,18 @@ export function guardDraft(
     }
   }
 
+  const unboundBody = boundStatements.reduce(
+    (remaining, statement) => remaining.replaceAll(statement, ''),
+    draft.body,
+  );
+  if (draft.claimExtractionComplete && hasPotentialUnboundClaim(unboundBody)) {
+    violations.push(red(
+      'potential_unbound_claim',
+      'draft',
+      'Draft contains a potentially factual public claim without a matching registered claim.',
+    ));
+  }
+
   const classification = violations.some((item) => item.severity === 'red')
     ? 'red'
     : violations.length > 0
@@ -135,6 +167,10 @@ export function guardDraft(
     mayRequestApproval: classification !== 'red',
     violations,
   };
+}
+
+export function hasPotentialUnboundClaim(text: string): boolean {
+  return /[0-9۰-۹]|در\s+سال|درآمد|فروش|تعداد|درصد|جایزه|مدرک|دانشگاه|شرکت|بنیان.?گذار|مدیرعامل|تحصیلات|سابقه|according\s+to|research\s+shows|revenue|sales|percent|award|degree|university|company|founder|chief\s+executive/iu.test(text);
 }
 
 function red(code: GuardViolation['code'], claimId: string, message: string): GuardViolation {

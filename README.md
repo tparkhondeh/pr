@@ -37,6 +37,7 @@ Provider بیرونی Fail-closed می‌ماند. Recovery Invocationهای م�
 - [Model Input Safety Gate](docs/architecture/model-input-safety-v1.0.md)
 - [Model Invocation Reconciliation](docs/architecture/model-invocation-reconciliation-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
+- [Authentic Execution Evaluation](docs/architecture/authentic-execution-evaluation-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
 - [Master Implementation Prompt مرحله Foundation](docs/implementation/foundation-master-prompt-v1.0.md)
@@ -72,19 +73,27 @@ pnpm check
 pnpm dev
 ```
 
-`pnpm check` علاوه بر lint، typecheck و test، دو ارزیابی نسخه‌دار
-`model-input-safety-eval-v1` و `memory-retrieval-eval-v1` را نیز اجرا می‌کند. اجرای
-مستقل آنها:
+`pnpm check` علاوه بر lint، typecheck و test، سه ارزیابی نسخه‌دار
+`model-input-safety-eval-v1`، `memory-retrieval-eval-v1` و
+`authentic-execution-eval-v1` را نیز اجرا می‌کند. اجرای مستقل آنها:
 
 ```bash
 pnpm eval:model-input-safety
 pnpm eval:memory-retrieval
+pnpm eval:authentic-execution
 ```
 
 Gate حافظه با ۱۶ Case فارسی/انگلیسی، `precision@k` و `recall@k` کامل، نشت Permission
 صفر و Abstention صحیح برای داده حذف‌شده، مورد اعتراض، Superseded، منقضی یا هنوز
 نامعتبر را الزام می‌کند. جزئیات در
 [`docs/architecture/memory-retrieval-evaluation-v1.0.md`](docs/architecture/memory-retrieval-evaluation-v1.0.md)
+ثبت شده است.
+
+Gate اجرای اصیل ۳۱ Case نسخه‌دار Claim، Platform، Authenticity و Learning را اجرا
+می‌کند. پنج مسیر حمله Hallucination باید همگی قبل از Approval متوقف شوند، هر هفت
+Platform باید Statement ثبت‌شده را دقیقاً حفظ کنند و هیچ Raw Asset یا Side Effect بیرونی
+در Report مجاز نیست. جزئیات در
+[`docs/architecture/authentic-execution-evaluation-v1.0.md`](docs/architecture/authentic-execution-evaluation-v1.0.md)
 ثبت شده است.
 
 Health endpoint پس از اجرا: `GET /health`

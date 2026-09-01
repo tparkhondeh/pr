@@ -4348,10 +4348,17 @@ function guardViolationLabel(code: string): string {
     missing_evidence_bound_claim: 'متن دیگر Claim متصل به Evidence را در خود ندارد.',
     channel_format_violation: 'طول یا قالب متن با پلتفرم مقصد سازگار نیست.',
     missing_claim: 'Claim متن در Registry ثبت نشده است.',
+    claim_excerpt_mismatch: 'عبارت متصل‌شده دقیقاً با Statement ثبت‌شده Claim یکسان نیست.',
+    claim_not_present_in_body: 'Statement ثبت‌شده Claim در متن پیش‌نویس وجود ندارد.',
+    potential_unbound_claim: 'یک ادعای حساس احتمالی بدون Claim ثبت‌شده در متن دیده شد.',
+    cross_tenant_claim: 'Claim به فضای داده دیگری تعلق دارد و قابل استفاده نیست.',
     unverified_fact: 'یک واقعیت هنوز تأیید نشده است.',
     disputed_claim: 'Claim مورد اعتراض است و قابل استفاده نیست.',
+    expired_claim: 'اعتبار زمانی Claim پایان یافته است.',
+    revoked_claim: 'Claim لغو شده و قابل استفاده نیست.',
     purpose_not_allowed: 'مجوز این Claim برای Public Drafting وجود ندارد.',
     channel_not_allowed: 'مجوز Claim برای این کانال وجود ندارد.',
+    projection_disclosure_required: 'پیش‌بینی باید صریحاً به‌عنوان پیش‌بینی معرفی شود.',
   };
   return labels[code] ?? 'Claim Check این بخش را نیازمند بررسی می‌داند.';
 }
