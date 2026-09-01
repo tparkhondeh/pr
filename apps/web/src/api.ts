@@ -579,6 +579,76 @@ export type DeletePerceptionSignalResult = Readonly<{
   signalId: string;
 }>;
 
+export type ExpressionGateLevel = 'green' | 'yellow' | 'red';
+export type ExpressionGateOutcome = 'pass' | 'revise' | 'block';
+export type ExpressionFindingDimension = 'grounding' | 'specificity' | 'generic_language' | 'voice_alignment';
+
+export type NarrativeSeed = Readonly<{
+  narrativeId: string;
+  title: string;
+  premise: string;
+  maturity: 'single_source';
+  source: Readonly<{ kind: 'text_asset'; ref: string; assertionId: string; evidenceId: string }>;
+  epistemicType: 'evidence_backed_candidate';
+  privacy: Readonly<{ dataClass: 'confidential'; allowedPurpose: 'brand_strategy'; externalActionPermitted: false }>;
+}>;
+
+export type VoiceSignal = Readonly<{
+  preferenceId: string;
+  key: string;
+  value: unknown;
+  status: 'proposed' | 'applied';
+  evidenceCount: number;
+  confidence: number;
+  rationale: string;
+}>;
+
+export type AuthenticExpressionSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'mixed' | 'ephemeral';
+  policyVersion: 'authentic-expression-v1';
+  summary: Readonly<{
+    narrativeSeeds: number;
+    evidenceBoundSeeds: number;
+    proposedVoiceSignals: number;
+    appliedVoiceSignals: number;
+    voiceMaturity: 'uninitialized' | 'learning' | 'confirmed';
+  }>;
+  narrativeSeeds: readonly NarrativeSeed[];
+  voiceSignals: readonly VoiceSignal[];
+  boundaries: Readonly<{
+    narrativeSeedIsBrandFact: false;
+    voiceProposalAppliesAutomatically: false;
+    factCheckIncluded: false;
+    externalActionPermitted: false;
+  }>;
+}>;
+
+export type ExpressionGateFinding = Readonly<{
+  dimension: ExpressionFindingDimension;
+  level: ExpressionGateLevel;
+  code: string;
+  rationale: string;
+  requiredChange: string | null;
+}>;
+
+export type AuthenticExpressionReview = Readonly<{
+  reviewedAt: string;
+  policyVersion: 'authentic-expression-v1';
+  outcome: ExpressionGateOutcome;
+  findings: readonly ExpressionGateFinding[];
+  selectedSources: readonly Readonly<{ ref: string; title: string; assertionId: string; evidenceId: string }>[];
+  matchedPersonalTerms: readonly string[];
+  genericPhrases: readonly string[];
+  appliedVoicePreferences: number;
+  boundaries: Readonly<{
+    factCheckIncluded: false;
+    claimApprovalGranted: false;
+    publicApprovalGranted: false;
+    externalActionPermitted: false;
+  }>;
+}>;
+
 export type DraftChannel = 'linkedin' | 'instagram' | 'x' | 'youtube' | 'podcast' | 'newsletter' | 'blog';
 export type DraftSourceKind = 'memory' | 'text_asset';
 
@@ -1216,6 +1286,28 @@ export async function deletePerceptionSignal(input: Readonly<{
     !isPersistence(payload['persistence']) || typeof payload['signalId'] !== 'string'
   ) throw new WorkbenchApiError(200, 'invalid_response');
   return payload as DeletePerceptionSignalResult;
+}
+
+export async function loadAuthenticExpression(signal?: AbortSignal): Promise<AuthenticExpressionSnapshot> {
+  const payload = await requestJson('/api/expression', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isAuthenticExpressionSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function reviewAuthenticExpression(input: Readonly<{
+  content: string;
+  assetRefs: readonly string[];
+}>): Promise<AuthenticExpressionReview> {
+  const payload = await requestJson('/api/expression/review', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!isAuthenticExpressionReview(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
 }
 
 export async function reviewRisk(input: Readonly<{
@@ -2082,6 +2174,65 @@ function isPerceptionGap(value: unknown): value is PerceptionGap {
 function isBlindSpotStatus(value: unknown): value is BlindSpotStatus {
   return value === 'insufficient_evidence' || value === 'within_external_range' ||
     value === 'self_higher_than_external' || value === 'self_lower_than_external';
+}
+
+function isAuthenticExpressionSnapshot(value: unknown): value is AuthenticExpressionSnapshot {
+  if (!isRecord(value) || value['policyVersion'] !== 'authentic-expression-v1' ||
+      typeof value['generatedAt'] !== 'string' ||
+      !(isPersistence(value['persistence']) || value['persistence'] === 'mixed') ||
+      !isRecord(value['summary']) || !Array.isArray(value['narrativeSeeds']) || !Array.isArray(value['voiceSignals']) ||
+      !isRecord(value['boundaries'])) return false;
+  const summary = value['summary'];
+  const boundaries = value['boundaries'];
+  return typeof summary['narrativeSeeds'] === 'number' && typeof summary['evidenceBoundSeeds'] === 'number' &&
+    typeof summary['proposedVoiceSignals'] === 'number' && typeof summary['appliedVoiceSignals'] === 'number' &&
+    (summary['voiceMaturity'] === 'uninitialized' || summary['voiceMaturity'] === 'learning' || summary['voiceMaturity'] === 'confirmed') &&
+    value['narrativeSeeds'].every(isNarrativeSeed) && value['voiceSignals'].every(isVoiceSignal) &&
+    boundaries['narrativeSeedIsBrandFact'] === false && boundaries['voiceProposalAppliesAutomatically'] === false &&
+    boundaries['factCheckIncluded'] === false && boundaries['externalActionPermitted'] === false;
+}
+
+function isNarrativeSeed(value: unknown): value is NarrativeSeed {
+  if (!isRecord(value) || typeof value['narrativeId'] !== 'string' || typeof value['title'] !== 'string' ||
+      typeof value['premise'] !== 'string' || value['maturity'] !== 'single_source' ||
+      value['epistemicType'] !== 'evidence_backed_candidate' || !isRecord(value['source']) || !isRecord(value['privacy'])) return false;
+  const source = value['source'];
+  const privacy = value['privacy'];
+  return source['kind'] === 'text_asset' && typeof source['ref'] === 'string' && typeof source['assertionId'] === 'string' &&
+    typeof source['evidenceId'] === 'string' && privacy['dataClass'] === 'confidential' &&
+    privacy['allowedPurpose'] === 'brand_strategy' && privacy['externalActionPermitted'] === false;
+}
+
+function isVoiceSignal(value: unknown): value is VoiceSignal {
+  return isRecord(value) && typeof value['preferenceId'] === 'string' && typeof value['key'] === 'string' &&
+    (value['status'] === 'proposed' || value['status'] === 'applied') && typeof value['evidenceCount'] === 'number' &&
+    typeof value['confidence'] === 'number' && typeof value['rationale'] === 'string';
+}
+
+function isAuthenticExpressionReview(value: unknown): value is AuthenticExpressionReview {
+  if (!isRecord(value) || value['policyVersion'] !== 'authentic-expression-v1' || typeof value['reviewedAt'] !== 'string' ||
+      (value['outcome'] !== 'pass' && value['outcome'] !== 'revise' && value['outcome'] !== 'block') ||
+      !Array.isArray(value['findings']) || !Array.isArray(value['selectedSources']) ||
+      !isStringArray(value['matchedPersonalTerms']) || !isStringArray(value['genericPhrases']) ||
+      typeof value['appliedVoicePreferences'] !== 'number' || !isRecord(value['boundaries'])) return false;
+  const boundaries = value['boundaries'];
+  return value['findings'].every(isExpressionFinding) && value['selectedSources'].every(isExpressionSource) &&
+    boundaries['factCheckIncluded'] === false && boundaries['claimApprovalGranted'] === false &&
+    boundaries['publicApprovalGranted'] === false && boundaries['externalActionPermitted'] === false;
+}
+
+function isExpressionFinding(value: unknown): value is ExpressionGateFinding {
+  return isRecord(value) &&
+    (value['dimension'] === 'grounding' || value['dimension'] === 'specificity' ||
+      value['dimension'] === 'generic_language' || value['dimension'] === 'voice_alignment') &&
+    (value['level'] === 'green' || value['level'] === 'yellow' || value['level'] === 'red') &&
+    typeof value['code'] === 'string' && typeof value['rationale'] === 'string' &&
+    (value['requiredChange'] === null || typeof value['requiredChange'] === 'string');
+}
+
+function isExpressionSource(value: unknown): value is AuthenticExpressionReview['selectedSources'][number] {
+  return isRecord(value) && typeof value['ref'] === 'string' && typeof value['title'] === 'string' &&
+    typeof value['assertionId'] === 'string' && typeof value['evidenceId'] === 'string';
 }
 
 function isStringArray(value: unknown): value is readonly string[] {

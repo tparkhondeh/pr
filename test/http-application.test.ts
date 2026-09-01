@@ -19,6 +19,7 @@ import {
   FeedbackLearningService,
   InMemoryFeedbackLearningRepository,
 } from '../src/feedback/workspace.js';
+import { AuthenticExpressionService } from '../src/expression/authentic-expression.js';
 import {
   InMemoryInitiativeRepository,
   InitiativePolicyService,
@@ -510,6 +511,77 @@ describe('operational endpoints', () => {
     expect(activity.summary.dataRights).toBe(1);
     expect(JSON.stringify(activity.events)).not.toContain('شفافیت در توضیح');
     expect(JSON.stringify(activity.events)).not.toContain('بازخورد مستقیم');
+  });
+
+  it('reviews authentic expression without granting fact or publication approval', async () => {
+    const fixedTime = new Date('2026-08-31T12:00:00.000Z');
+    const owner = userId('owner_primary');
+    const activeTenant = tenantId('tenant_primary');
+    const assets = new TextAssetIntakeService(new InMemoryTextAssetRepository(), {
+      tenantId: activeTenant, ownerUserId: owner,
+    });
+    const learning = new FeedbackLearningService(new InMemoryFeedbackLearningRepository(), {
+      tenantId: activeTenant, ownerUserId: owner,
+    });
+    await assets.importText({
+      actorId: owner,
+      requestId: 'expression_http_asset',
+      title: 'تصمیم شفاف در بحران',
+      content: 'شرح کامل تجربه مالک در یک تصمیم دشوار و واقعی',
+      assertionText: 'شفافیت تصمیم در بحران اعتماد تیم را حفظ کرد.',
+      occurredAt: fixedTime,
+      importedAt: fixedTime,
+      permissions: { personalUnderstanding: true, brandUsage: true },
+    });
+    const expression = new AuthenticExpressionService(
+      { tenantId: activeTenant, ownerUserId: owner }, assets, learning,
+    );
+    const dependencies: ApplicationDependencies = {
+      expression,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+
+    const snapshot = await request('/api/expression', () => ({ ready: true }), undefined, dependencies);
+    expect(snapshot.status).toBe(200);
+    await expect(snapshot.json()).resolves.toMatchObject({
+      policyVersion: 'authentic-expression-v1',
+      summary: { narrativeSeeds: 1, evidenceBoundSeeds: 1, voiceMaturity: 'uninitialized' },
+      narrativeSeeds: [{
+        maturity: 'single_source', epistemicType: 'evidence_backed_candidate',
+        privacy: { externalActionPermitted: false },
+      }],
+      boundaries: { narrativeSeedIsBrandFact: false, factCheckIncluded: false, externalActionPermitted: false },
+    });
+
+    const reviewed = await request(
+      '/api/expression/review',
+      () => ({ ready: true }),
+      {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          content: 'شفافیت تصمیم در بحران اعتماد تیم را حفظ کرد؛ این مشاهده به همان تجربه مشخص متصل است.',
+          assetRefs: ['asset_expression_http_asset'],
+        }),
+      },
+      dependencies,
+    );
+    expect(reviewed.status).toBe(200);
+    await expect(reviewed.json()).resolves.toMatchObject({
+      outcome: 'pass',
+      boundaries: { factCheckIncluded: false, claimApprovalGranted: false, publicApprovalGranted: false, externalActionPermitted: false },
+    });
+
+    const blocked = await request(
+      '/api/expression/review',
+      () => ({ ready: true }),
+      {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'در دنیای امروز همه ما می‌دانیم که اعتماد مهم است.', assetRefs: [] }),
+      },
+      dependencies,
+    );
+    await expect(blocked.json()).resolves.toMatchObject({ outcome: 'block' });
   });
 
   it('accepts a human approval and returns the evolved workflow', async () => {

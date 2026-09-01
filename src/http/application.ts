@@ -62,6 +62,13 @@ import {
   type PreferenceDecision,
 } from '../feedback/workspace.js';
 import {
+  AuthenticExpressionPermissionError,
+  AuthenticExpressionValidationError,
+  type AuthenticExpressionReview,
+  type AuthenticExpressionService,
+  type AuthenticExpressionSnapshot,
+} from '../expression/authentic-expression.js';
+import {
   InitiativeConflictError,
   InitiativePermissionError,
   InitiativeValidationError,
@@ -170,6 +177,7 @@ export type ApplicationDependencies = Readonly<{
   initiative?: Pick<InitiativePolicyService, 'snapshot' | 'updateSettings' | 'evaluate'>;
   relationships?: Pick<RelationshipWorkspaceService, 'snapshot' | 'create' | 'delete'>;
   perception?: Pick<PerceptionWorkspaceService, 'snapshot' | 'create' | 'delete'>;
+  expression?: Pick<AuthenticExpressionService, 'snapshot' | 'review'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -329,6 +337,16 @@ export function createRequestHandler(
     const perceptionDelete = path.match(/^\/api\/perception\/signals\/([0-9a-f-]{36})\/delete$/iu);
     if (request.method === 'POST' && perceptionDelete?.[1]) {
       await handlePerceptionSignalDelete(request, response, dependencies, perceptionDelete[1]);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/expression') {
+      await handleExpressionSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/expression/review') {
+      await handleExpressionReview(request, response, dependencies);
       return;
     }
 
@@ -1612,6 +1630,87 @@ function isPerceptionSourceKind(value: unknown): value is PerceptionSourceKind {
 
 function isPerceptionConfidence(value: unknown): value is PerceptionConfidence {
   return perceptionConfidences.includes(value as PerceptionConfidence);
+}
+
+async function handleExpressionSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = expressionActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.expression?.snapshot(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Expression service disappeared.');
+    sendJson(response, 200, serializeExpressionSnapshot(snapshot));
+  } catch (error: unknown) {
+    sendExpressionError(response, error);
+  }
+}
+
+async function handleExpressionReview(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = expressionActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const content = body['content'];
+    const assetRefs = body['assetRefs'];
+    if (typeof content !== 'string' || !Array.isArray(assetRefs) || assetRefs.some((ref) => typeof ref !== 'string')) {
+      sendJson(response, 400, { error: 'invalid_expression_input' });
+      return;
+    }
+    const review = await dependencies.expression?.review({
+      actorId,
+      content,
+      assetRefs,
+      reviewedAt: now(dependencies),
+    });
+    if (!review) throw new Error('Expression service disappeared.');
+    sendJson(response, 200, serializeExpressionReview(review));
+  } catch (error: unknown) {
+    sendExpressionError(response, error);
+  }
+}
+
+function expressionActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.expression) {
+    sendJson(response, 503, { error: 'expression_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function serializeExpressionSnapshot(snapshot: AuthenticExpressionSnapshot): Record<string, unknown> {
+  return { ...snapshot, generatedAt: snapshot.generatedAt.toISOString() };
+}
+
+function serializeExpressionReview(review: AuthenticExpressionReview): Record<string, unknown> {
+  return { ...review, reviewedAt: review.reviewedAt.toISOString() };
+}
+
+function sendExpressionError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof AuthenticExpressionValidationError) {
+    sendJson(response, 400, { error: 'invalid_expression_request' });
+    return;
+  }
+  if (error instanceof AuthenticExpressionPermissionError) {
+    sendJson(response, 403, { error: 'expression_permission_denied' });
+    return;
+  }
+  sendJson(response, 500, { error: 'expression_failed' });
 }
 
 async function handleRiskSnapshot(

@@ -47,7 +47,9 @@ import {
   evaluateInitiative,
   importTextAsset,
   importResearchSource,
+  loadAuthenticExpression,
   reviewClaim,
+  reviewAuthenticExpression,
   reviewRisk,
   decideLearnedPreference,
   loadDraftWorkspace,
@@ -71,6 +73,8 @@ import {
   updateInitiativeSettings,
   type AppliedMemoryRight,
   type ArbitrationWorkspaceSnapshot,
+  type AuthenticExpressionReview,
+  type AuthenticExpressionSnapshot,
   type AutonomyLevel,
   type AuditTrailSnapshot,
   type ConversationTurnResult,
@@ -128,7 +132,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'relationships' | 'perception' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'relationships' | 'perception' | 'expression' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -178,6 +182,10 @@ export function App() {
   const [perceptionSnapshot, setPerceptionSnapshot] = useState<PerceptionWorkspaceSnapshot | null>(null);
   const [perceptionViewState, setPerceptionViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [perceptionViewError, setPerceptionViewError] = useState<string | null>(null);
+  const [expressionSnapshot, setExpressionSnapshot] = useState<AuthenticExpressionSnapshot | null>(null);
+  const [expressionReview, setExpressionReview] = useState<AuthenticExpressionReview | null>(null);
+  const [expressionViewState, setExpressionViewState] = useState<'idle' | 'loading' | 'ready' | 'reviewing' | 'error'>('idle');
+  const [expressionViewError, setExpressionViewError] = useState<string | null>(null);
   const [draftSnapshot, setDraftSnapshot] = useState<DraftWorkspaceSnapshot | null>(null);
   const [draftSources, setDraftSources] = useState<DraftSourceSnapshot | null>(null);
   const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
@@ -588,6 +596,32 @@ export function App() {
     }
   };
 
+  const refreshExpression = useCallback(async (signal?: AbortSignal) => {
+    setExpressionViewState('loading');
+    setExpressionViewError(null);
+    try {
+      setExpressionSnapshot(await loadAuthenticExpression(signal));
+      setExpressionViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setExpressionViewError(errorMessage(caught));
+      setExpressionViewState('error');
+    }
+  }, []);
+
+  const analyzeExpression = async (input: Readonly<{ content: string; assetRefs: readonly string[] }>) => {
+    if (expressionViewState === 'reviewing') return;
+    setExpressionViewState('reviewing');
+    setExpressionViewError(null);
+    try {
+      setExpressionReview(await reviewAuthenticExpression(input));
+      setExpressionViewState('ready');
+    } catch (caught: unknown) {
+      setExpressionViewError(errorMessage(caught));
+      setExpressionViewState('error');
+    }
+  };
+
   const saveStrategy = async (value: EditableStrategyContext) => {
     if (!strategySnapshot || strategyViewState === 'saving') return;
     setStrategyViewState('saving');
@@ -972,6 +1006,12 @@ export function App() {
         ? String(perceptionSnapshot.summary.potentialBlindSpots)
         : undefined,
     },
+    {
+      label: 'روایت و Voice',
+      icon: Sparkles,
+      view: 'expression' as const,
+      badge: expressionReview?.outcome === 'block' ? '!' : expressionReview?.outcome === 'revise' ? '۱' : undefined,
+    },
     { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
     { label: 'پیش‌نویس', icon: PencilLine, view: 'draft' as const },
     {
@@ -1009,6 +1049,7 @@ export function App() {
                 if (view === 'initiative') void refreshInitiative();
                 if (view === 'relationships') void refreshRelationships();
                 if (view === 'perception') void refreshPerception();
+                if (view === 'expression') void refreshExpression();
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
                 if (view === 'learning') void refreshFeedback();
@@ -1049,6 +1090,8 @@ export function App() {
                 ? 'رابطه سرمایه است؛ اما انسان امتیاز CRM نیست.'
               : activeView === 'perception'
                 ? 'نظر دیگران Signal است، نه حقیقت.'
+              : activeView === 'expression'
+                ? 'روایت باید به شواهد و Voice واقعی شما متصل بماند.'
               : activeView === 'intake'
                 ? 'اولین شاهد واقعی را وارد کنید.'
               : activeView === 'strategy'
@@ -1161,6 +1204,15 @@ export function App() {
             onRefresh={() => refreshPerception()}
             snapshot={perceptionSnapshot}
             state={perceptionViewState}
+          />
+        ) : activeView === 'expression' ? (
+          <AuthenticExpressionPanel
+            error={expressionViewError}
+            onRefresh={() => refreshExpression()}
+            onReview={analyzeExpression}
+            review={expressionReview}
+            snapshot={expressionSnapshot}
+            state={expressionViewState}
           />
         ) : activeView === 'strategy' ? (
           <StrategyPanel
@@ -2915,6 +2967,134 @@ function perceptionConfidenceLabel(value: PerceptionConfidence): string { return
 function perceptionGapLabel(value: PerceptionWorkspaceSnapshot['dimensions'][number]['gap']): string { return { insufficient_evidence: 'داده ناکافی', aligned_range: 'در محدوده مشترک', underrecognized: 'کمتر از جایگاه مطلوب', exceeds_target: 'بالاتر از هدف ثبت‌شده' }[value]; }
 function perceptionBlindSpotLabel(value: PerceptionWorkspaceSnapshot['dimensions'][number]['blindSpot']): string { return { insufficient_evidence: 'Blind Spot: داده ناکافی', within_external_range: 'Self در Range بیرونی', self_higher_than_external: 'Blind Spot احتمالی: Self بالاتر است', self_lower_than_external: 'تفاوت احتمالی: Self پایین‌تر است' }[value]; }
 
+function AuthenticExpressionPanel({
+  error,
+  onRefresh,
+  onReview,
+  review,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onRefresh: () => Promise<void>;
+  onReview: (input: Readonly<{ content: string; assetRefs: readonly string[] }>) => Promise<void>;
+  review: AuthenticExpressionReview | null;
+  snapshot: AuthenticExpressionSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'reviewing' | 'error';
+}>) {
+  const [content, setContent] = useState('');
+  const [selectedRefs, setSelectedRefs] = useState<readonly string[]>([]);
+
+  if (!snapshot && (state === 'idle' || state === 'loading')) {
+    return <section className="memory-view-state" aria-live="polite"><LoaderCircle className="spin" size={24} /><h2>در حال ساخت نمای روایت و Voice…</h2><p>Assetهای مجاز و Preferenceهای قابل بازگشت خوانده می‌شوند.</p></section>;
+  }
+  if (!snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><Sparkles size={25} /><h2>Authentic Expression در دسترس نیست</h2><p>{error ?? 'پروفایل روایت و Voice دریافت نشد.'}</p><button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button></section>;
+  }
+
+  const toggleSource = (ref: string) => {
+    setSelectedRefs((current) => current.includes(ref) ? current.filter((item) => item !== ref) : [...current, ref]);
+  };
+
+  return (
+    <section className="expression-center" aria-label="دروازه اصالت روایت و Voice">
+      <div className="relationship-hero expression-hero">
+        <div><span className="overline">Authentic Expression Gate v1</span><h2>متن شما چقدر واقعاً متعلق به شماست؟</h2><p>Seed روایی از Asset مجاز می‌آید؛ Voice از ویرایش‌های تأییدشده. عبور از این Gate مجوز انتشار یا Fact Check نیست.</p></div>
+        <div className="relationship-metrics expression-metrics">
+          <span><b>{snapshot.summary.narrativeSeeds}</b> Narrative Seed</span>
+          <span><b>{snapshot.summary.appliedVoiceSignals}</b> Voice تأییدشده</span>
+          <span><b>{expressionVoiceMaturityLabel(snapshot.summary.voiceMaturity)}</b> بلوغ Voice</span>
+          <button type="button" onClick={() => void onRefresh()}><RefreshCw size={16} /> بازخوانی</button>
+        </div>
+      </div>
+
+      {error ? <div className="inline-error" role="alert"><TriangleAlert size={16} />{error}</div> : null}
+
+      <div className="expression-layout">
+        <form
+          className="expression-review-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void onReview({ content: content.trim(), assetRefs: selectedRefs });
+          }}
+        >
+          <header><span className="overline">Quality Gate بدون Side Effect</span><h3>متن را قبل از Approval بررسی کنید</h3></header>
+          <label className="field wide"><span>متن پیشنهادی</span><textarea minLength={20} maxLength={20000} onChange={(event) => { setContent(event.target.value); }} placeholder="متنی که می‌خواهید از نظر Grounding، Specificity، Generic Language و Voice بررسی شود…" rows={10} value={content} /></label>
+          <fieldset className="expression-sources">
+            <legend>Assetهای مجازِ متصل</legend>
+            {snapshot.narrativeSeeds.length === 0 ? (
+              <p>هنوز Asset دارای Brand Usage وجود ندارد؛ Review بدون منبع به‌درستی Block می‌شود.</p>
+            ) : snapshot.narrativeSeeds.map((seed) => (
+              <label key={seed.narrativeId}>
+                <input checked={selectedRefs.includes(seed.source.ref)} onChange={() => { toggleSource(seed.source.ref); }} type="checkbox" />
+                <span><b>{seed.title}</b><small>{seed.premise}</small></span>
+              </label>
+            ))}
+          </fieldset>
+          <div className="expression-boundary"><LockKeyhole size={15} /><span>Fact Check: خیر · Publish Approval: خیر · External Action: ممنوع</span></div>
+          <button className="primary-action" disabled={state === 'reviewing' || content.trim().length < 20} type="submit">
+            {state === 'reviewing' ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}
+            اجرای Authenticity Gate
+          </button>
+        </form>
+
+        <div className="expression-results">
+          <section className="expression-profile">
+            <header><span className="overline">Narrative Architecture · Foundation</span><h3>Seedهای قابل‌ردیابی</h3></header>
+            {snapshot.narrativeSeeds.length === 0 ? <p className="muted">پس از ورود Asset مجاز، Seedهای تک‌منبعی اینجا ظاهر می‌شوند.</p> : snapshot.narrativeSeeds.map((seed) => (
+              <article key={seed.narrativeId}><b>{seed.title}</b><p>{seed.premise}</p><footer><span>single_source</span><span>candidate ≠ Brand Fact</span></footer></article>
+            ))}
+          </section>
+
+          <section className="expression-profile">
+            <header><span className="overline">Voice Model · Evidence from Edits</span><h3>Preferenceهای قابل بازگشت</h3></header>
+            {snapshot.voiceSignals.length === 0 ? <p className="muted">Voice Model هنوز داده کافی ندارد؛ سیستم از حدس‌زدن لحن خودداری می‌کند.</p> : snapshot.voiceSignals.map((signal) => (
+              <article key={signal.preferenceId}><b>{voicePreferenceLabel(signal.key, signal.value)}</b><p>{signal.rationale}</p><footer><span>{signal.status === 'applied' ? 'تأییدشده' : 'فقط پیشنهاد'}</span><span>{signal.evidenceCount} ویرایش</span></footer></article>
+            ))}
+          </section>
+
+          {review ? (
+            <section className={`expression-review-result ${review.outcome}`}>
+              <header><div><span className="overline">Review Result</span><h3>{expressionOutcomeLabel(review.outcome)}</h3></div><strong>{review.outcome.toUpperCase()}</strong></header>
+              <div className="expression-findings">
+                {review.findings.map((finding) => (
+                  <article className={finding.level} key={finding.dimension}><span>{expressionDimensionLabel(finding.dimension)}</span><b>{finding.rationale}</b>{finding.requiredChange ? <p>{finding.requiredChange}</p> : null}</article>
+                ))}
+              </div>
+              <footer><span>{review.selectedSources.length} منبع متصل</span><span>{review.matchedPersonalTerms.length} نشانه شخصی</span><span>{review.genericPhrases.length} کلیشه شناخته‌شده</span></footer>
+            </section>
+          ) : (
+            <section className="expression-review-placeholder"><ShieldCheck size={28} /><h3>هنوز متنی بررسی نشده است</h3><p>نتیجه چهار Finding مستقل می‌دهد و دلیل Block یا Revise را آشکار نگه می‌دارد.</p></section>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function expressionVoiceMaturityLabel(value: AuthenticExpressionSnapshot['summary']['voiceMaturity']): string {
+  return { uninitialized: 'بدون داده', learning: 'در حال یادگیری', confirmed: 'تأییدشده' }[value];
+}
+
+function expressionOutcomeLabel(value: AuthenticExpressionReview['outcome']): string {
+  return { pass: 'قابل ادامه به Gateهای بعدی', revise: 'پیش از ادامه بازنویسی شود', block: 'بدون Grounding متوقف است' }[value];
+}
+
+function expressionDimensionLabel(value: AuthenticExpressionReview['findings'][number]['dimension']): string {
+  return { grounding: 'Grounding', specificity: 'Personal Specificity', generic_language: 'Anti-Generic AI', voice_alignment: 'Voice Alignment' }[value];
+}
+
+function voicePreferenceLabel(key: string, value: unknown): string {
+  const known: Readonly<Record<string, string>> = {
+    'voice.draft_length:shorter': 'متن کوتاه‌تر',
+    'voice.draft_length:longer': 'متن مبسوط‌تر',
+    'voice.headline_length:shorter': 'تیتر کوتاه‌تر',
+    'voice.heading_density:lower': 'میان‌تیتر کمتر',
+    'voice.question_cta:omit': 'بدون پرسش پایانی',
+  };
+  return known[`${key}:${String(value)}`] ?? `${key}: ${String(value)}`;
+}
+
 function arbitrationOutcomeLabel(outcome: ArbitrationWorkspaceSnapshot['cases'][number]['decision']['outcome']): string {
   return {
     recommendation_ready: 'پیشنهاد آماده',
@@ -3885,6 +4065,11 @@ function errorMessage(error: unknown): string {
     preference_not_found: 'این پیشنهاد ترجیح دیگر در دسترس نیست.',
     invalid_status: 'وضعیت این پیشنهاد قبلاً تغییر کرده است؛ Snapshot تازه را دریافت کنید.',
     feedback_failed: 'ثبت بازخورد کامل نشد؛ دوباره تلاش کنید.',
+    expression_unavailable: 'نمای روایت و Voice در دسترس نیست.',
+    invalid_expression_input: 'متن یا فهرست Assetهای انتخاب‌شده معتبر نیست.',
+    invalid_expression_request: 'متن باید حداقل ۲۰ نویسه داشته باشد و حداکثر پنج Asset یکتا انتخاب شود.',
+    expression_permission_denied: 'فقط مالک می‌تواند این تحلیل را اجرا کند؛ Asset بدون Brand Usage پذیرفته نمی‌شود.',
+    expression_failed: 'Authentic Expression Gate کامل نشد؛ دوباره تلاش کنید.',
     invalid_response: 'پاسخ API با قرارداد Workbench هم‌خوان نیست.',
   };
   return messages[error.code] ?? 'در پردازش درخواست خطایی رخ داد.';

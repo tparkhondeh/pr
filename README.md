@@ -6,6 +6,8 @@
 Workbench وب، Approval انسانی، ورودی مکالمه‌ای Consent-first، ورود متن به‌عنوان
 Asset/Evidence، مرکز حقوق داده، داوری قطعی اختلاف میان ماژول‌ها و Proactive Mode
 کنترل‌شده، نقشه خصوصی Stakeholder/Relationship و Perception Engine کیفی پیاده‌سازی شده‌اند.
+Authentic Expression Gate نیز Narrative Seedهای evidence-bound، Voice Preferenceهای
+قابل بازگشت و Anti-Generic Review توضیح‌پذیر را بدون مجوز انتشار ترکیب می‌کند.
 
 ## اسناد فعلی
 
@@ -16,6 +18,7 @@ Asset/Evidence، مرکز حقوق داده، داوری قطعی اختلاف �
 - [Inter-module Contract & Decision Arbitration](docs/architecture/intermodule-arbitration-v1.0.md)
 - [Controlled Proactive Initiative](docs/architecture/proactive-initiative-v1.0.md)
 - [Perception Engine](docs/architecture/perception-engine-v1.0.md)
+- [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
 - [Master Implementation Prompt مرحله Foundation](docs/implementation/foundation-master-prompt-v1.0.md)
 - [ADRهای Draft مرحله Foundation](docs/decisions/foundation-adrs-draft-v1.0.md)
 - [Data & Policy Kernel](docs/architecture/data-kernel-v1.0.md)
@@ -181,6 +184,18 @@ Signalهای بیرونی، Gap کیفی و Blind Spot احتمالی را نش�
 `GET /api/perception`، `POST /api/perception/signals` و
 `POST /api/perception/signals/:id/delete` هستند. جزئیات در
 [`docs/architecture/perception-engine-v1.0.md`](docs/architecture/perception-engine-v1.0.md)
+ثبت شده است.
+
+نمای «روایت و Voice» قرارداد `authentic-expression-v1` را اجرا می‌کند. هر Text Asset
+دارای `brandUsage` فقط یک Narrative Seed تک‌منبعی و candidate می‌سازد؛ Seed به Brand
+Fact یا Core Narrative ارتقا داده نمی‌شود. Voice Model فقط Preferenceهای پیشنهادشده
+یا تأییدشدهٔ Feedback Engine را نشان می‌دهد و Proposal خودکار اعمال نمی‌شود. کاربر
+می‌تواند متن و حداکثر پنج Asset مجاز را به Gate بدهد تا Grounding، Personal
+Specificity، Generic AI Language و Voice Alignment جداگانه بررسی شوند. نتیجه
+`pass/revise/block` توضیح‌پذیر است، اما Fact Check، Claim Approval، Publish Approval یا
+External Action نیست. APIهای این Slice شامل `GET /api/expression` و
+`POST /api/expression/review` هستند. جزئیات در
+[`docs/architecture/authentic-expression-v1.0.md`](docs/architecture/authentic-expression-v1.0.md)
 ثبت شده است.
 
 نمای «پیش‌نویس» تنها پس از تأیید Action محتوایی Workbench فعال می‌شود. کاربر یک

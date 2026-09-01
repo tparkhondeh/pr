@@ -33,6 +33,7 @@ import {
   InMemoryFeedbackLearningRepository,
   PostgresFeedbackLearningRepository,
 } from './feedback/workspace.js';
+import { AuthenticExpressionService } from './expression/authentic-expression.js';
 import {
   InMemoryInitiativeRepository,
   InitiativePolicyService,
@@ -159,6 +160,11 @@ const learning = new FeedbackLearningService(learningRepository, {
   tenantId: activeTenant,
   ownerUserId: owner,
 });
+const expression = new AuthenticExpressionService(
+  { tenantId: activeTenant, ownerUserId: owner },
+  assets,
+  learning,
+);
 const research = new ResearchWorkspaceService(
   postgres && environment.database
     ? new PostgresResearchWorkspaceRepository(postgres, {
@@ -257,6 +263,7 @@ const requestHandler = createRequestHandler(
     initiative,
     relationships,
     perception,
+    expression,
     ...(!postgres ? { mutationAuditTrail: auditTrail } : {}),
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity

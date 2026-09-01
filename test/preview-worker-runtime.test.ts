@@ -320,6 +320,34 @@ describe('private preview worker draft runtime', () => {
     const approvedAsset = await approvedAssetResponse.json() as {
       record: { assetId: string; evidenceId: string };
     };
+    const expressionSnapshotResponse = await worker.fetch(new Request('https://preview.example/api/expression'), env);
+    await expect(expressionSnapshotResponse.json()).resolves.toMatchObject({
+      policyVersion: 'authentic-expression-v1',
+      persistence: 'ephemeral',
+      summary: { narrativeSeeds: 1, evidenceBoundSeeds: 1, voiceMaturity: 'uninitialized' },
+      narrativeSeeds: [{
+        maturity: 'single_source', epistemicType: 'evidence_backed_candidate',
+        source: { ref: approvedAsset.record.assetId },
+        privacy: { externalActionPermitted: false },
+      }],
+      boundaries: { narrativeSeedIsBrandFact: false, factCheckIncluded: false, externalActionPermitted: false },
+    });
+    const expressionPassed = await post('/api/expression/review', {
+      content: 'گفت‌وگوی مستقیم، ابهام را به تصمیم مسئولانه تبدیل کرد؛ این تجربه واقعی باید دقیق روایت شود.',
+      assetRefs: [approvedAsset.record.assetId],
+    });
+    await expect(expressionPassed.json()).resolves.toMatchObject({
+      outcome: 'pass', policyVersion: 'authentic-expression-v1',
+      boundaries: { factCheckIncluded: false, claimApprovalGranted: false, publicApprovalGranted: false, externalActionPermitted: false },
+    });
+    await expect((await post('/api/expression/review', {
+      content: 'در دنیای امروز همه ما می‌دانیم که گفت‌وگوی مستقیم می‌تواند یک بازی را تغییر دهد.',
+      assetRefs: [approvedAsset.record.assetId],
+    })).json()).resolves.toMatchObject({ outcome: 'revise' });
+    await expect((await post('/api/expression/review', {
+      content: 'در دنیای امروز همه ما می‌دانیم که گفت‌وگو همیشه مهم است.',
+      assetRefs: [],
+    })).json()).resolves.toMatchObject({ outcome: 'block' });
     const blockedByRisk = await post('/api/workbench/approval', { actionId: 'essay' });
     expect(blockedByRisk.status).toBe(409);
     await expect(blockedByRisk.json()).resolves.toEqual({ error: 'risk_review_required' });
