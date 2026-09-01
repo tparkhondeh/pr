@@ -150,6 +150,9 @@ describe('foundation migration', () => {
 
   it('adds private, tenant-isolated stakeholder context without contact automation', () => {
     defineMigration('0022_relationship_intelligence', relationshipSql);
+    expect(relationshipSql).toContain(
+      "ALTER TYPE app.consent_purpose ADD VALUE IF NOT EXISTS 'relationship_planning'",
+    );
     for (const table of ['stakeholder_records', 'stakeholder_requests']) {
       expect(relationshipSql).toContain(`CREATE TABLE app.${table}`);
       expect(relationshipSql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);

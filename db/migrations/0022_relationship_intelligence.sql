@@ -1,5 +1,7 @@
 BEGIN;
 
+ALTER TYPE app.consent_purpose ADD VALUE IF NOT EXISTS 'relationship_planning';
+
 CREATE TABLE app.stakeholder_records (
   id uuid PRIMARY KEY,
   tenant_id uuid NOT NULL REFERENCES app.tenants(id) ON DELETE CASCADE,
