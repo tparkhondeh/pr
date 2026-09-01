@@ -1,3 +1,5 @@
+import { assertSafePostgresConnectionString } from '../database/connection-policy.js';
+
 export type Environment = Readonly<{
   nodeEnv: 'development' | 'test' | 'production';
   bindHost: string;
@@ -111,15 +113,7 @@ function loadDatabaseEnvironment(
     );
   }
 
-  let protocol: string;
-  try {
-    protocol = new URL(connectionString).protocol;
-  } catch {
-    throw new Error('Invalid DATABASE_URL.');
-  }
-  if (protocol !== 'postgres:' && protocol !== 'postgresql:') {
-    throw new Error('DATABASE_URL must use postgres or postgresql protocol.');
-  }
+  assertSafePostgresConnectionString(connectionString);
   if (!isUuid(tenantId) || !isUuid(ownerUserId)) {
     throw new Error('PR_TENANT_ID and PR_OWNER_USER_ID must be UUIDs.');
   }

@@ -25,6 +25,13 @@ Restart پروسه state را پاک می‌کند. این تنظیم برای P
 به احراز هویت واقعی، PostgreSQL دارای Backup و ثبت PM2 Startup توسط مالک cPanel نیاز
 دارد.
 
+فعال‌سازی PostgreSQL فقط پس از دریافت Database و دو Role جدا از مالک cPanel انجام
+می‌شود. Listener یا Credential مربوط به پروژه دیگری قابل استفاده نیست. commissioning
+از Full Checkout و با `pnpm db:commission` انجام می‌شود؛ Migration credential بعد از
+موفقیت از محیط حذف و فقط `DATABASE_URL` محدود، `PR_TENANT_ID` و
+`PR_OWNER_USER_ID` از Secret Store وارد Runtime می‌شوند. برای Database بیرون از
+loopback، `sslmode=verify-full` اجباری است.
+
 فرایند Bootstrap در `NODE_ENV=production` بدون PostgreSQL به‌صورت پیش‌فرض Fail closed
 است. این Preview خصوصی عمداً `PR_ALLOW_EPHEMERAL_PRODUCTION=true` دارد؛ بنابراین
 `GET /ready` باید تا زمان اتصال دیتابیس، `persistence=memory` و

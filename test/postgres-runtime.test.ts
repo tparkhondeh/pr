@@ -7,26 +7,25 @@ import {
 
 describe('PostgreSQL runtime safety', () => {
   it('accepts only a non-privileged role with row security enabled', () => {
-    expect(isSafeDatabasePrincipal({
+    const restricted = {
       superuser: false,
       bypassRls: false,
       rowSecurity: 'on',
-    })).toBe(true);
-    expect(isSafeDatabasePrincipal({
-      superuser: true,
-      bypassRls: false,
-      rowSecurity: 'on',
-    })).toBe(false);
-    expect(isSafeDatabasePrincipal({
-      superuser: false,
-      bypassRls: true,
-      rowSecurity: 'on',
-    })).toBe(false);
-    expect(isSafeDatabasePrincipal({
-      superuser: false,
-      bypassRls: false,
-      rowSecurity: 'off',
-    })).toBe(false);
+      databaseCreate: false,
+      publicSchemaCreate: false,
+      createRole: false,
+      createDatabase: false,
+      replication: false,
+    } as const;
+    expect(isSafeDatabasePrincipal(restricted)).toBe(true);
+    expect(isSafeDatabasePrincipal({ ...restricted, superuser: true })).toBe(false);
+    expect(isSafeDatabasePrincipal({ ...restricted, bypassRls: true })).toBe(false);
+    expect(isSafeDatabasePrincipal({ ...restricted, rowSecurity: 'off' })).toBe(false);
+    expect(isSafeDatabasePrincipal({ ...restricted, databaseCreate: true })).toBe(false);
+    expect(isSafeDatabasePrincipal({ ...restricted, publicSchemaCreate: true })).toBe(false);
+    expect(isSafeDatabasePrincipal({ ...restricted, createRole: true })).toBe(false);
+    expect(isSafeDatabasePrincipal({ ...restricted, createDatabase: true })).toBe(false);
+    expect(isSafeDatabasePrincipal({ ...restricted, replication: true })).toBe(false);
   });
 
   it('keeps the runtime schema gate aligned with the newest migration file', () => {

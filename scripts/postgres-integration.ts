@@ -13,6 +13,7 @@ import {
   applyMigrations,
   type MigrationConnection,
 } from '../src/database/migration-runner.js';
+import { commissionPostgresDatabase } from '../src/database/commissioning.js';
 import type { SqlQueryResult } from '../src/database/sql.js';
 import { PostgresRuntime } from '../src/database/postgres.js';
 import { PostgresStrategicQualityRepository } from '../src/database/postgres-strategic-quality.js';
@@ -21,7 +22,7 @@ import {
   StrategicQualityConflictError,
   StrategicQualityService,
 } from '../src/evaluation/strategic-quality.js';
-import { defineMigration } from '../src/kernel/migrations.js';
+import { defineMigration, type Migration } from '../src/kernel/migrations.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
 import { WorkflowCostControlService } from '../src/observability/workflow-cost-control.js';
 import {
@@ -135,6 +136,7 @@ async function main(): Promise<void> {
     }
 
     await createApplicationRole(client);
+    await verifyCommissioningPath(client, migrations);
     await seedIsolationFixtures(client);
     await verifyTenantPolicies(client);
     await verifyRuntimeIsolation(client);
@@ -953,11 +955,39 @@ async function createApplicationRole(client: Client): Promise<void> {
   `);
   await client.query(`ALTER ROLE pr_app_test LOGIN PASSWORD '${applicationRolePassword}'
     NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS`);
-  await client.query('GRANT USAGE ON SCHEMA app TO pr_app_test');
-  await client.query('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app TO pr_app_test');
-  await client.query('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO pr_app_test');
-  await client.query('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA app TO pr_app_test');
-  await client.query('GRANT SELECT ON public.pr_schema_migrations TO pr_app_test');
+  await client.query('ALTER ROLE pr_app_test SET row_security = on');
+}
+
+async function verifyCommissioningPath(
+  migrationClient: Client,
+  migrations: readonly Migration[],
+): Promise<void> {
+  const runtimeClient = new Client({
+    connectionString: requiredEnvironment('PR_TEST_APP_DATABASE_URL'),
+    application_name: 'wealthos-pr-commissioning-integration',
+  });
+  await runtimeClient.connect();
+  try {
+    const result = await commissionPostgresDatabase(
+      new PgMigrationConnection(migrationClient),
+      new PgMigrationConnection(runtimeClient),
+      migrations,
+      {
+        tenantId: tenantA,
+        ownerUserId: userA,
+        tenantSlug: 'tenant-a',
+        tenantDisplayName: 'Tenant A',
+        ownerExternalSubject: 'owner-a',
+      },
+    );
+    if (
+      result.appliedMigrations.length !== 0 ||
+      result.alreadyAppliedMigrations.length !== migrations.length ||
+      result.latestMigration !== migrations.at(-1)?.id
+    ) throw new Error('PostgreSQL commissioning integration result is incomplete.');
+  } finally {
+    await runtimeClient.end();
+  }
 }
 
 async function verifyRuntimeReadiness(adminConnectionString: string): Promise<void> {

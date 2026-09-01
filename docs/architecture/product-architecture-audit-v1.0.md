@@ -262,6 +262,13 @@ PostgreSQL و Preview فعال‌اند. چون Runtime فعلی Provider بیر
 `no_usage` است؛ اثبات «داخل بودجه بودن Workflowهای مدل واقعی» تا اتصال Provider و
 نمونه‌های اجرای Metered باز می‌ماند.
 
+مسیر `postgres-commissioning-v1` نیز فعال‌سازی Source of Truth را fail-closed کرده است:
+Migration و Runtime باید Roleهای جدا باشند، Runtime حق superuser/BYPASSRLS/CREATE
+نداشته باشد، Host غیر-loopback فقط با `sslmode=verify-full` پذیرفته می‌شود و Tenant،
+Owner، آخرین Schema و visibility تحت RLS پس از Migration دوباره از اتصال Runtime
+سنجیده می‌شوند. سرور Production هنوز credential و Roleهای مخصوص PR ندارد؛ بنابراین
+تا Provision امن و restore drill، دامنه آگاهانه در حالت memory/ephemeral باقی می‌ماند.
+
 ### Phase 3 — Authentic Execution
 
 voice، narrative، claims، LinkedIn adaptation، approval/export و edit learning.

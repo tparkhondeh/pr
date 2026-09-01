@@ -63,14 +63,15 @@ Trust Boundaryها:
 | T-22 | یکی‌گرفتن Trend با Opportunity، ساخت Filter Bubble یا تبدیل Source کهنه/متعارض به Action | P0 | پنج عامل مستقل و توضیح‌پذیر بدون Score پنهان، stale/unverified=ignore، conflict=monitor، سقف یک Exploration و مرز قطعی Strategy Review از Action/Approval | پیش از News/Social/Media connector، provenance و source allowlist، prompt-injection quarantine، rate limit، attention budget، freshness policy و Human review مستقل الزامی است |
 | T-23 | پنهان‌شدن Opportunity Cost، پیشنهاد Action خارج از ظرفیت کاربر یا معتبر ماندن Decision stale | P0 | Feasibility قطعی و مستقل برای Time/Energy/Attention/Visibility/Emotional Bandwidth، Context مالک‌محور نسخه‌دار با SHA-256 و RLS، Binding تأیید به Strategy/Context/پنجره ۲۴ساعته، ابطال Approval و آزمون stale-context race؛ Utility و Opportunity Cost آشکار و `externalActionPermitted=false` | Thresholdهای پنج ظرفیت باید با User Acceptance و داده Regret/Energy کالیبره شوند؛ هیچ Engagement metric حق Override این Gateها را ندارد |
 | T-24 | اجرای هم‌زمان خارج از بودجه، ثبت دوبارهٔ Charge، یا سبز نشان‌دادن هزینهٔ نامعلوم با عدد ساختگی | P0 | Reservation پیش از Spend، Lock روزانه Tenant/Owner، Idempotency fingerprint، Ledger append-only تفکیک‌شده، `costEvidence` صریح، صفر اجباری برای unmetered و Circuit Breaker در Overrun | Provider Adapter واقعی باید Reservation/Charge را اجباری و Usage گزارش‌شده را با صورتحساب مستقل reconcile کند؛ بدون نمونهٔ Metered ادعای cost/workflow pass مجاز نیست |
+| T-25 | Adopt کردن Database ناشناخته/عمومی، شنود credential روی PostgreSQL بدون TLS، یا اجرای Runtime با Role مالک DDL | P0 | دو URL و Role جدا، `sslmode=verify-full` برای Host غیرمحلی، commissioning fail-closed، revoke مجوز CREATE، verification دوباره Principal/Schema/RLS و عدم چاپ URL | Production تا Provision دو Role از مالک زیرساخت، Secret injection، restore drill و بستن listener عمومی فاقد TLS موقت باقی می‌ماند |
 
 ## P0 Gate
 
 - Scope فعلی فقط زمانی مجاز است که دامنه پشت Basic Auth، Node فقط روی loopback و
   Sites owner-only باشد.
 - Shared/public release با T-02 باز ممنوع است.
-- Durable production با PostgreSQL تا integration isolation test، TLS و restore drill
-  ممنوع است.
+- Durable production با PostgreSQL تا commissioning دو Role، integration isolation test،
+  TLS دارای hostname verification و restore drill ممنوع است.
 - Model/Research/Publishing واقعی تا بستن T-06/T-16 و eval مربوط فعال نمی‌شود.
 
 ## Verification evidence

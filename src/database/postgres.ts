@@ -11,10 +11,17 @@ export type DatabasePrincipal = Readonly<{
   superuser: boolean;
   bypassRls: boolean;
   rowSecurity: string;
+  databaseCreate: boolean;
+  publicSchemaCreate: boolean;
+  createRole: boolean;
+  createDatabase: boolean;
+  replication: boolean;
 }>;
 
 export function isSafeDatabasePrincipal(principal: DatabasePrincipal): boolean {
-  return !principal.superuser && !principal.bypassRls && principal.rowSecurity === 'on';
+  return !principal.superuser && !principal.bypassRls && principal.rowSecurity === 'on' &&
+    !principal.databaseCreate && !principal.publicSchemaCreate && !principal.createRole &&
+    !principal.createDatabase && !principal.replication;
 }
 
 export class PostgresRuntime implements SqlTransactionRunner {
@@ -56,10 +63,20 @@ export class PostgresRuntime implements SqlTransactionRunner {
         superuser: boolean;
         bypass_rls: boolean;
         row_security: string;
+        database_create: boolean;
+        public_schema_create: boolean;
+        create_role: boolean;
+        create_database: boolean;
+        replication: boolean;
       }>>(`
         SELECT role.rolsuper AS superuser,
                role.rolbypassrls AS bypass_rls,
-               current_setting('row_security') AS row_security
+               current_setting('row_security') AS row_security,
+               has_database_privilege(current_user, current_database(), 'CREATE') AS database_create,
+               has_schema_privilege(current_user, 'public', 'CREATE') AS public_schema_create,
+               role.rolcreaterole AS create_role,
+               role.rolcreatedb AS create_database,
+               role.rolreplication AS replication
           FROM pg_roles role
          WHERE role.rolname = current_user
       `);
@@ -68,6 +85,11 @@ export class PostgresRuntime implements SqlTransactionRunner {
         superuser: principal.superuser,
         bypassRls: principal.bypass_rls,
         rowSecurity: principal.row_security,
+        databaseCreate: principal.database_create,
+        publicSchemaCreate: principal.public_schema_create,
+        createRole: principal.create_role,
+        createDatabase: principal.create_database,
+        replication: principal.replication,
       })) {
         return { ready: false, reason: 'database_role_unsafe' };
       }

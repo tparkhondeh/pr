@@ -99,8 +99,11 @@ Production نیست، اما قابلیت اعمال و بازیابی Schema ر
 می‌کند.
 
 Runtime اتصال دیتابیس را فقط زمانی ready اعلام می‌کند که principal آن superuser یا
-دارای `BYPASSRLS` نباشد، `row_security=on` باشد و migration journal به آخرین نسخه
-Schema رسیده باشد. credential مهاجرت باید جدا از `DATABASE_URL` Runtime نگه‌داری شود.
+دارای `BYPASSRLS` نباشد، `row_security=on` باشد، روی Database/Schema عمومی مجوز
+`CREATE` نداشته باشد و migration journal به آخرین نسخه Schema رسیده باشد. فرمان
+`pnpm db:commission` با credential مهاجرت جدا، Migration، Grant حداقلی، Seed هویت
+مالک و verification نهایی RLS را اجرا می‌کند. Host غیر-loopback بدون
+`sslmode=verify-full` رد می‌شود و credential مهاجرت نباید در Runtime باقی بماند.
 
 نمای «شروع و منابع» مسیر Cold Start محدود MVP را ارائه می‌کند. مالک از
 `POST /api/assets/text` عنوان، متن، تاریخ و برداشت پیشنهادی خود را همراه رضایت صریح

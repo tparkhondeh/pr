@@ -17,6 +17,38 @@ RLS و logical dump/restore را در یک دیتابیس تازه drill می‌
 
 Load balancer فقط باید `/ready` را مبنای Routing قرار دهد.
 
+## Commissioning امن PostgreSQL
+
+فعال‌سازی Persistence با یک URL یا Role مشترک مجاز نیست. دو Principal مستقل لازم است:
+
+- `PR_MIGRATION_DATABASE_URL`: مالک Migration با مجوز DDL؛ فقط هنگام commissioning.
+- `DATABASE_URL`: Role محدود Runtime؛ non-superuser، بدون `BYPASSRLS`، با
+  `row_security=on` و بدون `CREATE` روی Database یا Schema عمومی.
+
+برای Host غیر-loopback هر دو URL باید `sslmode=verify-full` داشته باشند. اتصال بدون TLS
+یا `sslmode=require` به‌تنهایی Gate را رد می‌کند، چون احراز نام Host و Certificate را
+تضمین نمی‌کند. اتصال loopback یا Unix socket می‌تواند از Transport محلی استفاده کند.
+
+متغیرهای commissioning علاوه بر دو URL عبارت‌اند از `PR_TENANT_ID`،
+`PR_OWNER_USER_ID`، `PR_TENANT_SLUG`، `PR_TENANT_DISPLAY_NAME` و
+`PR_OWNER_EXTERNAL_SUBJECT`. پس از تزریق از Secret Store:
+
+```bash
+pnpm db:commission
+```
+
+این فرمان قبل از فعال‌سازی Runtime، Roleها را جدا بودن بررسی می‌کند، Migrationهای
+append-only را زیر Advisory Lock اجرا می‌کند، فقط دسترسی لازم Schema `app` را می‌دهد،
+Tenant/Owner را idempotent می‌سازد و سپس Schema، RLS visibility و نبود مجوز `CREATE`
+را از اتصال Runtime دوباره می‌سنجد. URLها و Password در خروجی چاپ نمی‌شوند.
+
+پس از موفقیت، `PR_MIGRATION_DATABASE_URL` باید از محیط Runtime حذف شود. سپس Override
+موقت `PR_ALLOW_EPHEMERAL_PRODUCTION` حذف و سرویس با سه متغیر Runtime reload می‌شود.
+`/ready` فقط وقتی `persistence=postgres` و `durability=persistent` است Gate را می‌بندد.
+
+وجود listener PostgreSQL به معنی مجاز یا امن بودن آن نیست. هیچ endpoint عمومی فاقد
+TLS، Role ناشناخته یا Database متعلق به Application دیگر نباید برای این پروژه Adopt شود.
+
 ## Backup policy پیشنهادی
 
 - PostgreSQL: backup روزانه + PITR؛ رمزگذاری و retention حداقل ۳۰ روز برای MVP آزمایشی.

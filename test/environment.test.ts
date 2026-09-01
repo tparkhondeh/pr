@@ -39,13 +39,13 @@ describe('loadEnvironment', () => {
 
   it('loads PostgreSQL identity only as one complete configuration', () => {
     const environment = loadEnvironment({
-      DATABASE_URL: 'postgresql://pr:secret@db.example.test/pr',
+      DATABASE_URL: 'postgresql://pr:secret@db.example.test/pr?sslmode=verify-full',
       PR_TENANT_ID: '11111111-1111-4111-8111-111111111111',
       PR_OWNER_USER_ID: '22222222-2222-4222-8222-222222222222',
     });
 
     expect(environment.database).toEqual({
-      connectionString: 'postgresql://pr:secret@db.example.test/pr',
+      connectionString: 'postgresql://pr:secret@db.example.test/pr?sslmode=verify-full',
       tenantId: '11111111-1111-4111-8111-111111111111',
       ownerUserId: '22222222-2222-4222-8222-222222222222',
     });
@@ -67,6 +67,21 @@ describe('loadEnvironment', () => {
         PR_OWNER_USER_ID: 'owner_primary',
       }),
     ).toThrow('must be UUIDs');
+  });
+
+  it('requires certificate and hostname verification for a remote PostgreSQL host', () => {
+    const identity = {
+      PR_TENANT_ID: '11111111-1111-4111-8111-111111111111',
+      PR_OWNER_USER_ID: '22222222-2222-4222-8222-222222222222',
+    };
+    expect(() => loadEnvironment({
+      ...identity,
+      DATABASE_URL: 'postgresql://pr:secret@db.example.test/pr?sslmode=require',
+    })).toThrow('sslmode=verify-full');
+    expect(loadEnvironment({
+      ...identity,
+      DATABASE_URL: 'postgresql://pr:secret@127.0.0.1:5432/pr',
+    }).database).toBeDefined();
   });
 
   it('fails production closed unless persistence is durable or explicitly disposable', () => {
@@ -93,7 +108,7 @@ describe('loadEnvironment', () => {
     expect(() => loadEnvironment({
       NODE_ENV: 'production',
       PR_ALLOW_EPHEMERAL_PRODUCTION: 'true',
-      DATABASE_URL: 'postgresql://pr:secret@db.example.test/pr',
+      DATABASE_URL: 'postgresql://pr:secret@db.example.test/pr?sslmode=verify-full',
       PR_TENANT_ID: '11111111-1111-4111-8111-111111111111',
       PR_OWNER_USER_ID: '22222222-2222-4222-8222-222222222222',
     })).toThrow('must be removed when PostgreSQL is configured');
