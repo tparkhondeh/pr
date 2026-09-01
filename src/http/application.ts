@@ -71,6 +71,25 @@ import {
 } from '../initiative/initiative-policy.js';
 import type { TenantId, UserId } from '../kernel/identity.js';
 import {
+  PerceptionConflictError,
+  PerceptionNotFoundError,
+  PerceptionPermissionError,
+  PerceptionValidationError,
+  perceptionConfidences,
+  perceptionDimensions,
+  perceptionPerspectives,
+  perceptionSourceKinds,
+  perceptionStages,
+  type PerceptionConfidence,
+  type PerceptionDimension,
+  type PerceptionPerspective,
+  type PerceptionSignalRecord,
+  type PerceptionSourceKind,
+  type PerceptionStage,
+  type PerceptionWorkspaceService,
+  type PerceptionWorkspaceSnapshot,
+} from '../perception/workspace.js';
+import {
   RelationshipConflictError,
   RelationshipNotFoundError,
   RelationshipPermissionError,
@@ -150,6 +169,7 @@ export type ApplicationDependencies = Readonly<{
   arbitration?: Pick<DecisionArbitrationService, 'snapshot' | 'assess'>;
   initiative?: Pick<InitiativePolicyService, 'snapshot' | 'updateSettings' | 'evaluate'>;
   relationships?: Pick<RelationshipWorkspaceService, 'snapshot' | 'create' | 'delete'>;
+  perception?: Pick<PerceptionWorkspaceService, 'snapshot' | 'create' | 'delete'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -293,6 +313,22 @@ export function createRequestHandler(
     const stakeholderDelete = path.match(/^\/api\/relationships\/stakeholders\/([0-9a-f-]{36})\/delete$/iu);
     if (request.method === 'POST' && stakeholderDelete?.[1]) {
       await handleStakeholderDelete(request, response, dependencies, stakeholderDelete[1]);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/perception') {
+      await handlePerceptionSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/perception/signals') {
+      await handlePerceptionSignalCreate(request, response, dependencies);
+      return;
+    }
+
+    const perceptionDelete = path.match(/^\/api\/perception\/signals\/([0-9a-f-]{36})\/delete$/iu);
+    if (request.method === 'POST' && perceptionDelete?.[1]) {
+      await handlePerceptionSignalDelete(request, response, dependencies, perceptionDelete[1]);
       return;
     }
 
@@ -1369,6 +1405,215 @@ function isRelationshipBoundary(value: unknown): value is RelationshipBoundary {
   return relationshipBoundaries.includes(value as RelationshipBoundary);
 }
 
+async function handlePerceptionSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = perceptionActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.perception?.snapshot(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Perception workspace disappeared.');
+    sendJson(response, 200, serializePerceptionSnapshot(snapshot));
+  } catch (error: unknown) {
+    sendPerceptionError(response, error);
+  }
+}
+
+async function handlePerceptionSignalCreate(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = perceptionActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const dimension = body['dimension'];
+    const perspective = body['perspective'];
+    const stage = body['stage'];
+    const summary = body['summary'];
+    const evidenceNote = body['evidenceNote'];
+    const sourceKind = body['sourceKind'];
+    const confidence = body['confidence'];
+    const observedAt = body['observedAt'];
+    const consentConfirmed = body['consentConfirmed'];
+    if (
+      typeof requestId !== 'string' || !isPerceptionDimension(dimension) ||
+      !isPerceptionPerspective(perspective) || !isPerceptionStage(stage) ||
+      typeof summary !== 'string' || typeof evidenceNote !== 'string' ||
+      !isPerceptionSourceKind(sourceKind) || !isPerceptionConfidence(confidence) ||
+      typeof observedAt !== 'string' || typeof consentConfirmed !== 'boolean'
+    ) {
+      sendJson(response, 400, { error: 'invalid_perception_input' });
+      return;
+    }
+    const result = await dependencies.perception?.create({
+      actorId,
+      requestId,
+      dimension,
+      perspective,
+      stage,
+      summary,
+      evidenceNote,
+      sourceKind,
+      confidence,
+      observedAt: new Date(observedAt),
+      consentConfirmed,
+      occurredAt: now(dependencies),
+    });
+    if (!result) throw new Error('Perception workspace disappeared.');
+    if (result.outcome === 'applied') {
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `perception.record:${requestId}`,
+        eventType: 'perception.signal_recorded',
+        resourceType: 'perception_signal',
+        resourceId: result.record.signalId,
+        purpose: 'perception_analysis',
+        decision: 'recorded',
+        metadata: { policyVersion: 'perception-engine-v1', sourceIdentityStored: false },
+        occurredAt: result.record.createdAt,
+      });
+    }
+    sendJson(response, result.outcome === 'applied' ? 201 : 200, {
+      outcome: result.outcome,
+      persistence: result.persistence,
+      record: serializePerceptionSignal(result.record),
+    });
+  } catch (error: unknown) {
+    sendPerceptionError(response, error);
+  }
+}
+
+async function handlePerceptionSignalDelete(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+  signalId: string,
+): Promise<void> {
+  const actorId = perceptionActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    if (typeof requestId !== 'string') {
+      sendJson(response, 400, { error: 'invalid_perception_delete' });
+      return;
+    }
+    const occurredAt = now(dependencies);
+    const result = await dependencies.perception?.delete({ actorId, requestId, signalId, occurredAt });
+    if (!result) throw new Error('Perception workspace disappeared.');
+    if (result.outcome === 'deleted') {
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `perception.delete:${requestId}`,
+        eventType: 'perception.signal_deleted',
+        resourceType: 'perception_signal',
+        resourceId: signalId,
+        purpose: 'perception_analysis',
+        decision: 'deleted',
+        metadata: { hardDelete: true },
+        occurredAt,
+      });
+    }
+    sendJson(response, 200, result);
+  } catch (error: unknown) {
+    sendPerceptionError(response, error);
+  }
+}
+
+function perceptionActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.perception) {
+    sendJson(response, 503, { error: 'perception_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function serializePerceptionSnapshot(snapshot: PerceptionWorkspaceSnapshot): Record<string, unknown> {
+  return {
+    generatedAt: snapshot.generatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    policyVersion: snapshot.policyVersion,
+    summary: snapshot.summary,
+    dimensions: snapshot.dimensions,
+    signals: snapshot.signals.map((signal) => ({
+      ...serializePerceptionSignal(signal),
+      epistemicType: signal.epistemicType,
+      privacy: signal.privacy,
+    })),
+  };
+}
+
+function serializePerceptionSignal(record: PerceptionSignalRecord): Record<string, unknown> {
+  return {
+    signalId: record.signalId,
+    requestId: record.requestId,
+    dimension: record.dimension,
+    perspective: record.perspective,
+    stage: record.stage,
+    summary: record.summary,
+    evidenceNote: record.evidenceNote,
+    sourceKind: record.sourceKind,
+    confidence: record.confidence,
+    observedAt: record.observedAt.toISOString(),
+    consentConfirmedAt: record.consentConfirmedAt.toISOString(),
+    createdAt: record.createdAt.toISOString(),
+  };
+}
+
+function sendPerceptionError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof PerceptionValidationError) {
+    sendJson(response, 400, { error: 'invalid_perception_request' });
+    return;
+  }
+  if (error instanceof PerceptionPermissionError) {
+    sendJson(response, 403, { error: 'perception_permission_denied' });
+    return;
+  }
+  if (error instanceof PerceptionNotFoundError) {
+    sendJson(response, 404, { error: 'perception_signal_not_found' });
+    return;
+  }
+  if (error instanceof PerceptionConflictError) {
+    sendJson(response, 409, { error: 'perception_conflict' });
+    return;
+  }
+  sendJson(response, 500, { error: 'perception_failed' });
+}
+
+function isPerceptionDimension(value: unknown): value is PerceptionDimension {
+  return perceptionDimensions.includes(value as PerceptionDimension);
+}
+
+function isPerceptionPerspective(value: unknown): value is PerceptionPerspective {
+  return perceptionPerspectives.includes(value as PerceptionPerspective);
+}
+
+function isPerceptionStage(value: unknown): value is PerceptionStage {
+  return perceptionStages.includes(value as PerceptionStage);
+}
+
+function isPerceptionSourceKind(value: unknown): value is PerceptionSourceKind {
+  return perceptionSourceKinds.includes(value as PerceptionSourceKind);
+}
+
+function isPerceptionConfidence(value: unknown): value is PerceptionConfidence {
+  return perceptionConfidences.includes(value as PerceptionConfidence);
+}
+
 async function handleRiskSnapshot(
   request: IncomingMessage,
   response: ServerResponse,
@@ -1568,7 +1813,7 @@ async function handleAccountExport(
   }
   const exportedAt = now(dependencies);
   try {
-    const [workbench, strategy, draft, feedback, memory, assets, research, claims, arbitration, initiative, relationships, activity] = await Promise.all([
+    const [workbench, strategy, draft, feedback, memory, assets, research, claims, arbitration, initiative, relationships, perception, activity] = await Promise.all([
       dependencies.workbench.snapshot(),
       dependencies.strategy.snapshot(actorId),
       dependencies.drafts.snapshot(actorId, exportedAt),
@@ -1584,6 +1829,7 @@ async function handleAccountExport(
       dependencies.arbitration?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.initiative?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.relationships?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
+      dependencies.perception?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.auditTrail?.snapshot(actorId, exportedAt),
     ]);
     if (!activity) throw new Error('Audit trail disappeared.');
@@ -1620,6 +1866,7 @@ async function handleAccountExport(
           arbitration,
           initiative,
           relationships: relationships ? serializeRelationshipSnapshot(relationships) : null,
+          perception: perception ? serializePerceptionSnapshot(perception) : null,
           draft: draft ? serializeDraft(draft) : null,
           feedback: serializeFeedback(feedback),
           activity: serializeAuditTrail(activity),

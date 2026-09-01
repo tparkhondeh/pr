@@ -29,6 +29,10 @@ import {
 } from '../src/http/application.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
 import {
+  InMemoryPerceptionWorkspaceRepository,
+  PerceptionWorkspaceService,
+} from '../src/perception/workspace.js';
+import {
   InMemoryResearchWorkspaceRepository,
   ResearchWorkspaceService,
 } from '../src/research/workspace.js';
@@ -439,6 +443,73 @@ describe('operational endpoints', () => {
     expect((await auditTrail.snapshot(owner, fixedTime)).summary.dataRights).toBe(1);
     expect(JSON.stringify(relationshipActivity)).not.toContain('همکار قابل‌اعتماد');
     expect(JSON.stringify(relationshipActivity)).not.toContain('زمینه‌ی خصوصی رابطه');
+  });
+
+  it('records perception as a non-factual signal and hard-deletes its private text', async () => {
+    const fixedTime = new Date('2026-08-31T12:00:00.000Z');
+    const owner = userId('owner_primary');
+    const activeTenant = tenantId('tenant_primary');
+    const perception = new PerceptionWorkspaceService(
+      new InMemoryPerceptionWorkspaceRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    const auditTrail = new AuditTrailService(new InMemoryAuditTrailRepository(), {
+      tenantId: activeTenant,
+      ownerUserId: owner,
+    });
+    const dependencies: ApplicationDependencies = {
+      perception,
+      mutationAuditTrail: auditTrail,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+    const body = {
+      requestId: 'perception_http_create',
+      dimension: 'clarity',
+      perspective: 'external_perception',
+      stage: 'visible',
+      summary: 'شفافیت در توضیح تصمیم‌ها دیده شده است.',
+      evidenceNote: 'خلاصه‌ی بدون هویت از بازخورد مستقیم و با اجازه‌ی ثبت.',
+      sourceKind: 'direct_feedback',
+      confidence: 'medium',
+      observedAt: '2026-08-20T12:00:00.000Z',
+      consentConfirmed: true,
+    };
+    const created = await request(
+      '/api/perception/signals',
+      () => ({ ready: true }),
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+      dependencies,
+    );
+    expect(created.status).toBe(201);
+    const createdPayload = await created.json() as { record: { signalId: string } };
+    expect(createdPayload).toMatchObject({
+      outcome: 'applied', persistence: 'memory',
+      record: { perspective: 'external_perception', stage: 'visible' },
+    });
+
+    const snapshot = await request('/api/perception', () => ({ ready: true }), undefined, dependencies);
+    await expect(snapshot.json()).resolves.toMatchObject({
+      policyVersion: 'perception-engine-v1',
+      summary: { totalSignals: 1, externalSignals: 1 },
+      dimensions: [{ gap: 'insufficient_evidence', blindSpot: 'insufficient_evidence' }],
+      signals: [{
+        epistemicType: 'external_perception',
+        privacy: { sourceIdentityStored: false, automatedCollectionPermitted: false },
+      }],
+    });
+
+    const deletePath = `/api/perception/signals/${createdPayload.record.signalId}/delete`;
+    const deleteBody = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: 'perception_http_delete' }) };
+    await expect((await request(deletePath, () => ({ ready: true }), deleteBody, dependencies)).json())
+      .resolves.toMatchObject({ outcome: 'deleted' });
+    await expect((await request(deletePath, () => ({ ready: true }), deleteBody, dependencies)).json())
+      .resolves.toMatchObject({ outcome: 'already_applied' });
+    const activity = (await auditTrail.snapshot(owner, fixedTime));
+    expect(activity.events).toHaveLength(2);
+    expect(activity.summary.dataRights).toBe(1);
+    expect(JSON.stringify(activity.events)).not.toContain('شفافیت در توضیح');
+    expect(JSON.stringify(activity.events)).not.toContain('بازخورد مستقیم');
   });
 
   it('accepts a human approval and returns the evolved workflow', async () => {
@@ -1438,6 +1509,24 @@ describe('operational endpoints', () => {
       consentConfirmed: true,
       occurredAt: fixedTime,
     });
+    const perception = new PerceptionWorkspaceService(
+      new InMemoryPerceptionWorkspaceRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    await perception.create({
+      actorId: owner,
+      requestId: 'perception_export_record',
+      dimension: 'trust',
+      perspective: 'self_perception',
+      stage: 'strong',
+      summary: 'مالک اعتماد حرفه‌ای را بخشی از Self Perception می‌داند.',
+      evidenceNote: 'این یادداشت فقط در Export خصوصی مالک دیده می‌شود.',
+      sourceKind: 'owner_reflection',
+      confidence: 'medium',
+      observedAt: fixedTime,
+      consentConfirmed: true,
+      occurredAt: fixedTime,
+    });
     const dependencies: ApplicationDependencies = {
       workbench,
       strategy,
@@ -1448,6 +1537,7 @@ describe('operational endpoints', () => {
       assets,
       research,
       relationships,
+      perception,
       mutationAuditTrail: auditTrail,
       tenantId: activeTenant,
       resolveActor: () => owner,
@@ -1497,6 +1587,7 @@ describe('operational endpoints', () => {
         assets: { records: unknown[] };
         research: { sources: unknown[] };
         relationships: { stakeholders: unknown[] };
+        perception: { signals: unknown[] };
         activity: { events: unknown[] };
       };
     };
@@ -1510,9 +1601,11 @@ describe('operational endpoints', () => {
         assets: { records: [] },
         research: { sources: [] },
         relationships: { summary: { totalStakeholders: 1 } },
+        perception: { summary: { totalSignals: 1 } },
       },
     });
     expect(portable.data.relationships.stakeholders).toHaveLength(1);
+    expect(portable.data.perception.signals).toHaveLength(1);
     expect(portable.data.activity.events).toHaveLength(1);
 
     const activityAfterExport = await request(

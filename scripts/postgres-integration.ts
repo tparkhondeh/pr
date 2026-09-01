@@ -18,6 +18,11 @@ import { PostgresRuntime } from '../src/database/postgres.js';
 import { defineMigration } from '../src/kernel/migrations.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
 import {
+  PerceptionConflictError,
+  PerceptionWorkspaceService,
+  PostgresPerceptionWorkspaceRepository,
+} from '../src/perception/workspace.js';
+import {
   PostgresRelationshipWorkspaceRepository,
   RelationshipConflictError,
   RelationshipWorkspaceService,
@@ -75,12 +80,114 @@ async function main(): Promise<void> {
     await verifyArbitrationPersistence();
     await verifyInitiativePersistence();
     await verifyRelationshipPersistence();
+    await verifyPerceptionPersistence();
     await verifyRuntimeReadiness(connectionString);
     process.stdout.write(
       `PostgreSQL integration passed (${String(migrations.length)} migrations, RLS enforced).\n`,
     );
   } finally {
     await client.end();
+  }
+}
+
+async function verifyPerceptionPersistence(): Promise<void> {
+  const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
+  const owner = userId(userA);
+  const activeTenant = tenantId(tenantA);
+  const at = new Date('2026-09-01T02:10:00.000Z');
+  const service = new PerceptionWorkspaceService(
+    new PostgresPerceptionWorkspaceRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
+    { tenantId: activeTenant, ownerUserId: owner },
+  );
+  const createCommand = {
+    actorId: owner,
+    requestId: 'perception_integration_create',
+    dimension: 'trust' as const,
+    perspective: 'external_perception' as const,
+    stage: 'visible' as const,
+    summary: 'اعتماد در تعامل حرفه‌ای به‌صورت کیفی دیده شده است.',
+    evidenceNote: 'خلاصه‌ی بدون هویت از بازخورد مستقیم و با اجازه‌ی ثبت.',
+    sourceKind: 'direct_feedback' as const,
+    confidence: 'medium' as const,
+    observedAt: new Date('2026-08-20T02:10:00.000Z'),
+    consentConfirmed: true,
+    occurredAt: at,
+  };
+  try {
+    const created = await service.create(createCommand);
+    const replay = await service.create(createCommand);
+    const beforeDelete = await service.snapshot(owner, at);
+    if (
+      created.outcome !== 'applied' || replay.outcome !== 'already_applied' ||
+      replay.record.signalId !== created.record.signalId ||
+      beforeDelete.summary.totalSignals !== 1 ||
+      beforeDelete.signals[0]?.epistemicType !== 'external_perception'
+    ) {
+      throw new Error('Perception persistence, epistemic or privacy contract failed.');
+    }
+    const deleteCommand = {
+      actorId: owner,
+      requestId: 'perception_integration_delete',
+      signalId: created.record.signalId,
+      occurredAt: new Date(at.getTime() + 1_000),
+    } as const;
+    const deleted = await service.delete(deleteCommand);
+    const deleteReplay = await service.delete(deleteCommand);
+    const afterDelete = await service.snapshot(owner, new Date(at.getTime() + 2_000));
+    let retiredCreateRejected = false;
+    try {
+      await service.create(createCommand);
+    } catch (error: unknown) {
+      retiredCreateRejected = error instanceof PerceptionConflictError;
+    }
+    if (
+      deleted.outcome !== 'deleted' || deleteReplay.outcome !== 'already_applied' ||
+      afterDelete.summary.totalSignals !== 0 || !retiredCreateRejected
+    ) {
+      throw new Error('Perception hard delete or retired request contract failed.');
+    }
+    await runtime.transaction(async (transaction) => {
+      await transaction.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
+      const stored = await transaction.query<Readonly<{
+        active_records: string | number;
+        requests: string | number;
+        minimal_requests: boolean;
+        audit_events: string | number;
+        minimal_audit: boolean;
+      }>>(
+        `SELECT
+           (SELECT count(*) FROM app.perception_signals
+             WHERE tenant_id = $1 AND owner_user_id = $2) AS active_records,
+           (SELECT count(*) FROM app.perception_requests
+             WHERE tenant_id = $1 AND owner_user_id = $2) AS requests,
+           (SELECT bool_and(
+              jsonb_typeof(result_snapshot->'signalId') = 'string' AND
+              result_snapshot = jsonb_build_object('signalId', result_snapshot->'signalId')
+            )
+              FROM app.perception_requests
+             WHERE tenant_id = $1 AND owner_user_id = $2) AS minimal_requests,
+           (SELECT count(*) FROM app.audit_events
+             WHERE tenant_id = $1 AND resource_id = $3
+               AND event_type IN ('perception.signal_recorded', 'perception.signal_deleted')) AS audit_events,
+           (SELECT bool_and(NOT (metadata ?| ARRAY[
+              'dimension', 'perspective', 'stage', 'summary', 'evidenceNote', 'sourceKind', 'confidence'
+            ]))
+              FROM app.audit_events
+             WHERE tenant_id = $1 AND resource_id = $3
+               AND event_type IN ('perception.signal_recorded', 'perception.signal_deleted')) AS minimal_audit`,
+        [tenantA, userA, created.record.signalId],
+      );
+      const row = stored.rows[0];
+      if (!row) throw new Error('Stored perception verification row is missing.');
+      if (
+        Number(row.active_records) !== 0 || Number(row.requests) !== 2 ||
+        !row.minimal_requests || Number(row.audit_events) !== 2 || !row.minimal_audit
+      ) {
+        throw new Error('Stored perception hard-delete journal or audit trail is incomplete.');
+      }
+    });
+  } finally {
+    await runtime.close();
   }
 }
 

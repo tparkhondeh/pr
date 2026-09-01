@@ -53,6 +53,9 @@ const initiativeSettingRequests = new Map();
 const stakeholderRecords = new Map();
 const stakeholderCreateRequests = new Map();
 const stakeholderDeleteRequests = new Map();
+const perceptionSignals = new Map();
+const perceptionCreateRequests = new Map();
+const perceptionDeleteRequests = new Map();
 
 const groundedActions = [
   {
@@ -425,6 +428,72 @@ export default {
       return json({ outcome: 'deleted', persistence: 'ephemeral', stakeholderId });
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/perception') {
+      return json(perceptionWorkspaceSnapshot());
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/perception/signals') {
+      const body = await readJson(request);
+      if (!validPerceptionSignalRequest(body)) return json({ error: 'invalid_perception_input' }, 400);
+      const occurredAt = new Date();
+      const observedAt = new Date(body.observedAt);
+      if (Number.isNaN(observedAt.getTime()) || observedAt > occurredAt) {
+        return json({ error: 'invalid_perception_request' }, 400);
+      }
+      const normalized = {
+        dimension: body.dimension, perspective: body.perspective, stage: body.stage,
+        summary: body.summary.trim(), evidenceNote: body.evidenceNote.trim(),
+        sourceKind: body.sourceKind, confidence: body.confidence,
+        observedAt: observedAt.toISOString(),
+      };
+      const fingerprint = await sha256Hex(JSON.stringify({ operation: 'create', ...normalized }));
+      const repeated = perceptionCreateRequests.get(body.requestId);
+      if (repeated) {
+        if (repeated.fingerprint !== fingerprint) return json({ error: 'perception_conflict' }, 409);
+        const activeRecord = perceptionSignals.get(repeated.signalId);
+        return activeRecord
+          ? json({ outcome: 'already_applied', persistence: 'ephemeral', record: activeRecord })
+          : json({ error: 'perception_conflict' }, 409);
+      }
+      const signalId = uuidFromHash(await sha256Hex(`perception:ephemeral:${body.requestId}`));
+      const record = {
+        signalId, requestId: body.requestId, ...normalized,
+        consentConfirmedAt: occurredAt.toISOString(), createdAt: occurredAt.toISOString(),
+      };
+      perceptionSignals.set(signalId, record);
+      perceptionCreateRequests.set(body.requestId, { fingerprint, signalId });
+      recordAudit(`perception.record:${body.requestId}`, {
+        eventType: 'perception.signal_recorded', resourceType: 'perception_signal',
+        resourceId: signalId, purpose: 'perception_analysis', decision: 'recorded',
+        metadata: { policyVersion: 'perception-engine-v1', sourceIdentityStored: false },
+        occurredAt: record.createdAt,
+      });
+      return json({ outcome: 'applied', persistence: 'ephemeral', record }, 201);
+    }
+
+    const perceptionDelete = url.pathname.match(/^\/api\/perception\/signals\/([0-9a-f-]{36})\/delete$/);
+    if (request.method === 'POST' && perceptionDelete?.[1]) {
+      const body = await readJson(request);
+      if (!validRequestId(body?.requestId)) return json({ error: 'invalid_perception_delete' }, 400);
+      const signalId = perceptionDelete[1];
+      const fingerprint = await sha256Hex(JSON.stringify({ operation: 'delete', signalId }));
+      const repeated = perceptionDeleteRequests.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json({ outcome: 'already_applied', persistence: 'ephemeral', signalId: repeated.signalId })
+          : json({ error: 'perception_conflict' }, 409);
+      }
+      if (!perceptionSignals.has(signalId)) return json({ error: 'perception_signal_not_found' }, 404);
+      perceptionSignals.delete(signalId);
+      perceptionDeleteRequests.set(body.requestId, { fingerprint, signalId });
+      recordAudit(`perception.delete:${body.requestId}`, {
+        eventType: 'perception.signal_deleted', resourceType: 'perception_signal',
+        resourceId: signalId, purpose: 'perception_analysis', decision: 'deleted',
+        metadata: { hardDelete: true }, occurredAt: new Date().toISOString(),
+      });
+      return json({ outcome: 'deleted', persistence: 'ephemeral', signalId });
+    }
+
     const riskReview = url.pathname.match(/^\/api\/risk\/actions\/([^/]+)\/reviews$/);
     if (request.method === 'POST' && riskReview?.[1]) {
       const body = await readJson(request);
@@ -499,6 +568,7 @@ export default {
           arbitration: await arbitrationWorkspaceSnapshot(),
           initiative: await initiativeWorkspaceSnapshot(),
           relationships: relationshipWorkspaceSnapshot(),
+          perception: perceptionWorkspaceSnapshot(),
           feedback: feedbackSnapshot(),
           activity,
         },
@@ -1834,6 +1904,120 @@ function relationshipRationale(attention) {
   return 'هیچ اقدام خودکاری پیشنهاد نمی‌شود.';
 }
 
+const perceptionDimensions = [
+  'expertise', 'trust', 'leadership', 'clarity', 'innovation',
+  'collaboration', 'visibility', 'authenticity', 'other',
+];
+const perceptionPerspectives = ['self_perception', 'desired_positioning', 'external_perception'];
+const perceptionStages = ['not_visible', 'emerging', 'visible', 'strong', 'signature'];
+const perceptionSources = [
+  'owner_reflection', 'owner_goal', 'direct_feedback', 'survey_summary',
+  'public_signal', 'media_signal', 'network_feedback', 'other',
+];
+
+function validPerceptionSignalRequest(body) {
+  if (!validRequestId(body?.requestId) || !perceptionDimensions.includes(body?.dimension) ||
+      !perceptionPerspectives.includes(body?.perspective) || !perceptionStages.includes(body?.stage) ||
+      !validText(body?.summary, 5, 400) || !validText(body?.evidenceNote, 10, 1000) ||
+      !perceptionSources.includes(body?.sourceKind) || !['low', 'medium', 'high'].includes(body?.confidence) ||
+      typeof body?.observedAt !== 'string' || body?.consentConfirmed !== true) return false;
+  if (body.perspective === 'self_perception') return body.sourceKind === 'owner_reflection';
+  if (body.perspective === 'desired_positioning') return body.sourceKind === 'owner_goal';
+  return !['owner_reflection', 'owner_goal'].includes(body.sourceKind);
+}
+
+function perceptionWorkspaceSnapshot() {
+  const signals = [...perceptionSignals.values()]
+    .sort(comparePerceptionSignals)
+    .map((record) => ({
+      ...record,
+      epistemicType: record.perspective === 'self_perception'
+        ? 'self_report'
+        : record.perspective === 'desired_positioning' ? 'goal' : 'external_perception',
+      privacy: {
+        dataClass: 'confidential', allowedPurpose: 'perception_analysis',
+        sourceIdentityStored: false, verbatimPrivateQuoteStored: false,
+        automatedCollectionPermitted: false, externalActionPermitted: false,
+      },
+    }));
+  const dimensions = perceptionDimensions.flatMap((dimension) => {
+    const records = [...perceptionSignals.values()].filter((record) => record.dimension === dimension);
+    return records.length === 0 ? [] : [perceptionDimensionSnapshot(dimension, records)];
+  });
+  return {
+    generatedAt: new Date().toISOString(), persistence: 'ephemeral', policyVersion: 'perception-engine-v1',
+    summary: {
+      totalSignals: signals.length,
+      coveredDimensions: dimensions.length,
+      externalSignals: signals.filter((signal) => signal.perspective === 'external_perception').length,
+      underrecognized: dimensions.filter((dimension) => dimension.gap === 'underrecognized').length,
+      potentialBlindSpots: dimensions.filter((dimension) => (
+        dimension.blindSpot === 'self_higher_than_external' ||
+        dimension.blindSpot === 'self_lower_than_external'
+      )).length,
+      insufficientEvidence: dimensions.filter((dimension) => (
+        dimension.gap === 'insufficient_evidence' || dimension.blindSpot === 'insufficient_evidence'
+      )).length,
+    },
+    dimensions,
+    signals,
+  };
+}
+
+function perceptionDimensionSnapshot(dimension, records) {
+  const self = records.filter((record) => record.perspective === 'self_perception').sort(comparePerceptionSignals)[0];
+  const desired = records.filter((record) => record.perspective === 'desired_positioning').sort(comparePerceptionSignals)[0];
+  const external = records.filter((record) => record.perspective === 'external_perception');
+  const indexes = external.map((record) => perceptionStages.indexOf(record.stage));
+  const lowest = indexes.length === 0 ? null : Math.min(...indexes);
+  const highest = indexes.length === 0 ? null : Math.max(...indexes);
+  const externalRange = lowest === null || highest === null ? null : {
+    lowest: perceptionStages[lowest], highest: perceptionStages[highest],
+    signalCount: external.length, conflictingStages: lowest !== highest,
+  };
+  const gap = perceptionGap(desired?.stage ?? null, lowest, highest);
+  const blindSpot = perceptionBlindSpot(self?.stage ?? null, lowest, highest);
+  return {
+    dimension, selfStage: self?.stage ?? null, desiredStage: desired?.stage ?? null,
+    externalRange, gap, blindSpot,
+    rationale: perceptionRationale(gap, blindSpot, externalRange?.conflictingStages ?? false),
+  };
+}
+
+function perceptionGap(desired, lowest, highest) {
+  if (!desired || lowest === null || highest === null) return 'insufficient_evidence';
+  const target = perceptionStages.indexOf(desired);
+  if (highest < target) return 'underrecognized';
+  if (lowest > target) return 'exceeds_target';
+  return 'aligned_range';
+}
+
+function perceptionBlindSpot(self, lowest, highest) {
+  if (!self || lowest === null || highest === null) return 'insufficient_evidence';
+  const current = perceptionStages.indexOf(self);
+  if (current > highest) return 'self_higher_than_external';
+  if (current < lowest) return 'self_lower_than_external';
+  return 'within_external_range';
+}
+
+function perceptionRationale(gap, blindSpot, conflict) {
+  if (conflict && gap !== 'insufficient_evidence') {
+    return 'External Perceptionها هم‌سطح نیستند؛ اختلاف Signalها حفظ شده و نیازمند مرور زمینه است.';
+  }
+  if (gap === 'insufficient_evidence' || blindSpot === 'insufficient_evidence') {
+    return 'برای مقایسه کامل داده کافی نیست؛ هیچ نتیجه‌ای به‌عنوان حقیقت اعلام نمی‌شود.';
+  }
+  if (gap === 'underrecognized') return 'Stage ادراک بیرونی پایین‌تر از جایگاه مطلوب ثبت شده است؛ این فقط یک Gap کیفی است.';
+  if (gap === 'exceeds_target') return 'Stage ادراک بیرونی بالاتر از جایگاه مطلوب ثبت شده است؛ نیاز به قضاوت مالک دارد.';
+  if (blindSpot === 'self_higher_than_external') return 'Self Perception بالاتر از Signal بیرونی است؛ یک Blind Spot احتمالی، نه Fact.';
+  if (blindSpot === 'self_lower_than_external') return 'Self Perception پایین‌تر از Signal بیرونی است؛ یک تفاوت قابل بررسی، نه Fact.';
+  return 'Stage مطلوب، Self Perception و Range بیرونی در محدوده مشترک قرار دارند.';
+}
+
+function comparePerceptionSignals(left, right) {
+  return right.observedAt.localeCompare(left.observedAt) || right.createdAt.localeCompare(left.createdAt);
+}
+
 function normalizeRelationshipText(value) {
   return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('fa-IR');
 }
@@ -2307,7 +2491,8 @@ function auditSnapshot() {
       dataRights: events.filter((event) => (
         event.eventType.startsWith('memory.') ||
         event.eventType === 'asset.revoke_brand_usage' || event.eventType === 'asset.delete' ||
-        event.eventType === 'relationship.stakeholder_deleted'
+        event.eventType === 'relationship.stakeholder_deleted' ||
+        event.eventType === 'perception.signal_deleted'
       )).length,
       exports: events.filter((event) => event.eventType.endsWith('exported')).length,
     },

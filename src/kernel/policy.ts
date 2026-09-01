@@ -8,6 +8,7 @@ export const purposes = [
   'external_research',
   'external_sharing',
   'relationship_planning',
+  'perception_analysis',
 ] as const;
 
 export type Purpose = (typeof purposes)[number];

@@ -125,6 +125,68 @@ describe('private preview worker draft runtime', () => {
     await expect((await post(deletePath, { requestId: 'relationship_runtime_delete' })).json()).resolves.toMatchObject({
       outcome: 'already_applied',
     });
+    const perceptionExternal = {
+      requestId: 'perception_runtime_external',
+      dimension: 'trust',
+      perspective: 'external_perception',
+      stage: 'visible',
+      summary: 'اعتماد در تعامل حرفه‌ای دیده شده است.',
+      evidenceNote: 'خلاصه‌ی بدون هویت از بازخورد مستقیم و با اجازه‌ی ثبت.',
+      sourceKind: 'direct_feedback',
+      confidence: 'medium',
+      observedAt: '2026-08-20T00:00:00.000Z',
+      consentConfirmed: true,
+    };
+    const perceptionCreated = await post('/api/perception/signals', perceptionExternal);
+    expect(perceptionCreated.status).toBe(201);
+    await expect((await post('/api/perception/signals', perceptionExternal)).json()).resolves.toMatchObject({
+      outcome: 'already_applied',
+    });
+    await post('/api/perception/signals', {
+      ...perceptionExternal,
+      requestId: 'perception_runtime_self',
+      perspective: 'self_perception',
+      stage: 'signature',
+      summary: 'مالک اعتمادسازی را یک ویژگی شاخص خود می‌داند.',
+      sourceKind: 'owner_reflection',
+    });
+    await post('/api/perception/signals', {
+      ...perceptionExternal,
+      requestId: 'perception_runtime_desired',
+      perspective: 'desired_positioning',
+      stage: 'strong',
+      summary: 'جایگاه مطلوب، اعتماد حرفه‌ای قوی است.',
+      sourceKind: 'owner_goal',
+    });
+    const perceptionSnapshot = await worker.fetch(new Request('https://preview.example/api/perception'), env);
+    const perceptionPayload = await perceptionSnapshot.json() as {
+      signals: Array<{ epistemicType: string; privacy: { sourceIdentityStored: boolean; automatedCollectionPermitted: boolean } }>;
+    };
+    expect(perceptionPayload).toMatchObject({
+      policyVersion: 'perception-engine-v1',
+      persistence: 'ephemeral',
+      summary: { totalSignals: 3, externalSignals: 1, underrecognized: 1, potentialBlindSpots: 1 },
+      dimensions: [{ gap: 'underrecognized', blindSpot: 'self_higher_than_external' }],
+    });
+    expect(perceptionPayload.signals.some((signal) => (
+      signal.epistemicType === 'external_perception' &&
+      !signal.privacy.sourceIdentityStored &&
+      !signal.privacy.automatedCollectionPermitted
+    ))).toBe(true);
+    const temporaryPerception = await post('/api/perception/signals', {
+      ...perceptionExternal,
+      requestId: 'perception_runtime_temporary',
+      dimension: 'clarity',
+      summary: 'Signal موقت برای آزمون حذف کامل.',
+    });
+    const temporaryPerceptionRecord = await temporaryPerception.json() as { record: { signalId: string } };
+    const perceptionDeletePath = `/api/perception/signals/${temporaryPerceptionRecord.record.signalId}/delete`;
+    await expect((await post(perceptionDeletePath, { requestId: 'perception_runtime_delete' })).json()).resolves.toMatchObject({
+      outcome: 'deleted',
+    });
+    await expect((await post(perceptionDeletePath, { requestId: 'perception_runtime_delete' })).json()).resolves.toMatchObject({
+      outcome: 'already_applied',
+    });
     const routedApproval = await post('/api/workbench/approval', { actionId: 'collect_evidence' });
     expect(routedApproval.status).toBe(409);
     await expect(routedApproval.json()).resolves.toEqual({ error: 'action_not_approvable' });
@@ -541,6 +603,7 @@ describe('private preview worker draft runtime', () => {
         arbitration: { policyVersion: string; cases: unknown[] };
         initiative: { policyVersion: string; settings: { mode: string }; evaluations: unknown[] };
         relationships: { policyVersion: string; summary: { totalStakeholders: number }; stakeholders: unknown[] };
+        perception: { policyVersion: string; summary: { totalSignals: number }; signals: unknown[] };
       };
     };
     expect(accountExportResponse.status).toBe(200);
@@ -564,6 +627,11 @@ describe('private preview worker draft runtime', () => {
       summary: { totalStakeholders: 1 },
     });
     expect(accountExport.data.relationships.stakeholders).toHaveLength(1);
+    expect(accountExport.data.perception).toMatchObject({
+      policyVersion: 'perception-engine-v1',
+      summary: { totalSignals: 3 },
+    });
+    expect(accountExport.data.perception.signals).toHaveLength(3);
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

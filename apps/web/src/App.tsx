@@ -8,6 +8,7 @@ import {
   CircleGauge,
   Clock3,
   Download,
+  Eye,
   FileCheck2,
   Fingerprint,
   History,
@@ -36,7 +37,9 @@ import {
   approveDraft,
   confirmMemoryProposal,
   createDraft,
+  createPerceptionSignal,
   createStakeholder,
+  deletePerceptionSignal,
   deleteStakeholder,
   editDraft,
   exportAccountData,
@@ -55,6 +58,7 @@ import {
   loadInitiative,
   loadRelationships,
   loadOnboarding,
+  loadPerception,
   loadPersonalMemory,
   loadResearch,
   loadClaims,
@@ -77,6 +81,12 @@ import {
   type FeedbackLearningSnapshot,
   type MemoryRightKind,
   type OnboardingSnapshot,
+  type PerceptionConfidence,
+  type PerceptionDimension,
+  type PerceptionPerspective,
+  type PerceptionSourceKind,
+  type PerceptionStage,
+  type PerceptionWorkspaceSnapshot,
   type PersonalMemoryRecord,
   type PersonalMemorySnapshot,
   type ResearchSourceQuality,
@@ -118,7 +128,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'relationships' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'relationships' | 'perception' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -165,6 +175,9 @@ export function App() {
   const [relationshipSnapshot, setRelationshipSnapshot] = useState<RelationshipWorkspaceSnapshot | null>(null);
   const [relationshipViewState, setRelationshipViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [relationshipViewError, setRelationshipViewError] = useState<string | null>(null);
+  const [perceptionSnapshot, setPerceptionSnapshot] = useState<PerceptionWorkspaceSnapshot | null>(null);
+  const [perceptionViewState, setPerceptionViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
+  const [perceptionViewError, setPerceptionViewError] = useState<string | null>(null);
   const [draftSnapshot, setDraftSnapshot] = useState<DraftWorkspaceSnapshot | null>(null);
   const [draftSources, setDraftSources] = useState<DraftSourceSnapshot | null>(null);
   const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
@@ -523,6 +536,55 @@ export function App() {
     } catch (caught: unknown) {
       setRelationshipViewError(errorMessage(caught));
       setRelationshipViewState('error');
+    }
+  };
+
+  const refreshPerception = useCallback(async (signal?: AbortSignal) => {
+    setPerceptionViewState('loading');
+    setPerceptionViewError(null);
+    try {
+      setPerceptionSnapshot(await loadPerception(signal));
+      setPerceptionViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setPerceptionViewError(errorMessage(caught));
+      setPerceptionViewState('error');
+    }
+  }, []);
+
+  const addPerceptionSignal = async (input: Readonly<{
+    dimension: PerceptionDimension;
+    perspective: PerceptionPerspective;
+    stage: PerceptionStage;
+    summary: string;
+    evidenceNote: string;
+    sourceKind: PerceptionSourceKind;
+    confidence: PerceptionConfidence;
+    observedAt: string;
+    consentConfirmed: boolean;
+  }>) => {
+    if (perceptionViewState === 'mutating') return;
+    setPerceptionViewState('mutating');
+    setPerceptionViewError(null);
+    try {
+      await createPerceptionSignal({ requestId: `perception_${crypto.randomUUID()}`, ...input });
+      await Promise.all([refreshPerception(), refreshAudit()]);
+    } catch (caught: unknown) {
+      setPerceptionViewError(errorMessage(caught));
+      setPerceptionViewState('error');
+    }
+  };
+
+  const removePerceptionSignal = async (signalId: string) => {
+    if (perceptionViewState === 'mutating') return;
+    setPerceptionViewState('mutating');
+    setPerceptionViewError(null);
+    try {
+      await deletePerceptionSignal({ requestId: `perception_delete_${crypto.randomUUID()}`, signalId });
+      await Promise.all([refreshPerception(), refreshAudit()]);
+    } catch (caught: unknown) {
+      setPerceptionViewError(errorMessage(caught));
+      setPerceptionViewState('error');
     }
   };
 
@@ -902,6 +964,14 @@ export function App() {
         ? String(relationshipSnapshot.summary.reviewSuggested)
         : undefined,
     },
+    {
+      label: 'ادراک',
+      icon: Eye,
+      view: 'perception' as const,
+      badge: perceptionSnapshot?.summary.potentialBlindSpots
+        ? String(perceptionSnapshot.summary.potentialBlindSpots)
+        : undefined,
+    },
     { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
     { label: 'پیش‌نویس', icon: PencilLine, view: 'draft' as const },
     {
@@ -938,6 +1008,7 @@ export function App() {
                 if (view === 'arbitration') void refreshArbitration();
                 if (view === 'initiative') void refreshInitiative();
                 if (view === 'relationships') void refreshRelationships();
+                if (view === 'perception') void refreshPerception();
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
                 if (view === 'learning') void refreshFeedback();
@@ -976,6 +1047,8 @@ export function App() {
                 ? 'سیستم فقط با اجازه و دلیل مزاحم می‌شود.'
               : activeView === 'relationships'
                 ? 'رابطه سرمایه است؛ اما انسان امتیاز CRM نیست.'
+              : activeView === 'perception'
+                ? 'نظر دیگران Signal است، نه حقیقت.'
               : activeView === 'intake'
                 ? 'اولین شاهد واقعی را وارد کنید.'
               : activeView === 'strategy'
@@ -1079,6 +1152,15 @@ export function App() {
             onRefresh={() => refreshRelationships()}
             snapshot={relationshipSnapshot}
             state={relationshipViewState}
+          />
+        ) : activeView === 'perception' ? (
+          <PerceptionWorkspacePanel
+            error={perceptionViewError}
+            onCreate={addPerceptionSignal}
+            onDelete={removePerceptionSignal}
+            onRefresh={() => refreshPerception()}
+            snapshot={perceptionSnapshot}
+            state={perceptionViewState}
           />
         ) : activeView === 'strategy' ? (
           <StrategyPanel
@@ -2507,7 +2589,7 @@ function RelationshipWorkspacePanel({
             boundary,
             contextNote,
             lastInteractionAt: lastInteractionAt
-              ? new Date(`${lastInteractionAt}T12:00:00.000Z`).toISOString()
+              ? new Date(`${lastInteractionAt}T00:00:00.000Z`).toISOString()
               : null,
             consentConfirmed,
           });
@@ -2625,6 +2707,213 @@ function relationshipBoundaryLabel(value: RelationshipBoundary): string {
 function relationshipRecencyLabel(value: RelationshipWorkspaceSnapshot['stakeholders'][number]['recency']): string {
   return { unknown: 'نامشخص', recent: 'تازه', quiet: 'کم‌تعامل', dormant: 'طولانی بدون تعامل', protected: 'محافظت‌شده' }[value];
 }
+
+function PerceptionWorkspacePanel({
+  error,
+  onCreate,
+  onDelete,
+  onRefresh,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onCreate: (input: Readonly<{
+    dimension: PerceptionDimension;
+    perspective: PerceptionPerspective;
+    stage: PerceptionStage;
+    summary: string;
+    evidenceNote: string;
+    sourceKind: PerceptionSourceKind;
+    confidence: PerceptionConfidence;
+    observedAt: string;
+    consentConfirmed: boolean;
+  }>) => Promise<void>;
+  onDelete: (signalId: string) => Promise<void>;
+  onRefresh: () => Promise<void>;
+  snapshot: PerceptionWorkspaceSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
+}>) {
+  const [dimension, setDimension] = useState<PerceptionDimension>('trust');
+  const [perspective, setPerspective] = useState<PerceptionPerspective>('self_perception');
+  const [stage, setStage] = useState<PerceptionStage>('visible');
+  const [summary, setSummary] = useState('');
+  const [evidenceNote, setEvidenceNote] = useState('');
+  const [sourceKind, setSourceKind] = useState<PerceptionSourceKind>('owner_reflection');
+  const [confidence, setConfidence] = useState<PerceptionConfidence>('medium');
+  const [observedAt, setObservedAt] = useState(new Date().toISOString().slice(0, 10));
+  const [consentConfirmed, setConsentConfirmed] = useState(false);
+  if ((state === 'idle' || state === 'loading') && !snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><LoaderCircle className="spin" size={24} /><h2>در حال ساخت نقشه ادراک…</h2><p>سه Perspective مستقل خوانده می‌شوند؛ هیچ Signal بیرونی Fact نمی‌شود.</p></section>;
+  }
+  if (!snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><TriangleAlert size={25} /><h2>فضای ادراک در دسترس نیست</h2><p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p><button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button></section>;
+  }
+  const sourceOptions = perspective === 'self_perception'
+    ? [['owner_reflection', 'بازتاب و خوداظهاری مالک']] as const
+    : perspective === 'desired_positioning'
+      ? [['owner_goal', 'هدف جایگاه‌یابی مالک']] as const
+      : perceptionExternalSourceOptions;
+  return (
+    <section className="relationship-center perception-center" aria-label="موتور خصوصی تحلیل ادراک">
+      <header className="draft-head">
+        <div>
+          <p className="overline">PERCEPTION ENGINE · EPISTEMIC LANES · MANUAL ONLY</p>
+          <h2>فاصله ادراک، بدون تبدیل Signal به حقیقت</h2>
+          <p>Self Perception، جایگاه مطلوب و ادراک بیرونی جدا می‌مانند. تناقض حذف نمی‌شود و نبود داده با حدس پر نخواهد شد.</p>
+        </div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button"><RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> تازه‌سازی تحلیل</button>
+      </header>
+
+      {error ? <div className="inline-error" role="alert"><TriangleAlert size={16} />{error}</div> : null}
+
+      <div className="relationship-summary">
+        <article><span>کل Signalها</span><strong>{snapshot.summary.totalSignals}</strong></article>
+        <article><span>ابعاد پوشش‌داده‌شده</span><strong>{snapshot.summary.coveredDimensions}</strong></article>
+        <article><span>External Perception</span><strong>{snapshot.summary.externalSignals}</strong></article>
+        <article><span>Underrecognized</span><strong>{snapshot.summary.underrecognized}</strong></article>
+        <article><span>Blind Spot احتمالی</span><strong>{snapshot.summary.potentialBlindSpots}</strong></article>
+      </div>
+
+      <form
+        className="relationship-form perception-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onCreate({
+            dimension,
+            perspective,
+            stage,
+            summary,
+            evidenceNote,
+            sourceKind,
+            confidence,
+            observedAt: new Date(`${observedAt}T00:00:00.000Z`).toISOString(),
+            consentConfirmed,
+          }).then(() => {
+            setSummary('');
+            setEvidenceNote('');
+            setConsentConfirmed(false);
+          });
+        }}
+      >
+        <div className="relationship-form-head">
+          <div><p className="overline">ثبت Signal کیفی</p><h3>یک مشاهده را در lane درست قرار بده</h3></div>
+          <span><LockKeyhole size={15} /> confidential · perception_analysis</span>
+        </div>
+        <label>بُعد ادراک
+          <select onChange={(event) => { setDimension(event.target.value as PerceptionDimension); }} value={dimension}>
+            {perceptionDimensionOptions.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+          </select>
+        </label>
+        <label>Perspective
+          <select
+            onChange={(event) => {
+              const next = event.target.value as PerceptionPerspective;
+              setPerspective(next);
+              setSourceKind(next === 'self_perception' ? 'owner_reflection' : next === 'desired_positioning' ? 'owner_goal' : 'direct_feedback');
+            }}
+            value={perspective}
+          >
+            <option value="self_perception">Self Perception · خوداظهاری</option>
+            <option value="desired_positioning">Desired Positioning · هدف</option>
+            <option value="external_perception">External Perception · نظر بیرونی</option>
+          </select>
+        </label>
+        <label>Stage کیفی
+          <select onChange={(event) => { setStage(event.target.value as PerceptionStage); }} value={stage}>
+            {perceptionStageOptions.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+          </select>
+        </label>
+        <label>نوع منبع
+          <select onChange={(event) => { setSourceKind(event.target.value as PerceptionSourceKind); }} value={sourceKind}>
+            {sourceOptions.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+          </select>
+        </label>
+        <label>Confidence
+          <select onChange={(event) => { setConfidence(event.target.value as PerceptionConfidence); }} value={confidence}>
+            <option value="low">کم · Signal محدود</option><option value="medium">متوسط</option><option value="high">بالا · چند شاهد مستقل</option>
+          </select>
+        </label>
+        <label>تاریخ مشاهده
+          <input max={new Date().toISOString().slice(0, 10)} onChange={(event) => { setObservedAt(event.target.value); }} required type="date" value={observedAt} />
+        </label>
+        <label className="wide">خلاصه‌ی Signal
+          <input maxLength={400} minLength={5} onChange={(event) => { setSummary(event.target.value); }} placeholder="برداشت را کوتاه و بدون هویت منبع بنویس…" required value={summary} />
+        </label>
+        <label className="wide">Evidence Note
+          <textarea maxLength={1000} minLength={10} onChange={(event) => { setEvidenceNote(event.target.value); }} placeholder="زمینه، محدودیت و دلیل Confidence؛ بدون نام، Contact یا نقل‌قول خصوصی…" required rows={3} value={evidenceNote} />
+        </label>
+        <label className="relationship-consent wide">
+          <input checked={consentConfirmed} onChange={(event) => { setConsentConfirmed(event.target.checked); }} required type="checkbox" />
+          <span>تأیید می‌کنم حق ثبت این خلاصه را دارم؛ هویت منبع، اطلاعات تماس و نقل‌قول خصوصی وارد نشده و این Signal مجوز Social Listening، تماس یا انتشار نیست.</span>
+        </label>
+        <button className="wide" disabled={state === 'mutating' || !consentConfirmed} type="submit">{state === 'mutating' ? <LoaderCircle className="spin" size={16} /> : <Eye size={16} />} ثبت Signal خصوصی</button>
+      </form>
+
+      {snapshot.dimensions.length === 0 ? (
+        <div className="arbitration-empty"><Eye size={25} /><h3>هنوز Signal ادراکی ثبت نشده است</h3><p>با یک بُعد و یک Perspective شروع کن؛ برای نتیجه‌گیری عجله‌ای وجود ندارد.</p></div>
+      ) : (
+        <div className="perception-dimension-grid">
+          {snapshot.dimensions.map((item) => (
+            <article className={`perception-dimension ${item.gap}`} key={item.dimension}>
+              <header><span className="overline">{perceptionDimensionLabel(item.dimension)}</span><b>{perceptionGapLabel(item.gap)}</b></header>
+              <div className="perception-lanes">
+                <span>Self <strong>{item.selfStage ? perceptionStageLabel(item.selfStage) : 'داده ناکافی'}</strong></span>
+                <span>Desired <strong>{item.desiredStage ? perceptionStageLabel(item.desiredStage) : 'داده ناکافی'}</strong></span>
+                <span>External <strong>{item.externalRange ? `${perceptionStageLabel(item.externalRange.lowest)} تا ${perceptionStageLabel(item.externalRange.highest)}` : 'داده ناکافی'}</strong></span>
+              </div>
+              <p>{item.rationale}</p>
+              <footer>{perceptionBlindSpotLabel(item.blindSpot)}{item.externalRange?.conflictingStages ? ' · Signalهای متناقض حفظ شده‌اند' : ''}</footer>
+            </article>
+          ))}
+        </div>
+      )}
+
+      {snapshot.signals.length > 0 ? (
+        <div className="relationship-list perception-signal-list">
+          {snapshot.signals.map((signal) => (
+            <article className="relationship-card" key={signal.signalId}>
+              <header>
+                <div><span className="overline">{perceptionPerspectiveLabel(signal.perspective)} · {perceptionDimensionLabel(signal.dimension)}</span><h3>{perceptionStageLabel(signal.stage)}</h3></div>
+                <button
+                  aria-label="حذف Signal ادراکی"
+                  disabled={state === 'mutating'}
+                  onClick={() => { if (window.confirm('این Signal و متن خصوصی آن کاملاً حذف شود؟')) void onDelete(signal.signalId); }}
+                  type="button"
+                ><Trash2 size={16} /> حذف</button>
+              </header>
+              <p className="relationship-outcome">{signal.summary}</p>
+              <p>{signal.evidenceNote}</p>
+              <div className="relationship-meta"><span>Epistemic: {signal.epistemicType}</span><span>Confidence: {perceptionConfidenceLabel(signal.confidence)}</span><span>مشاهده: {formatDate(signal.observedAt)}</span></div>
+              <footer><LockKeyhole size={13} /> هویت منبع و نقل‌قول خصوصی ذخیره نشده · جمع‌آوری و اقدام بیرونی مجاز نیست</footer>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+const perceptionDimensionOptions: readonly (readonly [PerceptionDimension, string])[] = [
+  ['expertise', 'تخصص'], ['trust', 'اعتماد'], ['leadership', 'رهبری'], ['clarity', 'شفافیت'],
+  ['innovation', 'نوآوری'], ['collaboration', 'همکاری'], ['visibility', 'دیده‌شدن'],
+  ['authenticity', 'اصالت'], ['other', 'سایر'],
+];
+const perceptionStageOptions: readonly (readonly [PerceptionStage, string])[] = [
+  ['not_visible', 'دیده نمی‌شود'], ['emerging', 'در حال شکل‌گیری'], ['visible', 'قابل مشاهده'],
+  ['strong', 'قوی'], ['signature', 'ویژگی شاخص'],
+];
+const perceptionExternalSourceOptions: readonly (readonly [PerceptionSourceKind, string])[] = [
+  ['direct_feedback', 'بازخورد مستقیمِ خلاصه‌شده'], ['survey_summary', 'خلاصه نظرسنجی'],
+  ['public_signal', 'Signal عمومی'], ['media_signal', 'Signal رسانه‌ای'],
+  ['network_feedback', 'بازخورد شبکه حرفه‌ای'], ['other', 'منبع دیگر بدون هویت'],
+];
+
+function perceptionDimensionLabel(value: PerceptionDimension): string { return perceptionDimensionOptions.find(([key]) => key === value)?.[1] ?? value; }
+function perceptionStageLabel(value: PerceptionStage): string { return perceptionStageOptions.find(([key]) => key === value)?.[1] ?? value; }
+function perceptionPerspectiveLabel(value: PerceptionPerspective): string { return { self_perception: 'Self Perception', desired_positioning: 'Desired Positioning', external_perception: 'External Perception' }[value]; }
+function perceptionConfidenceLabel(value: PerceptionConfidence): string { return { low: 'کم', medium: 'متوسط', high: 'بالا' }[value]; }
+function perceptionGapLabel(value: PerceptionWorkspaceSnapshot['dimensions'][number]['gap']): string { return { insufficient_evidence: 'داده ناکافی', aligned_range: 'در محدوده مشترک', underrecognized: 'کمتر از جایگاه مطلوب', exceeds_target: 'بالاتر از هدف ثبت‌شده' }[value]; }
+function perceptionBlindSpotLabel(value: PerceptionWorkspaceSnapshot['dimensions'][number]['blindSpot']): string { return { insufficient_evidence: 'Blind Spot: داده ناکافی', within_external_range: 'Self در Range بیرونی', self_higher_than_external: 'Blind Spot احتمالی: Self بالاتر است', self_lower_than_external: 'تفاوت احتمالی: Self پایین‌تر است' }[value]; }
 
 function arbitrationOutcomeLabel(outcome: ArbitrationWorkspaceSnapshot['cases'][number]['decision']['outcome']): string {
   return {
@@ -3036,7 +3325,7 @@ function AssetIntakePanel({
         title: title.trim(),
         content: content.trim(),
         assertionText: assertionText.trim(),
-        occurredAt: new Date(`${occurredOn}T12:00:00.000Z`).toISOString(),
+        occurredAt: new Date(`${occurredOn}T00:00:00.000Z`).toISOString(),
         brandUsage,
       });
       setTitle('');
@@ -3564,6 +3853,14 @@ function errorMessage(error: unknown): string {
     relationship_conflict: 'این Stakeholder یا شناسه درخواست قبلاً با Context دیگری ثبت شده است.',
     stakeholder_not_found: 'این Stakeholder دیگر در نقشه فعال وجود ندارد.',
     relationship_failed: 'ثبت یا حذف Context رابطه کامل نشد.',
+    perception_unavailable: 'فضای ادراک در دسترس نیست و هیچ Signalی ثبت نشد.',
+    invalid_perception_input: 'بُعد، Perspective، Stage، منبع یا رضایت Signal معتبر نیست.',
+    invalid_perception_request: 'Signal ادراکی معتبر نیست؛ تاریخ آینده یا متن ناقص پذیرفته نمی‌شود.',
+    invalid_perception_delete: 'شناسه درخواست حذف Signal معتبر نیست.',
+    perception_permission_denied: 'فقط مالک می‌تواند Signalهای ادراکی خصوصی را مدیریت کند.',
+    perception_conflict: 'این شناسه درخواست قبلاً با Signal دیگری استفاده شده یا Signal حذف شده است.',
+    perception_signal_not_found: 'این Signal دیگر در نقشه فعال وجود ندارد.',
+    perception_failed: 'ثبت یا حذف Signal ادراکی کامل نشد.',
     drafts_unavailable: 'Draft Studio در دسترس نیست.',
     invalid_draft_input: 'اطلاعات Draft ناقص یا خارج از محدودیت‌های پلتفرم است.',
     draft_permission_denied: 'مجوز صریح مالک برای استفاده از این حافظه در Draft وجود ندارد.',

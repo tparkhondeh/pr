@@ -30,7 +30,7 @@ Trust Boundaryها:
 
 ## دارایی‌های حساس
 
-- متن‌ها، خاطرات، Evidence، Assertion، Desired Positioning و Context رابطه/Stakeholder مالک؛
+- متن‌ها، خاطرات، Evidence، Assertion، Desired Positioning، Signalهای ادراکی و Context رابطه/Stakeholder مالک؛
 - Consent، Data-right request، Draft و Approval؛
 - Tenant/User identity، Audit trail و Outbox؛
 - credentialهای cPanel، Basic Auth، GitHub/Sites و دیتابیس.
@@ -58,6 +58,7 @@ Trust Boundaryها:
 | T-17 | Override شدن Gate یک ماژول توسط Utility/Agent دیگر، استفاده از تصمیم stale یا ارتقای پنهان Autonomy | P0 | رأی‌های typed و بدون write authority، اولویت قطعی `hold/revise`، حفظ dissent/abstention، Context/Snapshot hash، پنجره ۲۴ساعته، سقف Level 5، `executionPermitted=false` و RLS/Audit | پیش از Level 6/7، Session و Delegation Scope واقعی، Tool allowlist، approval token کوتاه‌عمر، rate limit، compensation و red-team مستقل الزامی است |
 | T-18 | Proactive spam، مزاحمت دست‌کاری‌گر، Cue کم‌ارتباط یا تکرار Signal stale | P0 | پیش‌فرض Reactive، opt-in مالک، Relevance threshold، Pause، سقف تراکنشی ۲۴ساعته، Context hash/staleness، Ledger توضیح‌پذیر و نبود outbound side effect | پیش از هر Notification/Connector بیرونی، Consent کانال، timezone/quiet hours، unsubscribe، delivery receipt، abuse monitoring و incident drill الزامی است |
 | T-19 | تبدیل Relationship Context به CRM نظارتی، افشای داده شخص ثالث یا باقی‌ماندن متن پس از حذف | P0 | ورود دستی و رضایت مالک، بدون Contact Detail، داده confidential و purpose-bound، Boundary صریح، نبود Score/Outbound Automation، Hard Delete، Journal فقط دارای ID و Audit بدون Label/Group/Context | پیش از Contact/CRM/Calendar/360 connector، scope مستقل، third-party privacy review، field allowlist، retention، connector revocation و deletion propagation drill الزامی است |
+| T-20 | تبدیل نظر دیگران به Fact، ساخت Blind Spot کاذب، افشای هویت منبع یا نظارت خودکار بر ادراک عمومی | P0 | سه Epistemic Lane مستقل، Stage کیفی بدون Score پنهان، حفظ Range تناقض، abstention در داده ناکافی، ورود دستی، بدون Source Identity/Contact/Verbatim Quote، Hard Delete و Audit فقط دارای ID | پیش از 360 Interview/Social Listening/Survey/Media connector، رضایت مستقل شخص ثالث، provenance منبع، anti-harassment/DLP review، retention و deletion propagation drill الزامی است |
 
 ## P0 Gate
 

@@ -495,6 +495,90 @@ export type DeleteStakeholderResult = Readonly<{
   stakeholderId: string;
 }>;
 
+export type PerceptionDimension =
+  | 'expertise' | 'trust' | 'leadership' | 'clarity' | 'innovation'
+  | 'collaboration' | 'visibility' | 'authenticity' | 'other';
+export type PerceptionPerspective = 'self_perception' | 'desired_positioning' | 'external_perception';
+export type PerceptionStage = 'not_visible' | 'emerging' | 'visible' | 'strong' | 'signature';
+export type PerceptionConfidence = 'low' | 'medium' | 'high';
+export type PerceptionSourceKind =
+  | 'owner_reflection' | 'owner_goal' | 'direct_feedback' | 'survey_summary'
+  | 'public_signal' | 'media_signal' | 'network_feedback' | 'other';
+export type PerceptionGap = 'insufficient_evidence' | 'aligned_range' | 'underrecognized' | 'exceeds_target';
+export type BlindSpotStatus =
+  | 'insufficient_evidence' | 'within_external_range'
+  | 'self_higher_than_external' | 'self_lower_than_external';
+
+export type PerceptionSignalRecord = Readonly<{
+  signalId: string;
+  requestId: string;
+  dimension: PerceptionDimension;
+  perspective: PerceptionPerspective;
+  stage: PerceptionStage;
+  summary: string;
+  evidenceNote: string;
+  sourceKind: PerceptionSourceKind;
+  confidence: PerceptionConfidence;
+  observedAt: string;
+  consentConfirmedAt: string;
+  createdAt: string;
+}>;
+
+export type PerceptionSignalSnapshot = PerceptionSignalRecord & Readonly<{
+  epistemicType: 'self_report' | 'goal' | 'external_perception';
+  privacy: Readonly<{
+    dataClass: 'confidential';
+    allowedPurpose: 'perception_analysis';
+    sourceIdentityStored: false;
+    verbatimPrivateQuoteStored: false;
+    automatedCollectionPermitted: false;
+    externalActionPermitted: false;
+  }>;
+}>;
+
+export type PerceptionDimensionSnapshot = Readonly<{
+  dimension: PerceptionDimension;
+  selfStage: PerceptionStage | null;
+  desiredStage: PerceptionStage | null;
+  externalRange: Readonly<{
+    lowest: PerceptionStage;
+    highest: PerceptionStage;
+    signalCount: number;
+    conflictingStages: boolean;
+  }> | null;
+  gap: PerceptionGap;
+  blindSpot: BlindSpotStatus;
+  rationale: string;
+}>;
+
+export type PerceptionWorkspaceSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  policyVersion: 'perception-engine-v1';
+  summary: Readonly<{
+    totalSignals: number;
+    coveredDimensions: number;
+    externalSignals: number;
+    underrecognized: number;
+    potentialBlindSpots: number;
+    insufficientEvidence: number;
+  }>;
+  dimensions: readonly PerceptionDimensionSnapshot[];
+  signals: readonly PerceptionSignalSnapshot[];
+}>;
+
+export type CreatePerceptionSignalResult = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  record: PerceptionSignalRecord;
+}>;
+
+export type DeletePerceptionSignalResult = Readonly<{
+  outcome: 'deleted' | 'already_applied';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  signalId: string;
+}>;
+
 export type DraftChannel = 'linkedin' | 'instagram' | 'x' | 'youtube' | 'podcast' | 'newsletter' | 'blog';
 export type DraftSourceKind = 'memory' | 'text_asset';
 
@@ -830,6 +914,7 @@ export type AccountDataExport = Readonly<{
     arbitration: ArbitrationWorkspaceSnapshot | null;
     initiative: InitiativeWorkspaceSnapshot | null;
     relationships: RelationshipWorkspaceSnapshot | null;
+    perception: PerceptionWorkspaceSnapshot | null;
     draft: DraftWorkspaceSnapshot | null;
     feedback: FeedbackLearningSnapshot;
     activity: AuditTrailSnapshot;
@@ -1079,6 +1164,58 @@ export async function deleteStakeholder(input: Readonly<{
     !isPersistence(payload['persistence']) || typeof payload['stakeholderId'] !== 'string'
   ) throw new WorkbenchApiError(200, 'invalid_response');
   return payload as DeleteStakeholderResult;
+}
+
+export async function loadPerception(signal?: AbortSignal): Promise<PerceptionWorkspaceSnapshot> {
+  const payload = await requestJson('/api/perception', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isPerceptionWorkspaceSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function createPerceptionSignal(input: Readonly<{
+  requestId: string;
+  dimension: PerceptionDimension;
+  perspective: PerceptionPerspective;
+  stage: PerceptionStage;
+  summary: string;
+  evidenceNote: string;
+  sourceKind: PerceptionSourceKind;
+  confidence: PerceptionConfidence;
+  observedAt: string;
+  consentConfirmed: boolean;
+}>): Promise<CreatePerceptionSignalResult> {
+  const payload = await requestJson('/api/perception/signals', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (
+    !isRecord(payload) || (payload['outcome'] !== 'applied' && payload['outcome'] !== 'already_applied') ||
+    !isPersistence(payload['persistence']) || !isPerceptionSignalRecord(payload['record'])
+  ) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload as CreatePerceptionSignalResult;
+}
+
+export async function deletePerceptionSignal(input: Readonly<{
+  requestId: string;
+  signalId: string;
+}>): Promise<DeletePerceptionSignalResult> {
+  const payload = await requestJson(
+    `/api/perception/signals/${encodeURIComponent(input.signalId)}/delete`,
+    {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: input.requestId }),
+    },
+  );
+  if (
+    !isRecord(payload) || (payload['outcome'] !== 'deleted' && payload['outcome'] !== 'already_applied') ||
+    !isPersistence(payload['persistence']) || typeof payload['signalId'] !== 'string'
+  ) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload as DeletePerceptionSignalResult;
 }
 
 export async function reviewRisk(input: Readonly<{
@@ -1866,6 +2003,87 @@ function isRelationshipAttention(value: unknown): value is RelationshipAttention
     value === 'approval_required';
 }
 
+function isPerceptionWorkspaceSnapshot(value: unknown): value is PerceptionWorkspaceSnapshot {
+  if (
+    !isRecord(value) || value['policyVersion'] !== 'perception-engine-v1' ||
+    typeof value['generatedAt'] !== 'string' || !isPersistence(value['persistence']) ||
+    !isRecord(value['summary']) || !Array.isArray(value['dimensions']) || !Array.isArray(value['signals'])
+  ) return false;
+  const summary = value['summary'];
+  return typeof summary['totalSignals'] === 'number' && typeof summary['coveredDimensions'] === 'number' &&
+    typeof summary['externalSignals'] === 'number' && typeof summary['underrecognized'] === 'number' &&
+    typeof summary['potentialBlindSpots'] === 'number' && typeof summary['insufficientEvidence'] === 'number' &&
+    value['dimensions'].every(isPerceptionDimensionSnapshot) && value['signals'].every(isPerceptionSignalSnapshot);
+}
+
+function isPerceptionDimensionSnapshot(value: unknown): value is PerceptionDimensionSnapshot {
+  if (!isRecord(value) || !isPerceptionDimension(value['dimension']) ||
+      (value['selfStage'] !== null && !isPerceptionStage(value['selfStage'])) ||
+      (value['desiredStage'] !== null && !isPerceptionStage(value['desiredStage'])) ||
+      !isPerceptionGap(value['gap']) || !isBlindSpotStatus(value['blindSpot']) ||
+      typeof value['rationale'] !== 'string') return false;
+  const range = value['externalRange'];
+  return range === null || (isRecord(range) && isPerceptionStage(range['lowest']) &&
+    isPerceptionStage(range['highest']) && typeof range['signalCount'] === 'number' &&
+    typeof range['conflictingStages'] === 'boolean');
+}
+
+function isPerceptionSignalSnapshot(value: unknown): value is PerceptionSignalSnapshot {
+  if (!isPerceptionSignalRecord(value)) return false;
+  const candidate = value as unknown as Record<string, unknown>;
+  if (!isRecord(candidate['privacy'])) return false;
+  const privacy = candidate['privacy'];
+  return (candidate['epistemicType'] === 'self_report' || candidate['epistemicType'] === 'goal' ||
+    candidate['epistemicType'] === 'external_perception') && privacy['dataClass'] === 'confidential' &&
+    privacy['allowedPurpose'] === 'perception_analysis' && privacy['sourceIdentityStored'] === false &&
+    privacy['verbatimPrivateQuoteStored'] === false && privacy['automatedCollectionPermitted'] === false &&
+    privacy['externalActionPermitted'] === false;
+}
+
+function isPerceptionSignalRecord(value: unknown): value is PerceptionSignalRecord {
+  return isRecord(value) && typeof value['signalId'] === 'string' && typeof value['requestId'] === 'string' &&
+    isPerceptionDimension(value['dimension']) && isPerceptionPerspective(value['perspective']) &&
+    isPerceptionStage(value['stage']) && typeof value['summary'] === 'string' &&
+    typeof value['evidenceNote'] === 'string' && isPerceptionSourceKind(value['sourceKind']) &&
+    isPerceptionConfidence(value['confidence']) && typeof value['observedAt'] === 'string' &&
+    typeof value['consentConfirmedAt'] === 'string' && typeof value['createdAt'] === 'string';
+}
+
+function isPerceptionDimension(value: unknown): value is PerceptionDimension {
+  return value === 'expertise' || value === 'trust' || value === 'leadership' || value === 'clarity' ||
+    value === 'innovation' || value === 'collaboration' || value === 'visibility' ||
+    value === 'authenticity' || value === 'other';
+}
+
+function isPerceptionPerspective(value: unknown): value is PerceptionPerspective {
+  return value === 'self_perception' || value === 'desired_positioning' || value === 'external_perception';
+}
+
+function isPerceptionStage(value: unknown): value is PerceptionStage {
+  return value === 'not_visible' || value === 'emerging' || value === 'visible' ||
+    value === 'strong' || value === 'signature';
+}
+
+function isPerceptionSourceKind(value: unknown): value is PerceptionSourceKind {
+  return value === 'owner_reflection' || value === 'owner_goal' || value === 'direct_feedback' ||
+    value === 'survey_summary' || value === 'public_signal' || value === 'media_signal' ||
+    value === 'network_feedback' || value === 'other';
+}
+
+function isPerceptionConfidence(value: unknown): value is PerceptionConfidence {
+  return value === 'low' || value === 'medium' || value === 'high';
+}
+
+function isPerceptionGap(value: unknown): value is PerceptionGap {
+  return value === 'insufficient_evidence' || value === 'aligned_range' ||
+    value === 'underrecognized' || value === 'exceeds_target';
+}
+
+function isBlindSpotStatus(value: unknown): value is BlindSpotStatus {
+  return value === 'insufficient_evidence' || value === 'within_external_range' ||
+    value === 'self_higher_than_external' || value === 'self_lower_than_external';
+}
+
 function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
@@ -1966,6 +2184,7 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     (data['arbitration'] === null || isArbitrationWorkspaceSnapshot(data['arbitration'])) &&
     (data['initiative'] === null || isInitiativeWorkspaceSnapshot(data['initiative'])) &&
     (data['relationships'] === null || isRelationshipWorkspaceSnapshot(data['relationships'])) &&
+    (data['perception'] === null || isPerceptionWorkspaceSnapshot(data['perception'])) &&
     (data['draft'] === null || isDraftWorkspaceSnapshot(data['draft'])) &&
     isFeedbackLearningSnapshot(data['feedback']) && isAuditTrailSnapshot(data['activity'])
   );

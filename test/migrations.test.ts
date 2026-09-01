@@ -94,6 +94,10 @@ const relationshipMigrationPath = fileURLToPath(
   new URL('../db/migrations/0022_relationship_intelligence.sql', import.meta.url),
 );
 const relationshipSql = readFileSync(relationshipMigrationPath, 'utf8');
+const perceptionMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0023_perception_engine.sql', import.meta.url),
+);
+const perceptionSql = readFileSync(perceptionMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -162,6 +166,21 @@ describe('foundation migration', () => {
     expect(relationshipSql).toContain("relationship_boundary IN ('normal', 'ask_before_prompt', 'do_not_prompt')");
     expect(relationshipSql).toContain("result_snapshot = jsonb_build_object('stakeholderId'");
     expect(relationshipSql).toContain('no contact details, outbound contact, or automation authority');
+  });
+
+  it('adds private perception signals without source identity or automated collection', () => {
+    defineMigration('0023_perception_engine', perceptionSql);
+    expect(perceptionSql).toContain(
+      "ALTER TYPE app.consent_purpose ADD VALUE IF NOT EXISTS 'perception_analysis'",
+    );
+    for (const table of ['perception_signals', 'perception_requests']) {
+      expect(perceptionSql).toContain(`CREATE TABLE app.${table}`);
+      expect(perceptionSql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
+      expect(perceptionSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
+    expect(perceptionSql).toContain("perspective IN (\n    'self_perception', 'desired_positioning', 'external_perception'");
+    expect(perceptionSql).toContain("result_snapshot = jsonb_build_object('signalId'");
+    expect(perceptionSql).toContain('source identity, verbatim private quotes, automated collection');
   });
 
   it('defines the required tenant-owned tables', () => {

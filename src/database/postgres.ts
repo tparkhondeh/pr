@@ -5,7 +5,7 @@ import type {
   SqlTransactionRunner,
 } from './sql.js';
 
-export const latestSchemaMigration = '0022_relationship_intelligence';
+export const latestSchemaMigration = '0023_perception_engine';
 
 export type DatabasePrincipal = Readonly<{
   superuser: boolean;

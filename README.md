@@ -5,7 +5,7 @@
 وضعیت فعلی: **Foundation و MVP Workbench در حال توسعه**. Data/Policy Kernel، API،
 Workbench وب، Approval انسانی، ورودی مکالمه‌ای Consent-first، ورود متن به‌عنوان
 Asset/Evidence، مرکز حقوق داده، داوری قطعی اختلاف میان ماژول‌ها و Proactive Mode
-کنترل‌شده و نقشه خصوصی Stakeholder/Relationship پیاده‌سازی شده‌اند.
+کنترل‌شده، نقشه خصوصی Stakeholder/Relationship و Perception Engine کیفی پیاده‌سازی شده‌اند.
 
 ## اسناد فعلی
 
@@ -15,6 +15,7 @@ Asset/Evidence، مرکز حقوق داده، داوری قطعی اختلاف �
 - [Continuous Conversation Orchestrator](docs/architecture/conversation-orchestrator-v1.0.md)
 - [Inter-module Contract & Decision Arbitration](docs/architecture/intermodule-arbitration-v1.0.md)
 - [Controlled Proactive Initiative](docs/architecture/proactive-initiative-v1.0.md)
+- [Perception Engine](docs/architecture/perception-engine-v1.0.md)
 - [Master Implementation Prompt مرحله Foundation](docs/implementation/foundation-master-prompt-v1.0.md)
 - [ADRهای Draft مرحله Foundation](docs/decisions/foundation-adrs-draft-v1.0.md)
 - [Data & Policy Kernel](docs/architecture/data-kernel-v1.0.md)
@@ -167,6 +168,19 @@ RLS-protected و همراه Audit/Outbox هستند. APIهای این Slice شا
 `GET /api/relationships`، `POST /api/relationships/stakeholders` و
 `POST /api/relationships/stakeholders/:id/delete` است. جزئیات در
 [`docs/architecture/relationship-intelligence-v1.0.md`](docs/architecture/relationship-intelligence-v1.0.md)
+ثبت شده است.
+
+نمای «ادراک» قرارداد `perception-engine-v1` را اجرا می‌کند. مالک Signalها را در سه
+lane مستقل Self Perception، Desired Positioning و External Perception ثبت می‌کند؛
+هر Signal یک بُعد، Stage کیفی، Confidence، Evidence Note و تاریخ مشاهده دارد. نظر
+دیگران همیشه `external_perception` باقی می‌ماند و Fact نمی‌شود. تحلیل قطعی فقط Range
+Signalهای بیرونی، Gap کیفی و Blind Spot احتمالی را نشان می‌دهد؛ اختلاف‌ها حفظ می‌شوند
+و نبود Evidence با «داده ناکافی» پاسخ داده می‌شود. Source Identity، Contact، نقل‌قول
+خصوصی، Social Listening، 360 Interview و اقدام بیرونی در این Slice وجود ندارند. ایجاد
+و Hard Delete، idempotent، RLS-protected و با Audit حداقلی هستند. APIها شامل
+`GET /api/perception`، `POST /api/perception/signals` و
+`POST /api/perception/signals/:id/delete` هستند. جزئیات در
+[`docs/architecture/perception-engine-v1.0.md`](docs/architecture/perception-engine-v1.0.md)
 ثبت شده است.
 
 نمای «پیش‌نویس» تنها پس از تأیید Action محتوایی Workbench فعال می‌شود. کاربر یک

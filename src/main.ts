@@ -42,6 +42,11 @@ import { createRequestHandler } from './http/application.js';
 import { createStaticRequestHandler } from './http/static-application.js';
 import { tenantId, userId } from './kernel/identity.js';
 import {
+  InMemoryPerceptionWorkspaceRepository,
+  PerceptionWorkspaceService,
+  PostgresPerceptionWorkspaceRepository,
+} from './perception/workspace.js';
+import {
   InMemoryResearchWorkspaceRepository,
   PostgresResearchWorkspaceRepository,
   ResearchWorkspaceService,
@@ -222,6 +227,15 @@ const relationships = new RelationshipWorkspaceService(
     : new InMemoryRelationshipWorkspaceRepository(),
   { tenantId: activeTenant, ownerUserId: owner },
 );
+const perception = new PerceptionWorkspaceService(
+  postgres && environment.database
+    ? new PostgresPerceptionWorkspaceRepository(postgres, {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+      })
+    : new InMemoryPerceptionWorkspaceRepository(),
+  { tenantId: activeTenant, ownerUserId: owner },
+);
 const requestHandler = createRequestHandler(
   async () => ({
     ...(postgres ? await postgres.readiness() : { ready: true }),
@@ -242,6 +256,7 @@ const requestHandler = createRequestHandler(
     arbitration,
     initiative,
     relationships,
+    perception,
     ...(!postgres ? { mutationAuditTrail: auditTrail } : {}),
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity
