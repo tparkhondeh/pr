@@ -453,9 +453,15 @@ async function appendAuditAndOutbox(
     `INSERT INTO app.audit_events (
        tenant_id, actor_user_id, event_type, resource_type, resource_id,
        purpose, decision, metadata, occurred_at
-     ) VALUES ($1, $2, 'decision.context_saved', 'decision_context', $2,
-       'strategy_reasoning', 'saved', $3::jsonb, $4)`,
-    [context.tenantId, context.ownerUserId, metadata, command.occurredAt],
+     ) VALUES ($1, $2, 'decision.context_saved', 'decision_context', $3,
+       'strategy_reasoning', 'saved', $4::jsonb, $5)`,
+    [
+      context.tenantId,
+      context.ownerUserId,
+      context.ownerUserId,
+      metadata,
+      command.occurredAt,
+    ],
   );
   await transaction.query(
     `INSERT INTO app.outbox_events (

@@ -199,7 +199,9 @@ describe('Postgres decision context repository', () => {
     expect(sql.queries.some((query) => query.sql.includes('app.decision_context_states'))).toBe(true);
     expect(sql.queries.some((query) => query.sql.includes("status = 'awaiting_approval'"))).toBe(true);
     expect(sql.queries.some((query) => query.sql.includes('approved_context_sha256 = NULL'))).toBe(true);
-    expect(sql.queries.some((query) => query.sql.includes('app.audit_events'))).toBe(true);
+    const auditQuery = sql.queries.find((query) => query.sql.includes('app.audit_events'));
+    expect(auditQuery?.sql).toContain("'decision_context', $3");
+    expect(auditQuery?.values.slice(0, 3)).toEqual([tenant, owner, owner]);
     expect(sql.queries.some((query) => query.sql.includes('app.outbox_events'))).toBe(true);
   });
 });
