@@ -890,6 +890,13 @@ describe('private preview worker draft runtime', () => {
       policyVersion: 'prompt-model-governance-v1',
       executionEnabled: false,
       costGateRequired: true,
+      durableInvocationJournal: false,
+      invocationJournal: {
+        policyVersion: 'model-invocation-journal-v1',
+        persistence: 'memory',
+        durable: false,
+        summary: { total: 0, recoveryRequired: 0 },
+      },
     });
     expect(accountExport.data.modelGovernance.routes).toHaveLength(5);
     expect(accountExport.data.modelGovernance.routes.every((route) =>

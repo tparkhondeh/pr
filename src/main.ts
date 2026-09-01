@@ -30,6 +30,7 @@ import { PostgresConversationMemoryRepository } from './conversation/repository.
 import { PostgresRuntime } from './database/postgres.js';
 import { PostgresStrategicQualityRepository } from './database/postgres-strategic-quality.js';
 import { PostgresWorkflowCostRepository } from './database/postgres-workflow-cost.js';
+import { PostgresModelInvocationJournalRepository } from './database/postgres-model-invocation-journal.js';
 import {
   InMemoryStrategicQualityRepository,
   StrategicQualityService,
@@ -56,6 +57,10 @@ import {
   defaultPromptModelRegistry,
   ModelGovernanceService,
 } from './providers/model-governance.js';
+import {
+  InMemoryModelInvocationJournalRepository,
+  ModelInvocationJournalService,
+} from './providers/model-invocation-journal.js';
 import {
   InMemoryPerceptionWorkspaceRepository,
   PerceptionWorkspaceService,
@@ -217,10 +222,20 @@ const workflowCosts = new WorkflowCostControlService(
     : new InMemoryWorkflowCostRepository(),
   { tenantId: activeTenant, ownerUserId: owner },
 );
+const modelInvocationJournal = new ModelInvocationJournalService(
+  postgres && environment.database
+    ? new PostgresModelInvocationJournalRepository(postgres, {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+      })
+    : new InMemoryModelInvocationJournalRepository(),
+  { tenantId: activeTenant, ownerUserId: owner },
+);
 const modelGovernance = new ModelGovernanceService(
   defaultPromptModelRegistry,
   { tenantId: activeTenant, ownerUserId: owner },
   false,
+  modelInvocationJournal,
 );
 const expression = new AuthenticExpressionService(
   { tenantId: activeTenant, ownerUserId: owner },

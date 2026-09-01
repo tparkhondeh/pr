@@ -43,6 +43,10 @@ import {
   ModelGovernanceService,
 } from '../src/providers/model-governance.js';
 import {
+  InMemoryModelInvocationJournalRepository,
+  ModelInvocationJournalService,
+} from '../src/providers/model-invocation-journal.js';
+import {
   InMemoryPerceptionWorkspaceRepository,
   PerceptionWorkspaceService,
 } from '../src/perception/workspace.js';
@@ -120,10 +124,15 @@ describe('operational endpoints', () => {
   it('exposes the fail-closed model registry to the owner', async () => {
     const fixedTime = new Date('2026-09-01T12:00:00.000Z');
     const owner = userId('owner_primary');
+    const identity = { tenantId: tenantId('tenant_primary'), ownerUserId: owner };
     const modelGovernance = new ModelGovernanceService(
       defaultPromptModelRegistry,
-      { tenantId: tenantId('tenant_primary'), ownerUserId: owner },
+      identity,
       false,
+      new ModelInvocationJournalService(
+        new InMemoryModelInvocationJournalRepository(),
+        identity,
+      ),
     );
     const response = await request(
       '/api/model-governance',

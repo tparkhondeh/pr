@@ -2391,8 +2391,12 @@ function FeedbackLearningPanel({
               <strong>{modelGovernance.routes.filter((route) => route.rollout === 'active').length.toLocaleString('fa-IR')}</strong>
             </div>
             <div>
-              <span>Cost Gate</span>
-              <strong>اجباری</strong>
+              <span>Invocation Journal</span>
+              <strong>{modelGovernance.invocationJournal.persistence === 'postgres' ? 'PostgreSQL' : 'Memory'}</strong>
+            </div>
+            <div>
+              <span>نیازمند بازیابی</span>
+              <strong>{modelGovernance.invocationJournal.summary.recoveryRequired.toLocaleString('fa-IR')}</strong>
             </div>
           </div>
           <div className="model-route-list" role="list" aria-label="نسخه‌های Prompt و Model">
@@ -2410,7 +2414,9 @@ function FeedbackLearningPanel({
           <div className="workflow-cost-truth">
             <LockKeyhole size={17} />
             <p>در وضعیت فعلی هیچ دادهٔ شخصی برای مدل بیرونی ارسال نمی‌شود.</p>
-            <small>Journal فراخوانی هنوز حافظه‌ای است؛ فعال‌سازی Provider تا Durable شدن آن، قبولی Evalها و تأیید صریح شما مسدود می‌ماند.</small>
+            <small>{modelGovernance.durableInvocationJournal
+              ? 'Journal فراخوانی پایدار است؛ فعال‌سازی Provider همچنان به قبولی Evalها و تأیید صریح شما نیاز دارد.'
+              : 'Journal فراخوانی هنوز حافظه‌ای است؛ فعال‌سازی Provider تا Durable شدن آن، قبولی Evalها و تأیید صریح شما مسدود می‌ماند.'}</small>
           </div>
         </section>
       ) : null}

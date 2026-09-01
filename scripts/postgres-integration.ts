@@ -18,6 +18,7 @@ import type { SqlQueryResult } from '../src/database/sql.js';
 import { PostgresRuntime } from '../src/database/postgres.js';
 import { PostgresStrategicQualityRepository } from '../src/database/postgres-strategic-quality.js';
 import { PostgresWorkflowCostRepository } from '../src/database/postgres-workflow-cost.js';
+import { PostgresModelInvocationJournalRepository } from '../src/database/postgres-model-invocation-journal.js';
 import {
   StrategicQualityConflictError,
   StrategicQualityService,
@@ -25,6 +26,11 @@ import {
 import { defineMigration, type Migration } from '../src/kernel/migrations.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
 import { WorkflowCostControlService } from '../src/observability/workflow-cost-control.js';
+import {
+  ModelInvocationConflictError,
+  ModelInvocationJournalService,
+  modelInvocationValueHash,
+} from '../src/providers/model-invocation-journal.js';
 import {
   DecisionContextService,
   PostgresDecisionContextRepository,
@@ -143,6 +149,7 @@ async function main(): Promise<void> {
     await verifyDecisionContextPersistence();
     await verifyStrategicQualityPersistence();
     await verifyWorkflowCostPersistence();
+    await verifyModelInvocationJournalPersistence();
     await verifyBrandRiskPersistence();
     await verifyConversationOrchestrationPersistence();
     await verifyArbitrationPersistence();
@@ -225,6 +232,98 @@ async function verifyWorkflowCostPersistence(): Promise<void> {
       snapshot.truthStatus !== 'measured' || snapshot.day.chargedCostMinorUnits < 21
     ) {
       throw new Error('Workflow cost PostgreSQL snapshot or circuit persistence failed.');
+    }
+  } finally {
+    await runtime.close();
+  }
+}
+
+async function verifyModelInvocationJournalPersistence(): Promise<void> {
+  const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
+  const owner = userId(userA);
+  const identity = { tenantId: tenantId(tenantA), ownerUserId: owner };
+  const at = new Date('2026-09-01T12:30:00.000Z');
+  const journal = new ModelInvocationJournalService(
+    new PostgresModelInvocationJournalRepository(runtime, {
+      tenantId: tenantA,
+      ownerUserId: userA,
+    }),
+    identity,
+  );
+  const costs = new WorkflowCostControlService(
+    new PostgresWorkflowCostRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
+    identity,
+  );
+  try {
+    const blockedReservation = await costs.reserve(owner, {
+      requestId: 'cost_reservation_after_circuit',
+      workflowId: 'workflow:cost:integration',
+      invocationId: 'invocation:cost:integration:2',
+      kind: 'evaluation',
+      estimatedCostMinorUnits: 1,
+      plannedSteps: 1,
+      reservedAt: at,
+    });
+    if (blockedReservation.decision !== 'blocked') {
+      throw new Error('Model invocation integration requires the prior blocked reservation.');
+    }
+    const beginInput = {
+      requestId: 'model_invocation_integration',
+      workflowId: 'workflow:model:integration',
+      invocationId: 'invocation:model:integration:1',
+      purpose: 'evaluate_output' as const,
+      schemaName: 'evaluation-v1',
+      registryEntryId: 'evaluate-output-live-v1',
+      promptVersion: 'evaluate-output-prompt-v1.0',
+      provider: 'integration-provider',
+      model: 'integration-model',
+      modelTier: 'economy' as const,
+      dataClasses: ['internal'] as const,
+      externalProcessingApproved: true,
+      inputSha256: modelInvocationValueHash({ claim: 'hash-only integration input' }),
+      startedAt: at,
+    };
+    const begun = await journal.begin(owner, beginInput);
+    const replayedBegin = await journal.begin(owner, beginInput);
+    const startedSnapshot = await journal.snapshot(owner, at);
+    if (
+      begun.replay || !replayedBegin.replay || replayedBegin.record.id !== begun.record.id ||
+      startedSnapshot.persistence !== 'postgres' || !startedSnapshot.durable ||
+      startedSnapshot.summary.recoveryRequired < 1
+    ) {
+      throw new Error('Durable model invocation begin, replay, or recovery state failed.');
+    }
+    let beginMismatchRejected = false;
+    try {
+      await journal.begin(owner, { ...beginInput, model: 'mutated-model' });
+    } catch (error: unknown) {
+      beginMismatchRejected = error instanceof ModelInvocationConflictError &&
+        error.reason === 'idempotency_mismatch';
+    }
+    const completion = {
+      requestId: beginInput.requestId,
+      invocationRecordId: begun.record.id,
+      status: 'cost_blocked' as const,
+      statusReason: blockedReservation.reason ?? 'cost_gate_blocked',
+      reservationId: blockedReservation.id,
+      completedAt: at,
+    };
+    const completed = await journal.complete(owner, completion);
+    const replayedCompletion = await journal.complete(owner, completion);
+    let completionMismatchRejected = false;
+    try {
+      await journal.complete(owner, { ...completion, status: 'provider_failed' });
+    } catch (error: unknown) {
+      completionMismatchRejected = error instanceof ModelInvocationConflictError &&
+        error.reason === 'completion_mismatch';
+    }
+    const snapshot = await journal.snapshot(owner, at);
+    if (
+      !beginMismatchRejected || !completionMismatchRejected ||
+      completed.status !== 'cost_blocked' || replayedCompletion.id !== completed.id ||
+      snapshot.summary.recoveryRequired !== 0 || snapshot.summary.blocked < 1
+    ) {
+      throw new Error('Durable model invocation completion or conflict contract failed.');
     }
   } finally {
     await runtime.close();

@@ -28,11 +28,13 @@ Typed ModelRequest
   → Registry route
   → Active rollout + passed eval
   → Output/Data Class/consent policy
+  → Durable Invocation Journal: started
   → Workflow Cost reservation
   → Provider with timeout
   → Usage validation
   → Workflow Cost charge
   → Structured output validation
+  → Invocation Journal: terminal outcome
   → Governed ModelResult
 ```
 
@@ -43,11 +45,10 @@ Cost قبل از بررسی نهایی Output تسویه می‌شود، چون 
 ## Idempotency و Retry
 
 در Process فعلی `requestId` به Fingerprint کل Request متصل می‌شود. Replay همان Promise
-را برمی‌گرداند و Payload متفاوت Conflict است؛ بنابراین Retry داخل Process فراخوانی
-دوباره ایجاد نمی‌کند. Reservation و Charge نیز Request ID مشتق‌شده و Idempotent دارند.
-
-این Journal هنوز حافظه‌ای است. فعال‌سازی Provider واقعی تا اضافه‌شدن Durable Invocation
-Journal، تست Crash/Retry و Reconciliation با صورتحساب Provider مجاز نیست.
+را برمی‌گرداند و Payload متفاوت Conflict است. `model-invocation-journal-v1` همین قرارداد
+را در PostgreSQL پایدار می‌کند: هر Invocation پیش از Spend با وضعیت `started` ثبت و فقط
+یک‌بار Terminal می‌شود. پس از Restart، رکورد قبلی باعث Fail-closed می‌شود و Provider
+خودکار دوباره فراخوانی نمی‌شود. Reservation و Charge نیز Request ID مشتق‌شده و Idempotent دارند.
 
 ## Permission و Data Boundary
 
@@ -65,7 +66,7 @@ Export نیز همین Metadata حکمرانی را بدون Prompt Content یا
 
 ## Gate فعال‌سازی Provider
 
-1. Durable PostgreSQL Source of Truth و Invocation Journal؛
+1. فعال‌بودن PostgreSQL Source of Truth و Invocation Journal در محیط Production؛
 2. Session/Actor binding معتبر؛
 3. Provider Adapter با Secret خارج Git و Retention policy؛
 4. Eval چندزبانه و Adversarial برای هر Route؛

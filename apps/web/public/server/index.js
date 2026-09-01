@@ -3509,6 +3509,17 @@ function modelGovernanceSnapshot(generatedAt = new Date()) {
     executionEnabled: false,
     costGateRequired: true,
     durableInvocationJournal: false,
+    invocationJournal: {
+      policyVersion: 'model-invocation-journal-v1',
+      generatedAt: generatedAt.toISOString(),
+      persistence: 'memory',
+      durable: false,
+      summary: {
+        total: 0, started: 0, recoveryRequired: 0,
+        succeeded: 0, blocked: 0, failed: 0,
+      },
+      recentInvocations: [],
+    },
     routes: modelGovernanceRoutes,
   };
 }

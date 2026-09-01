@@ -45,6 +45,8 @@ export type ModelResult<TOutput> = Readonly<{
     modelTier: 'economy' | 'balanced' | 'reasoning';
     reservationId: string;
     chargeId: string;
+    invocationJournalId: string;
+    invocationJournalPersistence: 'memory' | 'postgres';
     circuitOpened: boolean;
   }>;
 }>;

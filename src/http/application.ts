@@ -324,7 +324,7 @@ export function createRequestHandler(
     }
 
     if (request.method === 'GET' && path === '/api/model-governance') {
-      handleModelGovernanceSnapshot(request, response, dependencies);
+      await handleModelGovernanceSnapshot(request, response, dependencies);
       return;
     }
 
@@ -942,11 +942,11 @@ function serializeWorkflowCost(snapshot: WorkflowCostSnapshot): Record<string, u
   };
 }
 
-function handleModelGovernanceSnapshot(
+async function handleModelGovernanceSnapshot(
   request: IncomingMessage,
   response: ServerResponse,
   dependencies: ApplicationDependencies,
-): void {
+): Promise<void> {
   const actorId = dependencies.resolveActor?.(request);
   if (!actorId) {
     sendJson(response, 401, { error: 'authentication_required' });
@@ -958,7 +958,7 @@ function handleModelGovernanceSnapshot(
   }
   try {
     sendJson(response, 200, serializeModelGovernance(
-      dependencies.modelGovernance.snapshot(actorId, now(dependencies)),
+      await dependencies.modelGovernance.snapshot(actorId, now(dependencies)),
     ));
   } catch (error: unknown) {
     if (error instanceof ModelGovernancePermissionError) {
@@ -970,7 +970,19 @@ function handleModelGovernanceSnapshot(
 }
 
 function serializeModelGovernance(snapshot: ModelGovernanceSnapshot): Record<string, unknown> {
-  return { ...snapshot, generatedAt: snapshot.generatedAt.toISOString() };
+  return {
+    ...snapshot,
+    generatedAt: snapshot.generatedAt.toISOString(),
+    invocationJournal: {
+      ...snapshot.invocationJournal,
+      generatedAt: snapshot.invocationJournal.generatedAt.toISOString(),
+      recentInvocations: snapshot.invocationJournal.recentInvocations.map((entry) => ({
+        ...entry,
+        startedAt: entry.startedAt.toISOString(),
+        ...(entry.completedAt ? { completedAt: entry.completedAt.toISOString() } : {}),
+      })),
+    },
+  };
 }
 
 function isWorkflowCostKind(value: unknown): value is WorkflowCostKind {

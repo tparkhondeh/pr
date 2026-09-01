@@ -265,7 +265,9 @@ PostgreSQL و Preview فعال‌اند. چون Runtime فعلی Provider بیر
 `prompt-model-governance-v1` نیز Prompt/Model Registry را از فهرست شکاف‌ها به Contract
 اجرایی منتقل کرده است: Route نسخه‌دار، Tier، Eval، Rollout، Data Class، رضایت پردازش
 بیرونی، Timeout و Cost Reservation اجباری‌اند. Provider واقعی همچنان Fail-closed است؛
-Durable Invocation Journal، Eval چندزبانه و Billing Reconciliation پیش‌شرط فعال‌سازی‌اند.
+`model-invocation-journal-v1` اکنون اجرای started→terminal، Idempotency پایدار، Recovery
+صریح و نگهداری metadata/hash-only را در Memory/PostgreSQL پیاده کرده است. فعال‌شدن
+PostgreSQL در Production، Eval چندزبانه و Billing Reconciliation هنوز پیش‌شرط Provider هستند.
 
 مسیر `postgres-commissioning-v1` نیز فعال‌سازی Source of Truth را fail-closed کرده است:
 Migration و Runtime باید Roleهای جدا باشند، Runtime حق superuser/BYPASSRLS/CREATE

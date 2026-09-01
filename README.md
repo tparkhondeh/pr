@@ -12,7 +12,8 @@ Authentic Expression Gate نیز Narrative Seedهای evidence-bound، Voice Pre
 Goal، Audience، Timing، Quality و Conflict می‌سنجد. Workflow Cost Gate نیز پیش از
 اجرای Metered بودجه رزرو می‌کند و مصرف واقعی/اندازه‌گیری‌نشده را بدون عددسازی ثبت می‌کند.
 Prompt/Model Registry نیز نسخه، Tier، Eval، Rollout، Data Class و Timeout هر مسیر مدل
-را ثبت کرده و تا بستن Gateها Provider بیرونی را Fail-closed نگه می‌دارد.
+را ثبت کرده و Durable Invocation Journal اجرای هر فراخوانی را فقط با Metadata و Hash
+قابل‌بازیابی می‌کند. تا بستن Gateها Provider بیرونی Fail-closed می‌ماند.
 
 ## اسناد فعلی
 
@@ -28,6 +29,7 @@ Prompt/Model Registry نیز نسخه، Tier، Eval، Rollout، Data Class و Ti
 - [Strategic Outcome Follow-up](docs/architecture/strategic-outcome-followup-v1.0.md)
 - [Workflow Cost & Budget Gate](docs/architecture/workflow-cost-budget-v1.0.md)
 - [Prompt & Model Governance](docs/architecture/prompt-model-governance-v1.0.md)
+- [Durable Model Invocation Journal](docs/architecture/model-invocation-journal-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
@@ -312,8 +314,10 @@ Compute و زمان Human Review را تسویه کند. عبور از سقف In
 هر Route بر Purpose و Schema دقیق Resolve می‌شود و فقط با Rollout فعال، Eval پاس‌شده،
 Schema Validator، Data Class مجاز، رضایت صریح پردازش بیرونی و Reservation موفق اجازهٔ
 فراخوانی دارد. Timeout و Provider failure با مبلغ `unmetered` تسویه می‌شوند تا Reservation
-معلق نماند و سیستم هزینه‌ای جعل نکند. Provider واقعی و Durable Invocation Journal هنوز
-فعال نیستند؛ بنابراین هیچ دادهٔ شخصی از این مسیر به بیرون ارسال نمی‌شود.
+معلق نماند و سیستم هزینه‌ای جعل نکند. `model-invocation-journal-v1` اکنون Adapterهای
+Memory/PostgreSQL، RLS، Idempotency و وضعیت Recovery دارد و فقط Hash/Metadata را نگه
+می‌دارد. چون Production هنوز PostgreSQL امن و Provider واقعی ندارد، Journal روی دامنه
+Memory و اجرای بیرونی خاموش است؛ بنابراین هیچ دادهٔ شخصی از این مسیر به بیرون ارسال نمی‌شود.
 
 نمای «داده و شفافیت» ردپای owner-scoped تصمیم‌ها، تأییدها، حقوق حافظه و Exportها را
 از `GET /api/account/activity` نمایش می‌دهد. کاربر از `GET /api/account/export` یک

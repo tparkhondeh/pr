@@ -982,7 +982,43 @@ export type ModelGovernanceSnapshot = Readonly<{
   providerConfigured: boolean;
   executionEnabled: boolean;
   costGateRequired: true;
-  durableInvocationJournal: false;
+  durableInvocationJournal: boolean;
+  invocationJournal: Readonly<{
+    policyVersion: 'model-invocation-journal-v1';
+    generatedAt: string;
+    persistence: 'memory' | 'postgres';
+    durable: boolean;
+    summary: Readonly<{
+      total: number;
+      started: number;
+      recoveryRequired: number;
+      succeeded: number;
+      blocked: number;
+      failed: number;
+    }>;
+    recentInvocations: readonly Readonly<{
+      id: string;
+      requestId: string;
+      requestSha256: string;
+      workflowId: string;
+      invocationId: string;
+      purpose: 'extract_evidence' | 'synthesize_hypothesis' | 'strategy_options' |
+        'draft_content' | 'evaluate_output';
+      schemaName: string;
+      registryEntryId: string;
+      promptVersion: string;
+      provider: string;
+      model: string;
+      modelTier: 'economy' | 'balanced' | 'reasoning';
+      dataClasses: readonly ('public' | 'internal' | 'confidential' | 'restricted')[];
+      externalProcessingApproved: boolean;
+      inputSha256: string;
+      status: 'started' | 'succeeded' | 'cost_blocked' | 'provider_failed' |
+        'timed_out' | 'usage_invalid' | 'output_invalid';
+      startedAt: string;
+      completedAt?: string;
+    }>[];
+  }>;
   routes: readonly Readonly<{
     id: string;
     purpose: 'extract_evidence' | 'synthesize_hypothesis' | 'strategy_options' |
@@ -3078,7 +3114,8 @@ function isModelGovernanceSnapshot(payload: unknown): payload is ModelGovernance
     !isRecord(payload) || payload['policyVersion'] !== 'prompt-model-governance-v1' ||
     typeof payload['generatedAt'] !== 'string' || typeof payload['providerConfigured'] !== 'boolean' ||
     typeof payload['executionEnabled'] !== 'boolean' || payload['costGateRequired'] !== true ||
-    payload['durableInvocationJournal'] !== false || !Array.isArray(payload['routes'])
+    typeof payload['durableInvocationJournal'] !== 'boolean' ||
+    !isModelInvocationJournal(payload['invocationJournal']) || !Array.isArray(payload['routes'])
   ) return false;
   return payload['routes'].every((route) => isRecord(route) &&
     typeof route['id'] === 'string' && isModelPurpose(route['purpose']) &&
@@ -3094,6 +3131,33 @@ function isModelGovernanceSnapshot(payload: unknown): payload is ModelGovernance
     ['disabled', 'shadow', 'canary', 'active'].includes(String(route['rollout'])) &&
     typeof route['evalSuite'] === 'string' &&
     ['not_run', 'failed', 'passed'].includes(String(route['evalStatus'])));
+}
+
+function isModelInvocationJournal(value: unknown): boolean {
+  if (!isRecord(value) || value['policyVersion'] !== 'model-invocation-journal-v1' ||
+    typeof value['generatedAt'] !== 'string' ||
+    (value['persistence'] !== 'memory' && value['persistence'] !== 'postgres') ||
+    typeof value['durable'] !== 'boolean' || !isRecord(value['summary']) ||
+    !Array.isArray(value['recentInvocations'])) return false;
+  const summary = value['summary'];
+  if (!['total', 'started', 'recoveryRequired', 'succeeded', 'blocked', 'failed']
+    .every((key) => typeof summary[key] === 'number')) return false;
+  return value['recentInvocations'].every((entry) => isRecord(entry) &&
+    typeof entry['id'] === 'string' && typeof entry['requestId'] === 'string' &&
+    typeof entry['requestSha256'] === 'string' && typeof entry['workflowId'] === 'string' &&
+    typeof entry['invocationId'] === 'string' && isModelPurpose(entry['purpose']) &&
+    typeof entry['schemaName'] === 'string' && typeof entry['registryEntryId'] === 'string' &&
+    typeof entry['promptVersion'] === 'string' && typeof entry['provider'] === 'string' &&
+    typeof entry['model'] === 'string' &&
+    ['economy', 'balanced', 'reasoning'].includes(String(entry['modelTier'])) &&
+    Array.isArray(entry['dataClasses']) && entry['dataClasses'].every((dataClass) =>
+      ['public', 'internal', 'confidential', 'restricted'].includes(String(dataClass))) &&
+    typeof entry['externalProcessingApproved'] === 'boolean' &&
+    typeof entry['inputSha256'] === 'string' &&
+    ['started', 'succeeded', 'cost_blocked', 'provider_failed', 'timed_out',
+      'usage_invalid', 'output_invalid'].includes(String(entry['status'])) &&
+    typeof entry['startedAt'] === 'string' &&
+    (entry['completedAt'] === undefined || typeof entry['completedAt'] === 'string'));
 }
 
 function isModelPurpose(value: unknown): boolean {

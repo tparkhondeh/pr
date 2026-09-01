@@ -114,6 +114,10 @@ const workflowCostMigrationPath = fileURLToPath(
   new URL('../db/migrations/0027_workflow_cost_budget.sql', import.meta.url),
 );
 const workflowCostSql = readFileSync(workflowCostMigrationPath, 'utf8');
+const modelInvocationJournalMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0028_model_invocation_journal.sql', import.meta.url),
+);
+const modelInvocationJournalSql = readFileSync(modelInvocationJournalMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -257,6 +261,19 @@ describe('foundation migration', () => {
     expect(workflowCostSql).toContain("cost_evidence <> 'none' OR actual_cost_minor_units = 0");
     expect(workflowCostSql).toContain('actual_cost_minor_units =');
     expect(workflowCostSql).toContain('Unknown cost is stored as unmetered zero, never invented');
+  });
+
+  it('adds a tenant-isolated durable model invocation journal without raw model content', () => {
+    defineMigration('0028_model_invocation_journal', modelInvocationJournalSql);
+    expect(modelInvocationJournalSql).toContain('CREATE TABLE app.model_invocations');
+    expect(modelInvocationJournalSql).toContain(
+      'ALTER TABLE app.model_invocations FORCE ROW LEVEL SECURITY',
+    );
+    expect(modelInvocationJournalSql).toContain('CREATE POLICY model_invocations_tenant_isolation');
+    expect(modelInvocationJournalSql).toContain("status IN (\n    'started', 'succeeded', 'cost_blocked'");
+    expect(modelInvocationJournalSql).toContain('model invocation journal permits one terminal transition only');
+    expect(modelInvocationJournalSql).toContain('raw prompt, input, and output content are intentionally excluded');
+    expect(modelInvocationJournalSql).not.toMatch(/\b(prompt_text|input_text|output_text|raw_prompt|raw_output)\b/u);
   });
 
   it('defines the required tenant-owned tables', () => {

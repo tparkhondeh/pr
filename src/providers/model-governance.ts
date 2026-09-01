@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { TenantId, UserId } from '../kernel/identity.js';
 import type {
   CostEvidence,
+  WorkflowCostCharge,
   WorkflowCostControlService,
   WorkflowCostKind,
 } from '../observability/workflow-cost-control.js';
@@ -12,6 +13,12 @@ import type {
   ModelResult,
   ModelUsage,
 } from './model-gateway.js';
+import {
+  ModelInvocationConflictError,
+  type ModelInvocationJournalService,
+  type ModelInvocationJournalSnapshot,
+  modelInvocationValueHash,
+} from './model-invocation-journal.js';
 
 export const modelGovernancePolicyVersion = 'prompt-model-governance-v1' as const;
 
@@ -45,7 +52,8 @@ export type ModelGovernanceSnapshot = Readonly<{
   providerConfigured: boolean;
   executionEnabled: boolean;
   costGateRequired: true;
-  durableInvocationJournal: false;
+  durableInvocationJournal: boolean;
+  invocationJournal: ModelInvocationJournalSnapshot;
   routes: readonly PromptModelRegistryEntry[];
 }>;
 
@@ -85,21 +93,24 @@ export class ModelGovernanceService {
     private readonly registry: PromptModelRegistry,
     private readonly identity: Readonly<{ tenantId: TenantId; ownerUserId: UserId }>,
     private readonly providerConfigured: boolean,
+    private readonly invocationJournal: ModelInvocationJournalService,
   ) {}
 
-  public snapshot(actorId: UserId, at: Date): ModelGovernanceSnapshot {
+  public async snapshot(actorId: UserId, at: Date): Promise<ModelGovernanceSnapshot> {
     if (actorId !== this.identity.ownerUserId) {
       throw new ModelGovernancePermissionError('Only the owner may inspect model governance.');
     }
     const routes = this.registry.list();
+    const invocationJournal = await this.invocationJournal.snapshot(actorId, at);
     return {
       policyVersion: modelGovernancePolicyVersion,
       generatedAt: at,
       providerConfigured: this.providerConfigured,
-      executionEnabled: this.providerConfigured && routes.some((route) =>
+      executionEnabled: this.providerConfigured && invocationJournal.durable && routes.some((route) =>
         route.rollout === 'active' && route.evalStatus === 'passed'),
       costGateRequired: true,
-      durableInvocationJournal: false,
+      durableInvocationJournal: invocationJournal.durable,
+      invocationJournal,
       routes,
     };
   }
@@ -135,6 +146,7 @@ export class GovernedModelGateway implements ModelGateway {
   public constructor(
     private readonly registry: PromptModelRegistry,
     private readonly costs: Pick<WorkflowCostControlService, 'reserve' | 'charge'>,
+    private readonly invocationJournal: Pick<ModelInvocationJournalService, 'begin' | 'complete' | 'persistence'>,
     private readonly provider: ExternalModelProvider,
     private readonly identity: Readonly<{ tenantId: TenantId; ownerUserId: UserId }>,
     private readonly validators: ReadonlyMap<string, SchemaValidator>,
@@ -176,6 +188,36 @@ export class GovernedModelGateway implements ModelGateway {
     const validator = this.validators.get(route.schemaName);
     if (!validator) throw new ModelGovernanceDeniedError('schema_validator_missing');
 
+    let journalBegin;
+    try {
+      journalBegin = await this.invocationJournal.begin(request.actorId, {
+        requestId: request.requestId,
+        workflowId: request.workflowId,
+        invocationId: request.invocationId,
+        purpose: request.purpose,
+        schemaName: request.schemaName,
+        registryEntryId: route.id,
+        promptVersion: route.promptVersion,
+        provider: route.provider,
+        model: route.model,
+        modelTier: route.modelTier,
+        dataClasses: request.dataClasses,
+        externalProcessingApproved: request.externalProcessingApproved,
+        inputSha256: modelInvocationValueHash(request.input),
+        startedAt: request.at,
+      });
+    } catch (error) {
+      if (error instanceof ModelInvocationConflictError) {
+        throw new ModelGovernanceConflictError(
+          error.reason === 'idempotency_mismatch' ? 'idempotency_mismatch' : 'invocation_already_recorded',
+        );
+      }
+      throw error;
+    }
+    if (journalBegin.replay) {
+      throw new ModelGovernanceConflictError('invocation_already_recorded');
+    }
+
     const reservation = await this.costs.reserve(request.actorId, {
       requestId: costRequestId('reserve', request.requestId),
       workflowId: request.workflowId,
@@ -186,6 +228,14 @@ export class GovernedModelGateway implements ModelGateway {
       reservedAt: request.at,
     });
     if (reservation.decision !== 'allowed') {
+      await this.invocationJournal.complete(request.actorId, {
+        requestId: request.requestId,
+        invocationRecordId: journalBegin.record.id,
+        status: 'cost_blocked',
+        statusReason: reservation.reason ?? 'cost_gate_blocked',
+        reservationId: reservation.id,
+        completedAt: request.at,
+      });
       throw new ModelGovernanceDeniedError(`cost_gate:${reservation.reason ?? 'blocked'}`);
     }
 
@@ -205,8 +255,23 @@ export class GovernedModelGateway implements ModelGateway {
         controller,
       );
     } catch (error) {
-      await this.settleUnmeteredFailure(request, route, reservation.id);
-      if (error instanceof ModelProviderTimeoutError) throw error;
+      const charge = await this.settleUnmeteredFailure(request, route, reservation.id);
+      const timedOut = error instanceof ModelProviderTimeoutError;
+      await this.invocationJournal.complete(request.actorId, {
+        requestId: request.requestId,
+        invocationRecordId: journalBegin.record.id,
+        status: timedOut ? 'timed_out' : 'provider_failed',
+        statusReason: timedOut ? 'provider_timeout' : 'provider_failure',
+        reservationId: reservation.id,
+        chargeId: charge.id,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        costMinorUnits: 0,
+        costEvidence: 'none',
+        completedAt: request.at,
+      });
+      if (timedOut) throw error;
       throw new ModelProviderExecutionError('provider_failure', { cause: error });
     }
 
@@ -216,7 +281,22 @@ export class GovernedModelGateway implements ModelGateway {
         throw new ModelGovernanceValidationError('Provider usage metadata does not match the registry route.');
       }
     } catch (error) {
-      await this.settleUnmeteredFailure(request, route, reservation.id);
+      const charge = await this.settleUnmeteredFailure(request, route, reservation.id);
+      await this.invocationJournal.complete(request.actorId, {
+        requestId: request.requestId,
+        invocationRecordId: journalBegin.record.id,
+        status: 'usage_invalid',
+        statusReason: 'usage_metadata_invalid',
+        reservationId: reservation.id,
+        chargeId: charge.id,
+        ...(providerResult.providerTraceId ? { providerTraceId: providerResult.providerTraceId } : {}),
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        costMinorUnits: 0,
+        costEvidence: 'none',
+        completedAt: request.at,
+      });
       throw new ModelProviderExecutionError('provider_failure', { cause: error });
     }
     const charge = await this.costs.charge(request.actorId, {
@@ -234,8 +314,39 @@ export class GovernedModelGateway implements ModelGateway {
       chargedAt: request.at,
     });
     if (!validator(providerResult.output)) {
+      await this.invocationJournal.complete(request.actorId, {
+        requestId: request.requestId,
+        invocationRecordId: journalBegin.record.id,
+        status: 'output_invalid',
+        statusReason: 'schema_validation_failed',
+        reservationId: reservation.id,
+        chargeId: charge.id,
+        ...(providerResult.providerTraceId ? { providerTraceId: providerResult.providerTraceId } : {}),
+        inputTokens: providerResult.usage.inputTokens,
+        outputTokens: providerResult.usage.outputTokens,
+        cachedInputTokens: providerResult.usage.cachedInputTokens,
+        costMinorUnits: providerResult.usage.costMinorUnits,
+        costEvidence: providerResult.usage.costEvidence,
+        outputSha256: modelInvocationValueHash(providerResult.output),
+        completedAt: request.at,
+      });
       throw new ModelOutputValidationError(`Provider output does not match ${route.schemaName}.`);
     }
+    await this.invocationJournal.complete(request.actorId, {
+      requestId: request.requestId,
+      invocationRecordId: journalBegin.record.id,
+      status: 'succeeded',
+      reservationId: reservation.id,
+      chargeId: charge.id,
+      ...(providerResult.providerTraceId ? { providerTraceId: providerResult.providerTraceId } : {}),
+      inputTokens: providerResult.usage.inputTokens,
+      outputTokens: providerResult.usage.outputTokens,
+      cachedInputTokens: providerResult.usage.cachedInputTokens,
+      costMinorUnits: providerResult.usage.costMinorUnits,
+      costEvidence: providerResult.usage.costEvidence,
+      outputSha256: modelInvocationValueHash(providerResult.output),
+      completedAt: request.at,
+    });
     return {
       requestId: request.requestId,
       output: providerResult.output,
@@ -248,6 +359,8 @@ export class GovernedModelGateway implements ModelGateway {
         modelTier: route.modelTier,
         reservationId: reservation.id,
         chargeId: charge.id,
+        invocationJournalId: journalBegin.record.id,
+        invocationJournalPersistence: this.invocationJournal.persistence,
         circuitOpened: charge.circuitOpened,
       },
     };
@@ -263,8 +376,8 @@ export class GovernedModelGateway implements ModelGateway {
     request: ModelRequest<TInput>,
     route: PromptModelRegistryEntry,
     reservationId: string,
-  ): Promise<void> {
-    await this.costs.charge(request.actorId, {
+  ): Promise<WorkflowCostCharge> {
+    return await this.costs.charge(request.actorId, {
       requestId: costRequestId('charge', request.requestId),
       reservationId,
       provider: route.provider,
@@ -284,7 +397,7 @@ export class GovernedModelGateway implements ModelGateway {
 export class ModelGovernanceValidationError extends Error {}
 export class ModelGovernancePermissionError extends Error {}
 export class ModelGovernanceConflictError extends Error {
-  public constructor(public readonly reason: 'idempotency_mismatch') {
+  public constructor(public readonly reason: 'idempotency_mismatch' | 'invocation_already_recorded') {
     super(`Model governance conflict: ${reason}`);
   }
 }

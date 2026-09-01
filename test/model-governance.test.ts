@@ -22,6 +22,10 @@ import {
   type ProviderModelResult,
 } from '../src/providers/model-governance.js';
 import type { ModelRequest } from '../src/providers/model-gateway.js';
+import {
+  InMemoryModelInvocationJournalRepository,
+  ModelInvocationJournalService,
+} from '../src/providers/model-invocation-journal.js';
 
 const tenant = tenantId('tenant-model-governance');
 const owner = userId('owner-model-governance');
@@ -112,36 +116,47 @@ function fixture(
     { tenantId: tenant, ownerUserId: owner },
     policy,
   );
+  const invocationJournal = new ModelInvocationJournalService(
+    new InMemoryModelInvocationJournalRepository(),
+    { tenantId: tenant, ownerUserId: owner },
+  );
   const gateway = new GovernedModelGateway(
     new PromptModelRegistry([route]),
     costs,
+    invocationJournal,
     provider,
     { tenantId: tenant, ownerUserId: owner },
     new Map([[route.schemaName, (value: unknown) =>
       typeof value === 'object' && value !== null && Array.isArray((value as { options?: unknown }).options)]]),
   );
-  return { costs, gateway, provider };
+  return { costs, gateway, invocationJournal, provider };
 }
 
 describe('prompt and model governance', () => {
-  it('publishes a fail-closed owner-only registry snapshot', () => {
+  it('publishes a fail-closed owner-only registry snapshot', async () => {
+    const invocationJournal = new ModelInvocationJournalService(
+      new InMemoryModelInvocationJournalRepository(),
+      { tenantId: tenant, ownerUserId: owner },
+    );
     const service = new ModelGovernanceService(
       defaultPromptModelRegistry,
       { tenantId: tenant, ownerUserId: owner },
       false,
+      invocationJournal,
     );
 
-    const snapshot = service.snapshot(owner, at);
+    const snapshot = await service.snapshot(owner, at);
     expect(snapshot.executionEnabled).toBe(false);
     expect(snapshot.costGateRequired).toBe(true);
     expect(snapshot.durableInvocationJournal).toBe(false);
+    expect(snapshot.invocationJournal.persistence).toBe('memory');
     expect(snapshot.routes).toHaveLength(5);
     expect(snapshot.routes.every((route) => route.rollout === 'disabled')).toBe(true);
-    expect(() => service.snapshot(intruder, at)).toThrow(ModelGovernancePermissionError);
+    await expect(service.snapshot(intruder, at)).rejects.toBeInstanceOf(ModelGovernancePermissionError);
   });
 
   it('reserves before the provider, settles measured cost, and replays idempotently', async () => {
-    const { costs, gateway, provider } = fixture();
+    const { costs, gateway, invocationJournal, provider } = fixture();
     const first = await gateway.generateStructured(request());
     const replay = await gateway.generateStructured(request());
 
@@ -152,14 +167,18 @@ describe('prompt and model governance', () => {
     expect(snapshot.truthStatus).toBe('measured');
     expect(snapshot.day.chargedCostMinorUnits).toBe(20);
     expect(snapshot.day.activeReservedCostMinorUnits).toBe(0);
+    const journal = await invocationJournal.snapshot(owner, at);
+    expect(journal.summary.succeeded).toBe(1);
+    expect(journal.recentInvocations[0]?.status).toBe('succeeded');
   });
 
   it('rejects a request-id replay with different input', async () => {
-    const { gateway, provider } = fixture();
+    const { gateway, invocationJournal, provider } = fixture();
     await gateway.generateStructured(request());
     await expect(gateway.generateStructured(request({ input: { goal: 'different' } })))
       .rejects.toBeInstanceOf(ModelGovernanceConflictError);
     expect(provider.calls).toBe(1);
+    expect((await invocationJournal.snapshot(owner, at)).summary.total).toBe(1);
   });
 
   it.each([
@@ -174,42 +193,46 @@ describe('prompt and model governance', () => {
   });
 
   it('blocks the provider when the mandatory cost reservation exceeds policy', async () => {
-    const { gateway, provider } = fixture(activeRoute(), undefined, {
+    const { gateway, invocationJournal, provider } = fixture(activeRoute(), undefined, {
       ...defaultWorkflowCostPolicy,
       perInvocationBudgetMinorUnits: 10,
     });
     await expect(gateway.generateStructured(request())).rejects.toThrow('cost_gate:invocation_budget_exceeded');
     expect(provider.calls).toBe(0);
+    expect((await invocationJournal.snapshot(owner, at)).summary.blocked).toBe(1);
   });
 
   it('charges provider usage before rejecting an invalid structured output', async () => {
     const failingProvider = new StubProvider(() => Promise.resolve(providerResult({ wrong: true })));
-    const { costs, gateway } = fixture(activeRoute(), failingProvider);
+    const { costs, gateway, invocationJournal } = fixture(activeRoute(), failingProvider);
 
     await expect(gateway.generateStructured(request())).rejects.toBeInstanceOf(ModelOutputValidationError);
     const snapshot = await costs.snapshot(owner, at);
     expect(snapshot.day.chargedCostMinorUnits).toBe(20);
     expect(snapshot.day.activeReservedCostMinorUnits).toBe(0);
+    expect((await invocationJournal.snapshot(owner, at)).recentInvocations[0]?.status).toBe('output_invalid');
   });
 
   it('settles an unknown provider failure as unmetered instead of inventing cost', async () => {
     const failingProvider = new StubProvider(() => Promise.reject(new Error('upstream unavailable')));
-    const { costs, gateway } = fixture(activeRoute(), failingProvider);
+    const { costs, gateway, invocationJournal } = fixture(activeRoute(), failingProvider);
 
     await expect(gateway.generateStructured(request())).rejects.toBeInstanceOf(ModelProviderExecutionError);
     const snapshot = await costs.snapshot(owner, at);
     expect(snapshot.truthStatus).toBe('unmetered');
     expect(snapshot.day.chargedCostMinorUnits).toBe(0);
     expect(snapshot.day.activeReservedCostMinorUnits).toBe(0);
+    expect((await invocationJournal.snapshot(owner, at)).recentInvocations[0]?.status).toBe('provider_failed');
   });
 
   it('aborts and settles a provider timeout', async () => {
     const hangingProvider = new StubProvider(() => new Promise(() => undefined));
-    const { costs, gateway } = fixture(activeRoute({ timeoutMs: 1 }), hangingProvider);
+    const { costs, gateway, invocationJournal } = fixture(activeRoute({ timeoutMs: 1 }), hangingProvider);
 
     await expect(gateway.generateStructured(request())).rejects.toBeInstanceOf(ModelProviderTimeoutError);
     const snapshot = await costs.snapshot(owner, at);
     expect(snapshot.truthStatus).toBe('unmetered');
     expect(snapshot.day.activeReservedCostMinorUnits).toBe(0);
+    expect((await invocationJournal.snapshot(owner, at)).recentInvocations[0]?.status).toBe('timed_out');
   });
 });
