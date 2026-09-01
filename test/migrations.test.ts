@@ -157,7 +157,7 @@ describe('foundation migration', () => {
     }
     expect(relationshipSql).toContain("operation IN ('create', 'delete')");
     expect(relationshipSql).toContain("relationship_boundary IN ('normal', 'ask_before_prompt', 'do_not_prompt')");
-    expect(relationshipSql).toContain('jsonb_object_length(result_snapshot) = 1');
+    expect(relationshipSql).toContain("result_snapshot = jsonb_build_object('stakeholderId'");
     expect(relationshipSql).toContain('no contact details, outbound contact, or automation authority');
   });
 

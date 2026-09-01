@@ -154,7 +154,10 @@ async function verifyRelationshipPersistence(): Promise<void> {
              WHERE tenant_id = $1 AND owner_user_id = $2) AS active_records,
            (SELECT count(*) FROM app.stakeholder_requests
              WHERE tenant_id = $1 AND owner_user_id = $2) AS requests,
-           (SELECT bool_and(jsonb_object_length(result_snapshot) = 1 AND result_snapshot ? 'stakeholderId')
+           (SELECT bool_and(
+              jsonb_typeof(result_snapshot->'stakeholderId') = 'string' AND
+              result_snapshot = jsonb_build_object('stakeholderId', result_snapshot->'stakeholderId')
+            )
               FROM app.stakeholder_requests
              WHERE tenant_id = $1 AND owner_user_id = $2) AS minimal_requests,
            (SELECT count(*) FROM app.audit_events

@@ -42,8 +42,8 @@ CREATE TABLE app.stakeholder_requests (
   request_sha256 text NOT NULL CHECK (request_sha256 ~ '^[0-9a-f]{64}$'),
   result_snapshot jsonb NOT NULL CHECK (
     jsonb_typeof(result_snapshot) = 'object' AND
-    result_snapshot ? 'stakeholderId' AND
-    jsonb_object_length(result_snapshot) = 1
+    jsonb_typeof(result_snapshot->'stakeholderId') = 'string' AND
+    result_snapshot = jsonb_build_object('stakeholderId', result_snapshot->'stakeholderId')
   ),
   created_at timestamptz NOT NULL,
   PRIMARY KEY (tenant_id, owner_user_id, operation, client_ref),
