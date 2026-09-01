@@ -856,6 +856,14 @@ function requiredEnvironment(name: string): string {
 }
 
 await main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : 'PostgreSQL integration failed.'}\n`);
+  const message = error instanceof Error ? error.message : 'PostgreSQL integration failed.';
+  process.stderr.write(`${message}\n`);
+  if (process.env['GITHUB_ACTIONS'] === 'true') {
+    const annotation = message
+      .replaceAll('%', '%25')
+      .replaceAll('\r', '%0D')
+      .replaceAll('\n', '%0A');
+    process.stderr.write(`::error title=PostgreSQL integration::${annotation}\n`);
+  }
   process.exitCode = 1;
 });
