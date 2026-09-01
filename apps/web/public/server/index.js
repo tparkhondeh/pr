@@ -41,6 +41,8 @@ const claimReviews = new Map();
 const claimReviewRequests = new Map();
 const riskReviews = new Map();
 const riskReviewRequests = new Map();
+const arbitrationCases = new Map();
+const arbitrationRequests = new Map();
 
 const groundedActions = [
   {
@@ -216,6 +218,52 @@ export default {
       return json(await riskSnapshot());
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/arbitration') {
+      return json(await arbitrationWorkspaceSnapshot());
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/arbitration/cases') {
+      const body = await readJson(request);
+      if (!validArbitrationRequest(body)) return json({ error: 'invalid_arbitration_request' }, 400);
+      const action = snapshot().actions.find((candidate) => candidate.id === body.actionId);
+      if (!action) return json({ error: 'arbitration_action_not_found' }, 404);
+      const context = await arbitrationContext();
+      const assessment = context.risk.assessments.find((candidate) => candidate.actionId === action.id);
+      if (!assessment) return json({ error: 'arbitration_action_not_found' }, 404);
+      const currentContextHash = await arbitrationContextHash(action, context);
+      const fingerprint = await sha256Hex(JSON.stringify({
+        policyVersion: 'intermodule-arbitration-v1', actionId: action.id,
+        requestedAutonomyLevel: body.requestedAutonomyLevel, contextHash: currentContextHash,
+      }));
+      const repeated = arbitrationRequests.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json({ outcome: 'already_applied', persistence: 'ephemeral', case: repeated.case })
+          : json({ error: 'idempotency_mismatch' }, 409);
+      }
+      const arbitrationCase = await buildArbitrationCase(
+        body.requestId,
+        action,
+        body.requestedAutonomyLevel,
+        context,
+        assessment,
+      );
+      arbitrationCases.set(arbitrationCase.caseId, arbitrationCase);
+      arbitrationRequests.set(body.requestId, { fingerprint, case: arbitrationCase });
+      recordAudit(`decision.arbitrated:${body.requestId}`, {
+        eventType: 'decision.arbitrated', resourceType: 'arbitration_case',
+        resourceId: arbitrationCase.caseId, purpose: 'strategy_reasoning',
+        decision: arbitrationCase.decision.outcome,
+        metadata: {
+          actionId: action.id, requestedAutonomyLevel: body.requestedAutonomyLevel,
+          effectiveAutonomyLevel: arbitrationCase.decision.effectiveAutonomyLevel,
+          policyVersion: arbitrationCase.policyVersion, snapshotHash: arbitrationCase.snapshotHash,
+        },
+        occurredAt: arbitrationCase.createdAt,
+      });
+      return json({ outcome: 'applied', persistence: 'ephemeral', case: arbitrationCase }, 201);
+    }
+
     const riskReview = url.pathname.match(/^\/api\/risk\/actions\/([^/]+)\/reviews$/);
     if (request.method === 'POST' && riskReview?.[1]) {
       const body = await readJson(request);
@@ -287,6 +335,7 @@ export default {
           research: researchSnapshot(),
           claims: claimGovernanceSnapshot(),
           risk: await riskSnapshot(),
+          arbitration: await arbitrationWorkspaceSnapshot(),
           feedback: feedbackSnapshot(),
           activity,
         },
@@ -1199,6 +1248,205 @@ function applyRiskReview(assessment, review) {
     gate: review.decision === 'acknowledge' && assessment.level === 'yellow' ? 'allowed_with_acknowledgement' : 'blocked',
     lastReview: review,
   };
+}
+
+const arbitrationAutonomy = [
+  { level: 0, key: 'observe', label: 'مشاهده' },
+  { level: 1, key: 'analyze', label: 'تحلیل' },
+  { level: 2, key: 'recommend', label: 'پیشنهاد' },
+  { level: 3, key: 'draft', label: 'پیش‌نویس' },
+  { level: 4, key: 'prepare_action', label: 'آماده‌سازی اقدام' },
+  { level: 5, key: 'ask_approval', label: 'درخواست تأیید' },
+  { level: 6, key: 'execute_delegated', label: 'اجرای واگذارشده' },
+  { level: 7, key: 'bounded_automation', label: 'اتوماسیون محدود' },
+];
+
+async function arbitrationContext() {
+  const workbench = snapshot();
+  const risk = await riskSnapshot();
+  return { workbench, risk };
+}
+
+async function arbitrationWorkspaceSnapshot() {
+  const generatedAt = new Date();
+  const context = await arbitrationContext();
+  const availableActions = await Promise.all(context.workbench.actions.map(async (action) => ({
+    id: action.id, title: action.title, kind: action.kind,
+    evidenceCount: action.evidenceCount, confidence: action.confidence,
+    currentContextHash: await arbitrationContextHash(action, context),
+  })));
+  const hashes = new Map(availableActions.map((action) => [action.id, action.currentContextHash]));
+  return {
+    generatedAt: generatedAt.toISOString(), persistence: 'ephemeral',
+    policyVersion: 'intermodule-arbitration-v1', contractVersion: 'module-opinion-v1',
+    autonomy: arbitrationAutonomy, mvpExecutionEnabled: false,
+    availableActions,
+    cases: [...arbitrationCases.values()]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((item) => ({
+        ...item,
+        stale: hashes.get(item.action.id) !== item.contextHash ||
+          new Date(item.validUntil).getTime() <= generatedAt.getTime(),
+      })),
+  };
+}
+
+async function buildArbitrationCase(requestId, action, requestedAutonomyLevel, context, assessment) {
+  const created = new Date();
+  const opinions = arbitrationOpinions(action, assessment, context);
+  const decision = arbitrationDecision(action, requestedAutonomyLevel, opinions);
+  const unsigned = {
+    caseId: crypto.randomUUID(), requestId, policyVersion: 'intermodule-arbitration-v1',
+    createdAt: created.toISOString(),
+    validUntil: new Date(created.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+    contextHash: await arbitrationContextHash(action, context),
+    action: { id: action.id, title: action.title, kind: action.kind, hash: await arbitrationActionHash(action) },
+    request: {
+      sourceModule: 'workbench', operation: 'evaluate_action', purpose: 'strategy_reasoning',
+      requestedAutonomyLevel, readAuthority: 'owner_scoped_snapshot',
+      writeAuthority: 'append_decision_only',
+    },
+    opinions,
+    decision,
+  };
+  return { ...unsigned, snapshotHash: await sha256Hex(JSON.stringify(unsigned)) };
+}
+
+function arbitrationOpinions(action, assessment, context) {
+  const evidenceRefs = action.evidenceIds.map((id) => `evidence:${id}`);
+  const hasEvidence = action.kind === 'no_action' ||
+    (action.evidenceState === 'grounded' && action.evidenceIds.length > 0);
+  const publicFacing = ['content', 'media', 'event'].includes(action.kind);
+  const claimsReady = context.risk.claimPosture.publicReady > 0;
+  const authenticity = assessment.findings.find((finding) => finding.dimension === 'authenticity');
+  const acknowledged = assessment.lastReview?.decision === 'acknowledge';
+  const authenticityPosition = authenticity?.level === 'red'
+    ? 'hold'
+    : authenticity?.level === 'yellow' && !acknowledged
+      ? 'revise'
+      : action.evidenceState === 'grounded' && action.evidenceCount > 0
+        ? 'support'
+        : 'abstain';
+  const riskPosition = assessment.level === 'red'
+    ? 'hold'
+    : assessment.level === 'yellow' && assessment.gate === 'review_required'
+      ? 'revise'
+      : 'support';
+  return [
+    arbitrationOpinion('strategy', 'strategy-ranking-v1', action.feasible ? 'support' : 'hold', action.confidence, 2,
+      action.feasible
+        ? `اقدام با Confidence ${String(Math.round(action.confidence * 100))}٪ در بودجه فعلی قابل‌بررسی است؛ Utility به‌تنهایی تصمیم نهایی نیست.`
+        : 'اقدام از بودجه زمان یا انرژی عبور می‌کند و در Context فعلی قابل توصیه نیست.',
+      [`strategy_revision:${String(context.workbench.goal.revision)}`]),
+    arbitrationOpinion('permission', 'evidence-permission-filter-v1', hasEvidence ? 'support' : 'hold', 1, 2,
+      hasEvidence
+        ? 'فقط Evidence مالک‌محور و مجاز برای تحلیل برند در Context اقدام حاضر است.'
+        : 'برای این اقدام Evidence مجاز وجود ندارد؛ Retrieval یا Utility مجوز ایجاد نمی‌کند.',
+      evidenceRefs.length > 0 ? evidenceRefs : ['evidence:none_authorized']),
+    arbitrationOpinion('claims', 'claim-governance-v1', publicFacing ? (claimsReady ? 'support' : 'revise') : 'abstain', 1, 4,
+      publicFacing
+        ? claimsReady
+          ? `${String(context.risk.claimPosture.publicReady)} Claim با Trace کامل برای استفاده عمومی آماده است.`
+          : 'هیچ Claim عمومی با Trace کامل آماده نیست؛ آماده‌سازی اقدام باید به Draft/Claim Review برگردد.'
+        : 'اقدام بیرونیِ Claim-bearing نیست؛ Claim Registry در این تصمیم رأی نمی‌دهد.',
+      ['claim_policy:claim-governance-v1', `public_ready:${String(context.risk.claimPosture.publicReady)}`]),
+    arbitrationOpinion('risk', assessment.policyVersion, riskPosition, 1, 4, assessment.rationale,
+      [`risk_assessment:${assessment.assessmentHash}`, ...(assessment.lastReview ? [`risk_review:${assessment.lastReview.reviewId}`] : [])]),
+    arbitrationOpinion('authenticity', 'authenticity-grounding-v1', authenticityPosition,
+      authenticityPosition === 'support' ? 0.65 : 1, 3,
+      authenticityPosition === 'hold' || authenticityPosition === 'revise'
+        ? (authenticity?.rationale ?? 'Authenticity requires review.')
+        : authenticityPosition === 'support'
+          ? `${String(action.evidenceCount)} Evidence مجاز Grounding حداقلی می‌دهد؛ این رأی ادعای Voice Match کامل نیست.`
+          : 'Evidence کافی برای قضاوت اصالت وجود ندارد؛ ماژول به‌جای ساختن قطعیت رأی ممتنع می‌دهد.',
+      [`risk_assessment:${assessment.assessmentHash}`, ...evidenceRefs]),
+  ];
+}
+
+function arbitrationOpinion(module, moduleVersion, position, confidence, appliesFromAutonomyLevel, rationale, provenanceRefs) {
+  return {
+    contractVersion: 'module-opinion-v1', module, moduleVersion, position, confidence,
+    appliesFromAutonomyLevel, rationale, provenanceRefs,
+    authority: { read: 'owner_scoped_snapshot', write: 'none' },
+  };
+}
+
+function arbitrationDecision(action, requestedAutonomyLevel, opinions) {
+  const active = opinions.filter((item) => item.appliesFromAutonomyLevel <= requestedAutonomyLevel);
+  const holds = active.filter((item) => item.position === 'hold');
+  const revisions = active.filter((item) => item.position === 'revise');
+  const unknown = active.filter((item) => item.position === 'abstain');
+  const mvpDowngrade = requestedAutonomyLevel > 5;
+  const effectiveAutonomyLevel = holds.length > 0
+    ? Math.min(requestedAutonomyLevel, 1)
+    : revisions.length > 0
+      ? Math.min(requestedAutonomyLevel, 3)
+      : Math.min(requestedAutonomyLevel, 5);
+  const outcome = holds.length > 0
+    ? 'held'
+    : revisions.length > 0
+      ? 'revision_required'
+      : requestedAutonomyLevel >= 5
+        ? 'approval_required'
+        : 'recommendation_ready';
+  const externalAction = !['no_action', 'research'].includes(action.kind);
+  const rationale = outcome === 'held'
+    ? `حداقل یک Gate الزام‌آور (${holds.map((item) => item.module).join('، ')}) اقدام را متوقف کرد؛ رأی‌های Utility قادر به Override نیستند.`
+    : outcome === 'revision_required'
+      ? `پیش از ادامه، اصلاح الزام‌آور از ${revisions.map((item) => item.module).join('، ')} لازم است و مخالفت در Snapshot حفظ شد.`
+      : outcome === 'approval_required'
+        ? mvpDowngrade
+          ? 'درخواست اجرای خودکار به سقف Level 5 کاهش یافت؛ MVP هیچ Side Effect بیرونی اجرا نمی‌کند و تأیید انسانی لازم است.'
+          : 'همه Gateهای فعال عبور کرده‌اند، اما مرحله فعلی فقط درخواست تأیید انسانی است و اجرا مجاز نیست.'
+        : 'Gateهای فعال برای این سطح عبور کرده‌اند؛ نتیجه فقط Recommendation است و هیچ Side Effect ایجاد نمی‌کند.';
+  return {
+    outcome, effectiveAutonomyLevel,
+    requiresHumanApproval: requestedAutonomyLevel >= 5 || (externalAction && requestedAutonomyLevel >= 4),
+    executionPermitted: false,
+    dissentPreserved: active.some((item) => item.position !== 'support'),
+    blockingModules: [...new Set(holds.map((item) => item.module))],
+    unknownModules: [...new Set(unknown.map((item) => item.module))],
+    downgradeReasons: [
+      ...(mvpDowngrade ? ['mvp_execution_disabled'] : []),
+      ...(holds.length > 0 ? ['blocking_module_present'] : []),
+      ...(revisions.length > 0 ? ['mandatory_revision_present'] : []),
+    ],
+    appliedRules: [
+      'privacy_security_before_utility', 'permission_before_retrieval_utility',
+      'claim_and_risk_gates_are_independent', 'single_module_cannot_override_blocker',
+      'dissent_and_abstention_are_preserved', 'public_side_effect_requires_human_approval',
+      'mvp_execution_ceiling_is_level_5',
+    ],
+    rationale,
+  };
+}
+
+async function arbitrationContextHash(action, context) {
+  const assessment = context.risk.assessments.find((candidate) => candidate.actionId === action.id);
+  return sha256Hex(JSON.stringify({
+    policyVersion: 'intermodule-arbitration-v1', actionHash: await arbitrationActionHash(action),
+    strategyRevision: context.workbench.goal.revision,
+    risk: assessment ? {
+      assessmentHash: assessment.assessmentHash, gate: assessment.gate,
+      reviewId: assessment.lastReview?.reviewId ?? null,
+    } : null,
+    claims: context.risk.claimPosture,
+  }));
+}
+
+async function arbitrationActionHash(action) {
+  return sha256Hex(JSON.stringify({
+    id: action.id, kind: action.kind, title: action.title, rationale: action.rationale,
+    risks: action.risks, prerequisites: action.prerequisites, evidenceIds: action.evidenceIds,
+    evidenceState: action.evidenceState, confidence: action.confidence, riskLevel: action.riskLevel,
+    utilityScore: action.utilityScore, opportunityCost: action.opportunityCost, feasible: action.feasible,
+  }));
+}
+
+function validArbitrationRequest(body) {
+  return typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) &&
+    typeof body.actionId === 'string' && body.actionId.length > 0 && body.actionId.length <= 200 &&
+    Number.isInteger(body.requestedAutonomyLevel) && body.requestedAutonomyLevel >= 0 && body.requestedAutonomyLevel <= 7;
 }
 
 function validRiskReview(body) {

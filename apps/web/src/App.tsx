@@ -18,6 +18,7 @@ import {
   PencilLine,
   RefreshCw,
   RotateCcw,
+  Scale,
   ShieldCheck,
   Sparkles,
   ThumbsDown,
@@ -29,6 +30,7 @@ import {
   WorkbenchApiError,
   applyTextAssetRight,
   applyMemoryRight,
+  assessArbitration,
   approveWorkbenchAction,
   approveDraft,
   confirmMemoryProposal,
@@ -45,6 +47,7 @@ import {
   loadDraftSources,
   loadFeedbackLearning,
   loadAuditTrail,
+  loadArbitration,
   loadOnboarding,
   loadPersonalMemory,
   loadResearch,
@@ -56,6 +59,8 @@ import {
   saveStrategyContext,
   submitConversationTurn,
   type AppliedMemoryRight,
+  type ArbitrationWorkspaceSnapshot,
+  type AutonomyLevel,
   type AuditTrailSnapshot,
   type ConversationTurnResult,
   type DraftChannel,
@@ -99,7 +104,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'arbitration' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -136,6 +141,9 @@ export function App() {
   const [riskSnapshot, setRiskSnapshot] = useState<BrandProtectionSnapshot | null>(null);
   const [riskViewState, setRiskViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [riskViewError, setRiskViewError] = useState<string | null>(null);
+  const [arbitrationSnapshot, setArbitrationSnapshot] = useState<ArbitrationWorkspaceSnapshot | null>(null);
+  const [arbitrationViewState, setArbitrationViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
+  const [arbitrationViewError, setArbitrationViewError] = useState<string | null>(null);
   const [draftSnapshot, setDraftSnapshot] = useState<DraftWorkspaceSnapshot | null>(null);
   const [draftSources, setDraftSources] = useState<DraftSourceSnapshot | null>(null);
   const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
@@ -357,10 +365,44 @@ export function App() {
     setRiskViewError(null);
     try {
       await reviewRisk({ requestId: `risk_review_${crypto.randomUUID()}`, ...input });
-      await Promise.all([refreshRisk(), refreshAudit()]);
+      await Promise.all([refreshRisk(), refreshArbitration(), refreshAudit()]);
     } catch (caught: unknown) {
       setRiskViewError(errorMessage(caught));
       setRiskViewState('error');
+    }
+  };
+
+  const refreshArbitration = useCallback(async (signal?: AbortSignal) => {
+    setArbitrationViewState('loading');
+    setArbitrationViewError(null);
+    try {
+      const next = await loadArbitration(signal);
+      setArbitrationSnapshot(next);
+      setSelected((current) => next.availableActions.some((action) => action.id === current)
+        ? current
+        : (next.availableActions[0]?.id ?? ''));
+      setArbitrationViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setArbitrationViewError(errorMessage(caught));
+      setArbitrationViewState('error');
+    }
+  }, []);
+
+  const submitArbitration = async (actionId: string, requestedAutonomyLevel: AutonomyLevel) => {
+    if (arbitrationViewState === 'mutating') return;
+    setArbitrationViewState('mutating');
+    setArbitrationViewError(null);
+    try {
+      await assessArbitration({
+        requestId: `arbitration_${crypto.randomUUID()}`,
+        actionId,
+        requestedAutonomyLevel,
+      });
+      await Promise.all([refreshArbitration(), refreshAudit()]);
+    } catch (caught: unknown) {
+      setArbitrationViewError(errorMessage(caught));
+      setArbitrationViewState('error');
     }
   };
 
@@ -697,6 +739,14 @@ export function App() {
         ? String(riskSnapshot.summary.blocked + riskSnapshot.summary.reviewRequired)
         : undefined,
     },
+    {
+      label: 'داوری تصمیم',
+      icon: Scale,
+      view: 'arbitration' as const,
+      badge: arbitrationSnapshot?.cases.filter((item) => item.decision.outcome === 'held' && !item.stale).length
+        ? String(arbitrationSnapshot.cases.filter((item) => item.decision.outcome === 'held' && !item.stale).length)
+        : undefined,
+    },
     { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
     { label: 'پیش‌نویس', icon: PencilLine, view: 'draft' as const },
     {
@@ -731,6 +781,7 @@ export function App() {
                 if (view === 'research') void refreshResearch();
                 if (view === 'claims') void refreshClaims();
                 if (view === 'risk') void refreshRisk();
+                if (view === 'arbitration') void refreshArbitration();
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
                 if (view === 'learning') void refreshFeedback();
@@ -763,6 +814,8 @@ export function App() {
                 ? 'هیچ ادعایی بدون Trace عمومی نشود.'
               : activeView === 'risk'
                 ? 'ریسک باید قبل از اقدام دیده و پذیرفته شود.'
+              : activeView === 'arbitration'
+                ? 'اختلاف ماژول‌ها باید دیده شود، نه حذف.'
               : activeView === 'intake'
                 ? 'اولین شاهد واقعی را وارد کنید.'
               : activeView === 'strategy'
@@ -824,6 +877,16 @@ export function App() {
             onReview={submitRiskReview}
             snapshot={riskSnapshot}
             state={riskViewState}
+          />
+        ) : activeView === 'arbitration' ? (
+          <DecisionArbitrationPanel
+            error={arbitrationViewError}
+            onAssess={submitArbitration}
+            onRefresh={() => refreshArbitration()}
+            onSelect={setSelected}
+            selectedActionId={selected}
+            snapshot={arbitrationSnapshot}
+            state={arbitrationViewState}
           />
         ) : activeView === 'strategy' ? (
           <StrategyPanel
@@ -1939,6 +2002,134 @@ function researchFreshnessLabel(freshness: ResearchWorkspaceSnapshot['sources'][
   return { fresh: 'تازه', aging: 'نزدیک بازبینی', stale: 'کهنه' }[freshness];
 }
 
+function DecisionArbitrationPanel({
+  error,
+  onAssess,
+  onRefresh,
+  onSelect,
+  selectedActionId,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onAssess: (actionId: string, level: AutonomyLevel) => Promise<void>;
+  onRefresh: () => Promise<void>;
+  onSelect: (actionId: string) => void;
+  selectedActionId: string;
+  snapshot: ArbitrationWorkspaceSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
+}>) {
+  const [level, setLevel] = useState<AutonomyLevel>(2);
+  if ((state === 'idle' || state === 'loading') && !snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><LoaderCircle className="spin" size={24} /><h2>در حال جمع‌آوری رأی ماژول‌ها…</h2><p>Strategy، Permission، Claim، Risk و Authenticity مستقل بررسی می‌شوند.</p></section>;
+  }
+  if (!snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><TriangleAlert size={25} /><h2>مرکز داوری در دسترس نیست</h2><p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p><button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button></section>;
+  }
+  const selectedAction = snapshot.availableActions.find((action) => action.id === selectedActionId)
+    ?? snapshot.availableActions[0];
+  const cases = snapshot.cases.filter((item) => item.action.id === selectedAction.id);
+  return (
+    <section className="arbitration-center" aria-label="داوری تصمیم بین ماژول‌ها">
+      <header className="draft-head">
+        <div>
+          <p className="overline">Inter-module Contract · Arbitration · Autonomy</p>
+          <h2>هیچ ماژولی به‌تنهایی تصمیم نهایی نیست</h2>
+          <p>هر رأی با Provenance، Confidence و Authority محدود ثبت می‌شود. مخالفت یا «نمی‌دانم» حذف نمی‌شود و سقف MVP فقط Level 5 است؛ Execution همیشه خاموش می‌ماند.</p>
+        </div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button"><RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> تازه‌سازی Context</button>
+      </header>
+
+      <form className="arbitration-request" onSubmit={(event) => { event.preventDefault(); void onAssess(selectedAction.id, level); }}>
+        <label>
+          اقدام مورد بررسی
+          <select onChange={(event) => { onSelect(event.target.value); }} value={selectedAction.id}>
+            {snapshot.availableActions.map((action) => (
+              <option key={action.id} value={action.id}>{action.title} · {action.evidenceCount} شاهد</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          سطح Autonomy درخواستی
+          <select onChange={(event) => { setLevel(Number(event.target.value) as AutonomyLevel); }} value={level}>
+            {snapshot.autonomy.map((item) => (
+              <option key={item.level} value={item.level}>Level {item.level} — {item.label}</option>
+            ))}
+          </select>
+        </label>
+        <button disabled={state === 'mutating'} type="submit">
+          {state === 'mutating' ? <LoaderCircle className="spin" size={16} /> : <Scale size={16} />}
+          {state === 'mutating' ? 'در حال داوری…' : 'ثبت Snapshot داوری'}
+        </button>
+        <small><LockKeyhole size={14} /> اختیار این درخواست فقط `append_decision_only` است؛ هیچ ماژولی Write یا Execute نمی‌کند.</small>
+      </form>
+
+      {cases.length === 0 ? (
+        <div className="arbitration-empty"><Scale size={24} /><h3>هنوز Snapshot داوری برای این اقدام ثبت نشده</h3><p>سطح موردنظر را انتخاب کنید تا رأی مستقل Gateها و سقف مؤثر Autonomy ثبت شود.</p></div>
+      ) : (
+        <div className="arbitration-cases">
+          {cases.map((item) => (
+            <article className={`arbitration-case outcome-${item.decision.outcome}`} key={item.caseId}>
+              <header>
+                <div>
+                  <span className="overline">{item.stale ? 'STALE SNAPSHOT' : item.policyVersion}</span>
+                  <h3>{item.action.title}</h3>
+                </div>
+                <strong>{arbitrationOutcomeLabel(item.decision.outcome)}</strong>
+              </header>
+              <p>{item.decision.rationale}</p>
+              <div className="arbitration-summary">
+                <span>درخواست: Level {item.request.requestedAutonomyLevel}</span>
+                <span>سقف مؤثر: Level {item.decision.effectiveAutonomyLevel}</span>
+                <span>{item.decision.requiresHumanApproval ? 'تأیید انسانی لازم' : 'فعلاً فقط Recommendation'}</span>
+                <span className="execution-off">Execution: خاموش</span>
+              </div>
+              <div className="module-opinions">
+                {item.opinions.map((opinion) => (
+                  <div className={`module-opinion opinion-${opinion.position}`} key={opinion.module}>
+                    <header><b>{arbitrationModuleLabel(opinion.module)}</b><span>{modulePositionLabel(opinion.position)}</span></header>
+                    <p>{opinion.rationale}</p>
+                    <small>از Level {opinion.appliesFromAutonomyLevel} · Confidence {Math.round(opinion.confidence * 100)}٪ · Write: none</small>
+                  </div>
+                ))}
+              </div>
+              <footer>
+                <span>مخالفت حفظ شد: {item.decision.dissentPreserved ? 'بله' : 'خیر'}</span>
+                <span>اعتبار تا {formatDate(item.validUntil)}</span>
+                <code>{item.snapshotHash.slice(0, 12)}</code>
+              </footer>
+            </article>
+          ))}
+        </div>
+      )}
+      {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
+    </section>
+  );
+}
+
+function arbitrationOutcomeLabel(outcome: ArbitrationWorkspaceSnapshot['cases'][number]['decision']['outcome']): string {
+  return {
+    recommendation_ready: 'پیشنهاد آماده',
+    revision_required: 'نیازمند اصلاح',
+    approval_required: 'نیازمند تأیید',
+    held: 'متوقف',
+  }[outcome];
+}
+
+function arbitrationModuleLabel(module: ArbitrationWorkspaceSnapshot['cases'][number]['opinions'][number]['module']): string {
+  return {
+    strategy: 'Strategy',
+    permission: 'Permission',
+    claims: 'Claims',
+    risk: 'Risk',
+    authenticity: 'Authenticity',
+  }[module];
+}
+
+function modulePositionLabel(position: ArbitrationWorkspaceSnapshot['cases'][number]['opinions'][number]['position']): string {
+  return { support: 'حمایت', revise: 'اصلاح', hold: 'وتو', abstain: 'امتناع' }[position];
+}
+
 function BrandProtectionPanel({
   error,
   onRefresh,
@@ -2835,6 +3026,11 @@ function errorMessage(error: unknown): string {
     assessment_changed: 'ارزیابی ریسک تغییر کرده است؛ نسخه تازه را دوباره مرور کنید.',
     invalid_decision: 'این تصمیم برای سطح فعلی ریسک مجاز نیست.',
     risk_failed: 'ارزیابی یا ثبت تصمیم ریسک کامل نشد.',
+    arbitration_unavailable: 'مرکز داوری در دسترس نیست و هیچ سطح Autonomy افزایش نیافت.',
+    invalid_arbitration_request: 'اقدام، شناسه درخواست یا سطح Autonomy معتبر نیست.',
+    arbitration_permission_denied: 'فقط مالک می‌تواند Snapshot داوری ثبت کند.',
+    arbitration_action_not_found: 'اقدام در Context فعلی دیگر وجود ندارد؛ فهرست را تازه کنید.',
+    arbitration_failed: 'جمع‌آوری رأی ماژول‌ها کامل نشد و هیچ اختیاری صادر نشد.',
     drafts_unavailable: 'Draft Studio در دسترس نیست.',
     invalid_draft_input: 'اطلاعات Draft ناقص یا خارج از محدودیت‌های پلتفرم است.',
     draft_permission_denied: 'مجوز صریح مالک برای استفاده از این حافظه در Draft وجود ندارد.',

@@ -490,6 +490,43 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
 .risk-review-form button { justify-self: start; display: inline-flex; gap: 7px; align-items: center; padding: 9px 14px; color: white; border: 0; border-radius: 3px; background: var(--forest); cursor: pointer; }
 .risk-crisis-note { display: flex; gap: 8px; align-items: flex-start; margin: 0; padding: 13px 16px; color: #80552f; border: 1px solid #e6c8a8; border-radius: 4px; background: #fff7ed; line-height: 1.7; }
 
+.arbitration-center { display: grid; gap: 16px; }
+.arbitration-request { display: grid; grid-template-columns: minmax(220px, 1.4fr) minmax(190px, .8fr) auto; gap: 12px; align-items: end; padding: 18px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); }
+.arbitration-request label { display: grid; gap: 7px; color: var(--muted); font-size: 10px; }
+.arbitration-request select { width: 100%; padding: 10px; color: var(--ink); border: 1px solid var(--line); border-radius: 3px; background: white; font: inherit; }
+.arbitration-request button { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-height: 38px; padding: 9px 14px; color: white; border: 0; border-radius: 3px; background: var(--forest); cursor: pointer; }
+.arbitration-request button:disabled { cursor: not-allowed; opacity: .65; }
+.arbitration-request > small { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; color: #65756c; line-height: 1.6; }
+.arbitration-empty { display: grid; justify-items: center; gap: 7px; padding: 38px 24px; color: var(--muted); border: 1px dashed #b9c6bf; border-radius: 5px; text-align: center; }
+.arbitration-empty h3, .arbitration-empty p { margin: 0; }
+.arbitration-cases { display: grid; gap: 14px; }
+.arbitration-case { overflow: hidden; border: 1px solid var(--line); border-inline-start: 4px solid #668a77; border-radius: 5px; background: var(--paper); }
+.arbitration-case.outcome-held { border-inline-start-color: #c44d47; }
+.arbitration-case.outcome-revision_required { border-inline-start-color: #d3a225; }
+.arbitration-case.outcome-approval_required { border-inline-start-color: #4d75a7; }
+.arbitration-case > header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding: 17px 19px 8px; }
+.arbitration-case > header h3 { margin: 4px 0 0; font-size: 16px; }
+.arbitration-case > header > strong { padding: 5px 8px; color: #315f48; border-radius: 3px; background: #e9f4ee; font-size: 10px; }
+.arbitration-case > p { margin: 0; padding: 0 19px 14px; color: var(--muted); line-height: 1.8; }
+.arbitration-summary { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 19px 14px; }
+.arbitration-summary span { padding: 5px 8px; border-radius: 3px; background: #eef0ed; color: #53645b; font-size: 9px; }
+.arbitration-summary .execution-off { color: #9b3f3b; background: #fff0ee; }
+.module-opinions { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; border-block: 1px solid var(--line); background: var(--line); }
+.module-opinion { display: grid; align-content: start; gap: 7px; min-height: 150px; padding: 13px; background: #f8f8f5; }
+.module-opinion > header { display: flex; justify-content: space-between; gap: 7px; align-items: center; }
+.module-opinion > header b { font-size: 10px; }
+.module-opinion > header span { padding: 3px 5px; border-radius: 3px; background: #e3ede7; color: #315f48; font-size: 8px; }
+.module-opinion p { margin: 0; color: #56665d; font-size: 10px; line-height: 1.75; }
+.module-opinion small { color: #7b8881; font-size: 8px; line-height: 1.6; }
+.module-opinion.opinion-hold { background: #fff0ee; }
+.module-opinion.opinion-hold > header span { color: #9b3f3b; background: #ffdcd8; }
+.module-opinion.opinion-revise { background: #fff8e6; }
+.module-opinion.opinion-revise > header span { color: #8a620b; background: #fce9b5; }
+.module-opinion.opinion-abstain { background: #f1f2f0; }
+.module-opinion.opinion-abstain > header span { color: #5f6964; background: #dfe2df; }
+.arbitration-case > footer { display: flex; flex-wrap: wrap; gap: 12px; padding: 11px 19px; color: var(--muted); font-size: 9px; }
+.arbitration-case > footer code { direction: ltr; margin-inline-start: auto; font: 9px Consolas, monospace; }
+
 @media (max-width: 980px) {
   .shell { grid-template-columns: 78px minmax(0, 1fr); }
   .rail { padding-inline: 12px; }
@@ -507,6 +544,7 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
   .claim-attestation { grid-column: auto; }
   .risk-review-form { grid-template-columns: 1fr; }
   .risk-review-form .claim-attestation { grid-column: auto; }
+  .module-opinions { grid-template-columns: 1fr 1fr; }
   .audit-layout { grid-template-columns: 1fr; }
 }
 
@@ -547,6 +585,9 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
   .claim-summary { grid-template-columns: 1fr 1fr; }
   .claim-proof-grid { grid-template-columns: 1fr 1fr; }
   .risk-summary { grid-template-columns: 1fr 1fr; }
+  .arbitration-request { grid-template-columns: 1fr; }
+  .arbitration-request > small { grid-column: auto; }
+  .module-opinions { grid-template-columns: 1fr; }
   .data-rights-actions { align-items: stretch; flex-direction: column; }
   .audit-summary { grid-template-columns: 1fr 1fr; }
   .audit-timeline li > div { grid-template-columns: 1fr; }

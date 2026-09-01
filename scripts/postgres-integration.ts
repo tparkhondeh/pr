@@ -2,6 +2,10 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Client, type QueryResultRow } from 'pg';
 import {
+  DecisionArbitrationService,
+  PostgresArbitrationRepository,
+} from '../src/arbitration/decision-arbitration.js';
+import {
   applyMigrations,
   type MigrationConnection,
 } from '../src/database/migration-runner.js';
@@ -16,7 +20,7 @@ import {
   PostgresRiskReviewRepository,
   assessAction,
 } from '../src/risk/brand-protection.js';
-import type { WorkbenchAction } from '../src/workbench/workbench.js';
+import type { WorkbenchAction, WorkbenchSnapshot } from '../src/workbench/workbench.js';
 
 const tenantA = '11111111-1111-4111-8111-111111111111';
 const tenantB = '22222222-2222-4222-8222-222222222222';
@@ -59,12 +63,96 @@ async function main(): Promise<void> {
     await verifyRuntimeIsolation(client);
     await verifyBrandRiskPersistence();
     await verifyConversationOrchestrationPersistence();
+    await verifyArbitrationPersistence();
     await verifyRuntimeReadiness(connectionString);
     process.stdout.write(
       `PostgreSQL integration passed (${String(migrations.length)} migrations, RLS enforced).\n`,
     );
   } finally {
     await client.end();
+  }
+}
+
+async function verifyArbitrationPersistence(): Promise<void> {
+  const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
+  const owner = userId(userA);
+  const activeTenant = tenantId(tenantA);
+  const action: WorkbenchAction = {
+    id: 'arbitration_integration_action', kind: 'content', title: 'اقدام Arbitration Integration',
+    rationale: 'یک اقدام مستند که باید از قرارداد بین‌ماژولی عبور کند.',
+    benefits: ['اعتماد'], risks: ['برداشت نادرست'], prerequisites: ['Claim Check'],
+    evidenceIds: ['integration-evidence'], evidenceCount: 1, confidence: 0.79,
+    riskLevel: 'medium', attentionCostMinutes: 20, energyCost: 2, feasible: true,
+    utilityScore: 69, opportunityCost: 1, rank: 1, evidenceState: 'grounded',
+    evidenceSourceTypes: ['text_asset'], interaction: 'approve',
+  };
+  const workbenchSnapshot: WorkbenchSnapshot = {
+    generatedAt: '2026-08-31T22:48:00.000Z',
+    runtime: { source: 'node_api', persistence: 'postgres' },
+    profile: { maturityPercent: 20, evidenceCount: 1, openContradictions: 0 },
+    goal: {
+      id: 'integration-goal', revision: 1, title: 'اعتماد', outcome: 'تعامل عمیق',
+      successMetrics: ['کیفیت'],
+    },
+    attentionBudget: { availableMinutes: 150, maximumEnergyCost: 3 },
+    evidence: {
+      state: 'grounded', strategyEvidenceCount: 1, withheldEvidenceCount: 0,
+      sourceTypes: ['text_asset'],
+    },
+    actions: [action],
+    workflow: { id: 'workbench_today', status: 'awaiting_approval', revision: 2 },
+  };
+  const risk = new BrandProtectionService(
+    new PostgresRiskReviewRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
+    { tenantId: activeTenant, ownerUserId: owner },
+  );
+  const service = new DecisionArbitrationService(
+    new PostgresArbitrationRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
+    { tenantId: activeTenant, ownerUserId: owner },
+    { workbench: { snapshot: () => Promise.resolve(workbenchSnapshot) }, risk },
+  );
+  const request = {
+    actorId: owner,
+    requestId: 'arbitration_integration_v1',
+    actionId: action.id,
+    requestedAutonomyLevel: 7,
+    occurredAt: new Date('2026-08-31T22:48:00.000Z'),
+  } as const;
+  try {
+    const first = await service.assess(request);
+    const replay = await service.assess(request);
+    if (
+      first.outcome !== 'applied' || replay.outcome !== 'already_applied' ||
+      first.snapshot.decision.effectiveAutonomyLevel > 5 ||
+      first.snapshot.opinions.length !== 5
+    ) {
+      throw new Error('Arbitration persistence contract was not stable across replay.');
+    }
+    await runtime.transaction(async (transaction) => {
+      await transaction.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
+      const stored = await transaction.query<Readonly<{
+        policy_version: string;
+        requested_autonomy_level: number;
+        result_snapshot: Record<string, unknown>;
+      }>>(
+        `SELECT policy_version, requested_autonomy_level, result_snapshot
+           FROM app.arbitration_cases
+          WHERE tenant_id = $1 AND owner_user_id = $2 AND client_ref = $3`,
+        [tenantA, userA, request.requestId],
+      );
+      const row = stored.rows[0];
+      const decision = row?.result_snapshot['decision'];
+      if (
+        row?.policy_version !== 'intermodule-arbitration-v1' ||
+        row.requested_autonomy_level !== 7 ||
+        typeof decision !== 'object' || decision === null ||
+        (decision as Record<string, unknown>)['executionPermitted'] !== false
+      ) {
+        throw new Error('Stored arbitration snapshot is incomplete or permits execution.');
+      }
+    });
+  } finally {
+    await runtime.close();
   }
 }
 

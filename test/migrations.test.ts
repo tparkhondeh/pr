@@ -82,6 +82,10 @@ const conversationOrchestrationMigrationPath = fileURLToPath(
   new URL('../db/migrations/0019_conversation_orchestration.sql', import.meta.url),
 );
 const conversationOrchestrationSql = readFileSync(conversationOrchestrationMigrationPath, 'utf8');
+const arbitrationMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0020_inter_module_arbitration.sql', import.meta.url),
+);
+const arbitrationSql = readFileSync(arbitrationMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -106,6 +110,19 @@ describe('foundation migration', () => {
     expect(conversationOrchestrationSql).toContain('no_silent_cross_module_write');
     expect(conversationOrchestrationSql).toContain('orchestration_snapshot ?& ARRAY');
     expect(conversationOrchestrationSql).not.toContain("'userText'");
+  });
+
+  it('adds append-only, tenant-isolated inter-module arbitration with an execution ceiling', () => {
+    defineMigration('0020_inter_module_arbitration', arbitrationSql);
+    expect(arbitrationSql).toContain('CREATE TABLE app.arbitration_cases');
+    expect(arbitrationSql).toContain('ALTER TABLE app.arbitration_cases FORCE ROW LEVEL SECURITY');
+    expect(arbitrationSql).toContain('CREATE POLICY arbitration_cases_tenant_isolation');
+    expect(arbitrationSql).toContain("policy_version = 'intermodule-arbitration-v1'");
+    expect(arbitrationSql).toContain('requested_autonomy_level BETWEEN 0 AND 7');
+    expect(arbitrationSql).toContain("executionPermitted' = 'false'");
+    expect(arbitrationSql).toContain('effectiveAutonomyLevel');
+    expect(arbitrationSql).toContain('BETWEEN 0 AND 5');
+    expect(arbitrationSql).toContain('UNIQUE (tenant_id, owner_user_id, client_ref)');
   });
 
   it('defines the required tenant-owned tables', () => {

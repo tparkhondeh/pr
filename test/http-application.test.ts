@@ -2,6 +2,10 @@ import { createServer } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AuditTrailService, InMemoryAuditTrailRepository } from '../src/account/audit-trail.js';
 import {
+  DecisionArbitrationService,
+  InMemoryArbitrationRepository,
+} from '../src/arbitration/decision-arbitration.js';
+import {
   InMemoryTextAssetRepository,
   TextAssetIntakeService,
 } from '../src/assets/text-asset-intake.js';
@@ -123,6 +127,125 @@ describe('operational endpoints', () => {
     expect(payload.workflow.status).toBe('awaiting_approval');
     expect(payload.actions.some((action) => action.kind === 'no_action')).toBe(true);
     expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('creates an auditable arbitration case without granting execution authority', async () => {
+    const fixedTime = new Date('2026-08-31T12:03:00.000Z');
+    const owner = userId('owner_primary');
+    const activeTenant = tenantId('tenant_primary');
+    const workbench = createDefaultWorkbenchService(
+      () => fixedTime,
+      undefined,
+      { tenantId: activeTenant, ownerUserId: owner },
+      undefined,
+      groundedEvidence(fixedTime),
+    );
+    const risk = new BrandProtectionService(new InMemoryRiskReviewRepository(), {
+      tenantId: activeTenant,
+      ownerUserId: owner,
+    });
+    const arbitration = new DecisionArbitrationService(
+      new InMemoryArbitrationRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+      { workbench, risk },
+    );
+    const auditTrail = new AuditTrailService(new InMemoryAuditTrailRepository(), {
+      tenantId: activeTenant,
+      ownerUserId: owner,
+    });
+    const dependencies: ApplicationDependencies = {
+      workbench,
+      risk,
+      arbitration,
+      mutationAuditTrail: auditTrail,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+
+    const created = await request(
+      '/api/arbitration/cases',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'arbitration_http_wait',
+          actionId: 'wait',
+          requestedAutonomyLevel: 7,
+        }),
+      },
+      dependencies,
+    );
+    expect(created.status).toBe(201);
+    await expect(created.json()).resolves.toMatchObject({
+      outcome: 'applied',
+      persistence: 'memory',
+      case: {
+        policyVersion: 'intermodule-arbitration-v1',
+        request: { requestedAutonomyLevel: 7, writeAuthority: 'append_decision_only' },
+        decision: {
+          outcome: 'approval_required',
+          effectiveAutonomyLevel: 5,
+          executionPermitted: false,
+          downgradeReasons: ['mvp_execution_disabled'],
+        },
+      },
+    });
+
+    const replay = await request(
+      '/api/arbitration/cases',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'arbitration_http_wait',
+          actionId: 'wait',
+          requestedAutonomyLevel: 7,
+        }),
+      },
+      dependencies,
+    );
+    expect(replay.status).toBe(200);
+    await expect(replay.json()).resolves.toMatchObject({ outcome: 'already_applied' });
+
+    const workspace = await request(
+      '/api/arbitration',
+      () => ({ ready: true }),
+      undefined,
+      dependencies,
+    );
+    await expect(workspace.json()).resolves.toMatchObject({
+      policyVersion: 'intermodule-arbitration-v1',
+      mvpExecutionEnabled: false,
+      cases: [{ stale: false, decision: { executionPermitted: false } }],
+    });
+    const activity = await auditTrail.snapshot(owner, fixedTime);
+    expect(activity.events.filter((event) => event.eventType === 'decision.arbitrated')).toHaveLength(1);
+  });
+
+  it('fails arbitration closed without an authenticated owner', async () => {
+    const response = await request(
+      '/api/arbitration/cases',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'arbitration_unauthenticated',
+          actionId: 'wait',
+          requestedAutonomyLevel: 2,
+        }),
+      },
+      {
+        arbitration: {
+          snapshot: () => Promise.reject(new Error('must not be called')),
+          assess: () => Promise.reject(new Error('must not be called')),
+        },
+      },
+    );
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: 'authentication_required' });
   });
 
   it('accepts a human approval and returns the evolved workflow', async () => {

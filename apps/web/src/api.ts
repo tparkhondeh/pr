@@ -285,6 +285,78 @@ export type RiskReviewResult = Readonly<{
   review: RiskReviewRecord;
 }>;
 
+export type AutonomyLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+export type ArbitrationModule = 'strategy' | 'permission' | 'claims' | 'risk' | 'authenticity';
+export type ArbitrationOutcome = 'recommendation_ready' | 'revision_required' | 'approval_required' | 'held';
+
+export type ModuleOpinion = Readonly<{
+  contractVersion: 'module-opinion-v1';
+  module: ArbitrationModule;
+  moduleVersion: string;
+  position: 'support' | 'revise' | 'hold' | 'abstain';
+  confidence: number;
+  appliesFromAutonomyLevel: AutonomyLevel;
+  rationale: string;
+  provenanceRefs: readonly string[];
+  authority: Readonly<{ read: 'owner_scoped_snapshot'; write: 'none' }>;
+}>;
+
+export type ArbitrationCase = Readonly<{
+  caseId: string;
+  requestId: string;
+  policyVersion: 'intermodule-arbitration-v1';
+  createdAt: string;
+  validUntil: string;
+  contextHash: string;
+  snapshotHash: string;
+  action: Readonly<{ id: string; title: string; kind: WorkbenchAction['kind']; hash: string }>;
+  request: Readonly<{
+    sourceModule: 'workbench';
+    operation: 'evaluate_action';
+    purpose: 'strategy_reasoning';
+    requestedAutonomyLevel: AutonomyLevel;
+    readAuthority: 'owner_scoped_snapshot';
+    writeAuthority: 'append_decision_only';
+  }>;
+  opinions: readonly ModuleOpinion[];
+  decision: Readonly<{
+    outcome: ArbitrationOutcome;
+    effectiveAutonomyLevel: AutonomyLevel;
+    requiresHumanApproval: boolean;
+    executionPermitted: false;
+    dissentPreserved: boolean;
+    blockingModules: readonly ArbitrationModule[];
+    unknownModules: readonly ArbitrationModule[];
+    downgradeReasons: readonly string[];
+    appliedRules: readonly string[];
+    rationale: string;
+  }>;
+}>;
+
+export type ArbitrationWorkspaceSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  policyVersion: 'intermodule-arbitration-v1';
+  contractVersion: 'module-opinion-v1';
+  autonomy: readonly Readonly<{ level: AutonomyLevel; key: string; label: string }>[];
+  mvpExecutionEnabled: false;
+  availableActions: readonly Readonly<{
+    id: string;
+    title: string;
+    kind: WorkbenchAction['kind'];
+    evidenceCount: number;
+    confidence: number;
+    currentContextHash: string;
+  }>[];
+  cases: readonly Readonly<ArbitrationCase & { stale: boolean }>[];
+}>;
+
+export type ArbitrationAssessmentResult = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  case: ArbitrationCase;
+}>;
+
 export type DraftChannel = 'linkedin' | 'instagram' | 'x' | 'youtube' | 'podcast' | 'newsletter' | 'blog';
 export type DraftSourceKind = 'memory' | 'text_asset';
 
@@ -617,6 +689,7 @@ export type AccountDataExport = Readonly<{
     research: ResearchWorkspaceSnapshot | null;
     claims: ClaimGovernanceSnapshot | null;
     risk: BrandProtectionSnapshot | null;
+    arbitration: ArbitrationWorkspaceSnapshot | null;
     draft: DraftWorkspaceSnapshot | null;
     feedback: FeedbackLearningSnapshot;
     activity: AuditTrailSnapshot;
@@ -738,6 +811,37 @@ export async function loadRisk(signal?: AbortSignal): Promise<BrandProtectionSna
   });
   if (!isBrandProtectionSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
   return payload;
+}
+
+export async function loadArbitration(signal?: AbortSignal): Promise<ArbitrationWorkspaceSnapshot> {
+  const payload = await requestJson('/api/arbitration', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isArbitrationWorkspaceSnapshot(payload)) {
+    throw new WorkbenchApiError(200, 'invalid_response');
+  }
+  return payload;
+}
+
+export async function assessArbitration(input: Readonly<{
+  requestId: string;
+  actionId: string;
+  requestedAutonomyLevel: AutonomyLevel;
+}>): Promise<ArbitrationAssessmentResult> {
+  const payload = await requestJson('/api/arbitration/cases', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (
+    !isRecord(payload) ||
+    (payload['outcome'] !== 'applied' && payload['outcome'] !== 'already_applied') ||
+    !isPersistence(payload['persistence']) || !isArbitrationCase(payload['case'])
+  ) {
+    throw new WorkbenchApiError(200, 'invalid_response');
+  }
+  return payload as ArbitrationAssessmentResult;
 }
 
 export async function reviewRisk(input: Readonly<{
@@ -1324,6 +1428,85 @@ function isRiskReviewDecision(value: unknown): value is RiskReviewDecision {
   return value === 'acknowledge' || value === 'hold' || value === 'escalate';
 }
 
+function isArbitrationWorkspaceSnapshot(payload: unknown): payload is ArbitrationWorkspaceSnapshot {
+  if (
+    !isRecord(payload) || payload['policyVersion'] !== 'intermodule-arbitration-v1' ||
+    payload['contractVersion'] !== 'module-opinion-v1' ||
+    payload['mvpExecutionEnabled'] !== false || !Array.isArray(payload['autonomy']) ||
+    !Array.isArray(payload['availableActions']) || !Array.isArray(payload['cases'])
+  ) return false;
+  return (
+    typeof payload['generatedAt'] === 'string' && isPersistence(payload['persistence']) &&
+    payload['autonomy'].every((item) => isRecord(item) && isAutonomyLevel(item['level']) &&
+      typeof item['key'] === 'string' && typeof item['label'] === 'string') &&
+    payload['availableActions'].every((item) => isRecord(item) &&
+      typeof item['id'] === 'string' && typeof item['title'] === 'string' &&
+      typeof item['kind'] === 'string' && typeof item['evidenceCount'] === 'number' &&
+      typeof item['confidence'] === 'number' && typeof item['currentContextHash'] === 'string') &&
+    payload['cases'].every((item) => isRecord(item) && typeof item['stale'] === 'boolean' &&
+      isArbitrationCase(item))
+  );
+}
+
+function isArbitrationCase(value: unknown): value is ArbitrationCase {
+  if (!isRecord(value)) return false;
+  const action = value['action'];
+  const request = value['request'];
+  const decision = value['decision'];
+  return (
+    value['policyVersion'] === 'intermodule-arbitration-v1' &&
+    typeof value['caseId'] === 'string' && typeof value['requestId'] === 'string' &&
+    typeof value['createdAt'] === 'string' && typeof value['validUntil'] === 'string' &&
+    typeof value['contextHash'] === 'string' && typeof value['snapshotHash'] === 'string' &&
+    isRecord(action) && typeof action['id'] === 'string' && typeof action['title'] === 'string' &&
+    typeof action['kind'] === 'string' && typeof action['hash'] === 'string' &&
+    isRecord(request) && request['sourceModule'] === 'workbench' &&
+    request['operation'] === 'evaluate_action' && request['purpose'] === 'strategy_reasoning' &&
+    isAutonomyLevel(request['requestedAutonomyLevel']) &&
+    request['readAuthority'] === 'owner_scoped_snapshot' &&
+    request['writeAuthority'] === 'append_decision_only' &&
+    Array.isArray(value['opinions']) && value['opinions'].every(isModuleOpinion) &&
+    isRecord(decision) && isArbitrationOutcome(decision['outcome']) &&
+    isAutonomyLevel(decision['effectiveAutonomyLevel']) &&
+    typeof decision['requiresHumanApproval'] === 'boolean' &&
+    decision['executionPermitted'] === false && typeof decision['dissentPreserved'] === 'boolean' &&
+    isStringArray(decision['blockingModules']) && isStringArray(decision['unknownModules']) &&
+    isStringArray(decision['downgradeReasons']) && isStringArray(decision['appliedRules']) &&
+    typeof decision['rationale'] === 'string'
+  );
+}
+
+function isModuleOpinion(value: unknown): value is ModuleOpinion {
+  return (
+    isRecord(value) && value['contractVersion'] === 'module-opinion-v1' &&
+    isArbitrationModule(value['module']) && typeof value['moduleVersion'] === 'string' &&
+    (value['position'] === 'support' || value['position'] === 'revise' ||
+      value['position'] === 'hold' || value['position'] === 'abstain') &&
+    typeof value['confidence'] === 'number' && isAutonomyLevel(value['appliesFromAutonomyLevel']) &&
+    typeof value['rationale'] === 'string' && isStringArray(value['provenanceRefs']) &&
+    isRecord(value['authority']) && value['authority']['read'] === 'owner_scoped_snapshot' &&
+    value['authority']['write'] === 'none'
+  );
+}
+
+function isAutonomyLevel(value: unknown): value is AutonomyLevel {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 7;
+}
+
+function isArbitrationModule(value: unknown): value is ArbitrationModule {
+  return value === 'strategy' || value === 'permission' || value === 'claims' ||
+    value === 'risk' || value === 'authenticity';
+}
+
+function isArbitrationOutcome(value: unknown): value is ArbitrationOutcome {
+  return value === 'recommendation_ready' || value === 'revision_required' ||
+    value === 'approval_required' || value === 'held';
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
 function isDraftWorkspaceSnapshot(payload: unknown): payload is DraftWorkspaceSnapshot {
   if (!isRecord(payload) || !isRecord(payload['guard']) || !isRecord(payload['source']) || !isRecord(payload['adaptation'])) return false;
   const guard = payload['guard'];
@@ -1417,6 +1600,7 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     (data['research'] === null || isResearchWorkspaceSnapshot(data['research'])) &&
     (data['claims'] === null || isClaimGovernanceSnapshot(data['claims'])) &&
     (data['risk'] === null || isBrandProtectionSnapshot(data['risk'])) &&
+    (data['arbitration'] === null || isArbitrationWorkspaceSnapshot(data['arbitration'])) &&
     (data['draft'] === null || isDraftWorkspaceSnapshot(data['draft'])) &&
     isFeedbackLearningSnapshot(data['feedback']) && isAuditTrailSnapshot(data['activity'])
   );

@@ -180,6 +180,47 @@ describe('private preview worker draft runtime', () => {
     if (!essayRisk) throw new Error('Expected essay risk assessment.');
     expect(risk.policyVersion).toBe('brand-protection-v1');
     expect(essayRisk.findings).toHaveLength(15);
+    const arbitrationRequest = {
+      requestId: 'arbitration_runtime_essay',
+      actionId: 'essay',
+      requestedAutonomyLevel: 7,
+    };
+    const arbitrationResponse = await post('/api/arbitration/cases', arbitrationRequest);
+    expect(arbitrationResponse.status).toBe(201);
+    const arbitrationPayload = await arbitrationResponse.json() as {
+      outcome: string;
+      persistence: string;
+      case: {
+        policyVersion: string;
+        opinions: Array<{ module: string; position: string; authority: { write: string } }>;
+        decision: {
+          outcome: string;
+          effectiveAutonomyLevel: number;
+          executionPermitted: boolean;
+          downgradeReasons: string[];
+        };
+      };
+    };
+    expect(arbitrationPayload).toMatchObject({
+      outcome: 'applied',
+      persistence: 'ephemeral',
+      case: {
+        policyVersion: 'intermodule-arbitration-v1',
+        decision: {
+          outcome: 'revision_required',
+          effectiveAutonomyLevel: 3,
+          executionPermitted: false,
+        },
+      },
+    });
+    expect(arbitrationPayload.case.decision.downgradeReasons).toContain('mvp_execution_disabled');
+    expect(arbitrationPayload.case.opinions).toHaveLength(5);
+    expect(arbitrationPayload.case.opinions.every((item) => item.authority.write === 'none')).toBe(true);
+    expect(arbitrationPayload.case.opinions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ module: 'strategy' }),
+      expect.objectContaining({ module: 'risk', position: 'revise' }),
+    ]));
+    expect((await post('/api/arbitration/cases', arbitrationRequest)).status).toBe(200);
     expect((await post('/api/risk/actions/essay/reviews', {
       requestId: 'risk_runtime_essay',
       expectedLevel: essayRisk.level,
@@ -188,6 +229,15 @@ describe('private preview worker draft runtime', () => {
       rationale: 'ریسک اعتبار، Disclosure و پیامد بلندمدت این اقدام عمومی را شخصاً مرور کردم.',
       humanAttestation: true,
     })).status).toBe(201);
+    const staleArbitration = await worker.fetch(
+      new Request('https://preview.example/api/arbitration'),
+      env,
+    );
+    await expect(staleArbitration.json()).resolves.toMatchObject({
+      policyVersion: 'intermodule-arbitration-v1',
+      mvpExecutionEnabled: false,
+      cases: [{ stale: true, decision: { executionPermitted: false } }],
+    });
     expect((await post('/api/workbench/approval', { actionId: 'essay' })).status).toBe(200);
 
     const approvedWorkbench = await worker.fetch(
@@ -398,6 +448,7 @@ describe('private preview worker draft runtime', () => {
         research: { summary: { conflicts: number }; sources: unknown[] };
         claims: { summary: { disputedOrRevoked: number }; claims: unknown[] };
         risk: { policyVersion: string; assessments: unknown[] };
+        arbitration: { policyVersion: string; cases: unknown[] };
       };
     };
     expect(accountExportResponse.status).toBe(200);
@@ -410,6 +461,8 @@ describe('private preview worker draft runtime', () => {
     expect(accountExport.data.claims.claims.length).toBeGreaterThanOrEqual(3);
     expect(accountExport.data.risk).toMatchObject({ policyVersion: 'brand-protection-v1' });
     expect(accountExport.data.risk.assessments).toHaveLength(3);
+    expect(accountExport.data.arbitration).toMatchObject({ policyVersion: 'intermodule-arbitration-v1' });
+    expect(accountExport.data.arbitration.cases).toHaveLength(1);
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

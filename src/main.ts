@@ -1,5 +1,10 @@
 import { createServer } from 'node:http';
 import {
+  DecisionArbitrationService,
+  InMemoryArbitrationRepository,
+  PostgresArbitrationRepository,
+} from './arbitration/decision-arbitration.js';
+import {
   AuditTrailService,
   InMemoryAuditTrailRepository,
   PostgresAuditTrailRepository,
@@ -178,6 +183,16 @@ const risk = new BrandProtectionService(
     : new InMemoryRiskReviewRepository(),
   { tenantId: activeTenant, ownerUserId: owner },
 );
+const arbitration = new DecisionArbitrationService(
+  postgres && environment.database
+    ? new PostgresArbitrationRepository(postgres, {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+      })
+    : new InMemoryArbitrationRepository(),
+  { tenantId: activeTenant, ownerUserId: owner },
+  { workbench, risk, claims },
+);
 const requestHandler = createRequestHandler(
   async () => ({
     ...(postgres ? await postgres.readiness() : { ready: true }),
@@ -195,6 +210,7 @@ const requestHandler = createRequestHandler(
     research,
     claims,
     risk,
+    arbitration,
     ...(!postgres ? { mutationAuditTrail: auditTrail } : {}),
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity

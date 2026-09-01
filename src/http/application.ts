@@ -1,5 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
+  ArbitrationConflictError,
+  ArbitrationNotFoundError,
+  ArbitrationPermissionError,
+  ArbitrationValidationError,
+  type DecisionArbitrationService,
+} from '../arbitration/decision-arbitration.js';
+import {
   AuditTrailPermissionError,
   AuditTrailValidationError,
   type AuditTrailService,
@@ -115,6 +122,7 @@ export type ApplicationDependencies = Readonly<{
   research?: Pick<ResearchWorkspaceService, 'snapshot' | 'importSource'>;
   claims?: Pick<ClaimGovernanceService, 'snapshot' | 'review'>;
   risk?: Pick<BrandProtectionService, 'snapshot' | 'review' | 'authorizeAction'>;
+  arbitration?: Pick<DecisionArbitrationService, 'snapshot' | 'assess'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -217,6 +225,16 @@ export function createRequestHandler(
 
     if (request.method === 'GET' && path === '/api/risk') {
       await handleRiskSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/arbitration') {
+      await handleArbitrationSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/arbitration/cases') {
+      await handleArbitrationAssessment(request, response, dependencies);
       return;
     }
 
@@ -823,6 +841,116 @@ function isClaimDecision(value: unknown): value is ClaimReviewDecision {
   return typeof value === 'string' && ['verify', 'dispute', 'revoke'].includes(value);
 }
 
+async function handleArbitrationSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = arbitrationActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.arbitration?.snapshot(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Arbitration service disappeared.');
+    sendJson(response, 200, snapshot);
+  } catch (error: unknown) {
+    sendArbitrationError(response, error);
+  }
+}
+
+async function handleArbitrationAssessment(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = arbitrationActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const actionId = body['actionId'];
+    const requestedAutonomyLevel = body['requestedAutonomyLevel'];
+    if (
+      typeof requestId !== 'string' || typeof actionId !== 'string' ||
+      typeof requestedAutonomyLevel !== 'number'
+    ) {
+      sendJson(response, 400, { error: 'invalid_arbitration_request' });
+      return;
+    }
+    const occurredAt = now(dependencies);
+    const result = await dependencies.arbitration?.assess({
+      actorId,
+      requestId,
+      actionId,
+      requestedAutonomyLevel,
+      occurredAt,
+    });
+    if (!result) throw new Error('Arbitration service disappeared.');
+    if (result.outcome === 'applied') {
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `decision.arbitrated:${requestId}`,
+        eventType: 'decision.arbitrated',
+        resourceType: 'arbitration_case',
+        resourceId: result.snapshot.caseId,
+        purpose: 'strategy_reasoning',
+        decision: result.snapshot.decision.outcome,
+        metadata: {
+          actionId: result.snapshot.action.id,
+          requestedAutonomyLevel: result.snapshot.request.requestedAutonomyLevel,
+          effectiveAutonomyLevel: result.snapshot.decision.effectiveAutonomyLevel,
+          policyVersion: result.snapshot.policyVersion,
+          snapshotHash: result.snapshot.snapshotHash,
+        },
+        occurredAt,
+      });
+    }
+    sendJson(response, result.outcome === 'applied' ? 201 : 200, {
+      outcome: result.outcome,
+      persistence: result.persistence,
+      case: result.snapshot,
+    });
+  } catch (error: unknown) {
+    sendArbitrationError(response, error);
+  }
+}
+
+function arbitrationActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.arbitration) {
+    sendJson(response, 503, { error: 'arbitration_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function sendArbitrationError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof ArbitrationValidationError) {
+    sendJson(response, 400, { error: 'invalid_arbitration_request' });
+    return;
+  }
+  if (error instanceof ArbitrationPermissionError) {
+    sendJson(response, 403, { error: 'arbitration_permission_denied' });
+    return;
+  }
+  if (error instanceof ArbitrationNotFoundError) {
+    sendJson(response, 404, { error: 'arbitration_action_not_found' });
+    return;
+  }
+  if (error instanceof ArbitrationConflictError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  sendJson(response, 500, { error: 'arbitration_failed' });
+}
+
 async function handleRiskSnapshot(
   request: IncomingMessage,
   response: ServerResponse,
@@ -1022,7 +1150,7 @@ async function handleAccountExport(
   }
   const exportedAt = now(dependencies);
   try {
-    const [workbench, strategy, draft, feedback, memory, assets, research, claims, activity] = await Promise.all([
+    const [workbench, strategy, draft, feedback, memory, assets, research, claims, arbitration, activity] = await Promise.all([
       dependencies.workbench.snapshot(),
       dependencies.strategy.snapshot(actorId),
       dependencies.drafts.snapshot(actorId, exportedAt),
@@ -1035,6 +1163,7 @@ async function handleAccountExport(
       dependencies.assets.snapshot(actorId, exportedAt),
       dependencies.research?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.claims?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
+      dependencies.arbitration?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.auditTrail?.snapshot(actorId, exportedAt),
     ]);
     if (!activity) throw new Error('Audit trail disappeared.');
@@ -1068,6 +1197,7 @@ async function handleAccountExport(
           research: research ? serializeResearchSnapshot(research) : null,
           claims: claims ? serializeClaimSnapshot(claims) : null,
           risk: risk ? serializeRiskSnapshot(risk) : null,
+          arbitration,
           draft: draft ? serializeDraft(draft) : null,
           feedback: serializeFeedback(feedback),
           activity: serializeAuditTrail(activity),

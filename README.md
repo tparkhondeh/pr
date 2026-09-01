@@ -4,7 +4,7 @@
 
 وضعیت فعلی: **Foundation و MVP Workbench در حال توسعه**. Data/Policy Kernel، API،
 Workbench وب، Approval انسانی، ورودی مکالمه‌ای Consent-first، ورود متن به‌عنوان
-Asset/Evidence و مرکز حقوق داده پیاده‌سازی شده‌اند.
+Asset/Evidence، مرکز حقوق داده و داوری قطعی اختلاف میان ماژول‌ها پیاده‌سازی شده‌اند.
 
 ## اسناد فعلی
 
@@ -12,6 +12,7 @@ Asset/Evidence و مرکز حقوق داده پیاده‌سازی شده‌ان
 - [معماری هدف و محدوده MVP](docs/architecture/target-architecture-v1.0.md)
 - [Ethics, Privacy, Risk & Brand Protection](docs/architecture/brand-protection-v1.0.md)
 - [Continuous Conversation Orchestrator](docs/architecture/conversation-orchestrator-v1.0.md)
+- [Inter-module Contract & Decision Arbitration](docs/architecture/intermodule-arbitration-v1.0.md)
 - [Master Implementation Prompt مرحله Foundation](docs/implementation/foundation-master-prompt-v1.0.md)
 - [ADRهای Draft مرحله Foundation](docs/decisions/foundation-adrs-draft-v1.0.md)
 - [Data & Policy Kernel](docs/architecture/data-kernel-v1.0.md)
@@ -130,6 +131,18 @@ Opt-in ساخت پیشنهاد حافظه پیش‌فرض خاموش است و �
 جابه‌جا می‌کند و Audit/Outbox را در همان Transaction می‌نویسد. همچنین Approval قبلی
 Workbench منقضی می‌شود تا تصمیم مبتنی بر جهت قدیمی بی‌صدا معتبر باقی نماند.
 
+نمای «داوری تصمیم» از `GET /api/arbitration` و
+`POST /api/arbitration/cases` استفاده می‌کند تا رأی مستقل Strategy، Permission،
+Claim، Risk و Authenticity را درباره یک Action کنار هم نگه دارد. هیچ رأی یا Agentی
+نمی‌تواند Gate الزام‌آور ماژول دیگر را Override کند: `hold` مقدم است، `revise` سطح
+مؤثر را حداکثر تا Draft کاهش می‌دهد و Dissent/Abstention در خروجی باقی می‌ماند.
+قرارداد همه سطوح Autonomy از Observe تا Bounded Automation را می‌پذیرد، اما MVP هر
+درخواست بالاتر را به Level 5 محدود و همیشه `executionPermitted=false` اعلام می‌کند؛
+بنابراین این لایه فقط Decision Support و درخواست تأیید انسانی است. Caseها با Snapshot
+و Context Hash به Strategy، Risk و Claim متصل‌اند و پس از تغییر Context یا ۲۴ ساعت
+stale می‌شوند. در PostgreSQL رکوردها append-only، tenant-isolated، idempotent و همراه
+Audit/Outbox هستند؛ Memory و Sites همان قرارداد را با State موقت اجرا می‌کنند.
+
 نمای «پیش‌نویس» تنها پس از تأیید Action محتوایی Workbench فعال می‌شود. کاربر یک
 منبع را از کاتالوگ owner-scoped حافظه‌های تأییدشده و Text Assetهای دارای مجوز
 `brandUsage` انتخاب می‌کند، برای Public Drafting همان Assertion و Channel رضایت صریح
@@ -188,6 +201,6 @@ Signal ثبت می‌کند. یک Edit یا Reject منفرد Voice Model را �
 نمای «داده و شفافیت» ردپای owner-scoped تصمیم‌ها، تأییدها، حقوق حافظه و Exportها را
 از `GET /api/account/activity` نمایش می‌دهد. کاربر از `GET /api/account/export` یک
 فایل JSON قابل‌حمل از Snapshot فعلی Workbench، Strategy، Memory، Assets، Draft،
-Feedback و Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
+Feedback، Arbitration و Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
 زیرساختی وارد فایل نمی‌شوند. در PostgreSQL این Timeline با RLS به Tenant و مالک فعال
 محدود است؛ نسخه‌های حافظه‌ای و Sites تا Restart موقت‌اند.

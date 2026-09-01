@@ -55,6 +55,7 @@ Trust Boundaryها:
 | T-14 | تبدیل Citation به Verified یا ادامه انتشار Claim مورد اعتراض | P0 | Human attestation، append-only review، expected status، Draft propagation و repository re-check | Multi-review/quorum برای Scope پرریسک آینده لازم است |
 | T-15 | Override شدن ریسک اعتباری/حریم خصوصی توسط Utility یا Acknowledgement کهنه | P0 | ۱۵ Risk Check نسخه‌دار، SHA-256 Assessment، Yellow attestation، Red veto، append-only review و approval re-check | مانیتورینگ بحران و Legal escalation واقعی تا Connector و incident drill خارج Scope است |
 | T-16 | Prompt Injection یا Intent اشتباه در Channel گفت‌وگو که Permission را گسترش دهد یا داده حساس را ذخیره کند | P0 | ورودی untrusted، authority صریح، abstention در Confidence پایین، public-action hold، جداسازی Research/Memory و `not_persisted` برای credential | پیش از Model/Tool و Attachment integration، red-team چندزبانه، DLP و eval مستقل لازم است |
+| T-17 | Override شدن Gate یک ماژول توسط Utility/Agent دیگر، استفاده از تصمیم stale یا ارتقای پنهان Autonomy | P0 | رأی‌های typed و بدون write authority، اولویت قطعی `hold/revise`، حفظ dissent/abstention، Context/Snapshot hash، پنجره ۲۴ساعته، سقف Level 5، `executionPermitted=false` و RLS/Audit | پیش از Level 6/7، Session و Delegation Scope واقعی، Tool allowlist، approval token کوتاه‌عمر، rate limit، compensation و red-team مستقل الزامی است |
 
 ## P0 Gate
 
