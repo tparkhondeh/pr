@@ -80,6 +80,7 @@ function request() {
       successMetrics: ['سه گفت‌وگوی باکیفیت'],
     },
     dataClass: 'confidential' as const,
+    externalProcessingApproved: true,
     at: new Date('2026-08-31T00:00:00Z'),
     attentionBudget: {
       availableMinutes: 180,

@@ -976,6 +976,34 @@ export type WorkflowCostSnapshot = Readonly<{
   }>[];
 }>;
 
+export type ModelGovernanceSnapshot = Readonly<{
+  policyVersion: 'prompt-model-governance-v1';
+  generatedAt: string;
+  providerConfigured: boolean;
+  executionEnabled: boolean;
+  costGateRequired: true;
+  durableInvocationJournal: false;
+  routes: readonly Readonly<{
+    id: string;
+    purpose: 'extract_evidence' | 'synthesize_hypothesis' | 'strategy_options' |
+      'draft_content' | 'evaluate_output';
+    schemaName: string;
+    promptVersion: string;
+    provider: string;
+    model: string;
+    modelTier: 'economy' | 'balanced' | 'reasoning';
+    risk: 'low' | 'medium' | 'high';
+    allowedDataClasses: readonly ('public' | 'internal' | 'confidential' | 'restricted')[];
+    maxOutputTokens: number;
+    estimatedCostMinorUnits: number;
+    plannedSteps: number;
+    timeoutMs: number;
+    rollout: 'disabled' | 'shadow' | 'canary' | 'active';
+    evalSuite: string;
+    evalStatus: 'not_run' | 'failed' | 'passed';
+  }>[];
+}>;
+
 export type StrategicQualitySnapshot = Readonly<{
   policyVersion: 'strategic-quality-v1';
   generatedAt: string;
@@ -1331,6 +1359,7 @@ export type AccountDataExport = Readonly<{
     feedback: FeedbackLearningSnapshot;
     strategicQuality: StrategicQualitySnapshot | null;
     workflowCosts: WorkflowCostSnapshot | null;
+    modelGovernance: ModelGovernanceSnapshot | null;
     activity: AuditTrailSnapshot;
   }>;
 }>;
@@ -1890,6 +1919,15 @@ export async function loadWorkflowCosts(signal?: AbortSignal): Promise<WorkflowC
     ...(signal ? { signal } : {}),
   });
   if (!isWorkflowCostSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function loadModelGovernance(signal?: AbortSignal): Promise<ModelGovernanceSnapshot> {
+  const payload = await requestJson('/api/model-governance', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isModelGovernanceSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
   return payload;
 }
 
@@ -3035,6 +3073,34 @@ function isWorkflowCostKind(value: unknown): value is WorkflowCostKind {
     value === 'evaluation' || value === 'other';
 }
 
+function isModelGovernanceSnapshot(payload: unknown): payload is ModelGovernanceSnapshot {
+  if (
+    !isRecord(payload) || payload['policyVersion'] !== 'prompt-model-governance-v1' ||
+    typeof payload['generatedAt'] !== 'string' || typeof payload['providerConfigured'] !== 'boolean' ||
+    typeof payload['executionEnabled'] !== 'boolean' || payload['costGateRequired'] !== true ||
+    payload['durableInvocationJournal'] !== false || !Array.isArray(payload['routes'])
+  ) return false;
+  return payload['routes'].every((route) => isRecord(route) &&
+    typeof route['id'] === 'string' && isModelPurpose(route['purpose']) &&
+    typeof route['schemaName'] === 'string' && typeof route['promptVersion'] === 'string' &&
+    typeof route['provider'] === 'string' && typeof route['model'] === 'string' &&
+    ['economy', 'balanced', 'reasoning'].includes(String(route['modelTier'])) &&
+    ['low', 'medium', 'high'].includes(String(route['risk'])) &&
+    Array.isArray(route['allowedDataClasses']) && route['allowedDataClasses'].every((value) =>
+      ['public', 'internal', 'confidential', 'restricted'].includes(String(value))) &&
+    typeof route['maxOutputTokens'] === 'number' &&
+    typeof route['estimatedCostMinorUnits'] === 'number' &&
+    typeof route['plannedSteps'] === 'number' && typeof route['timeoutMs'] === 'number' &&
+    ['disabled', 'shadow', 'canary', 'active'].includes(String(route['rollout'])) &&
+    typeof route['evalSuite'] === 'string' &&
+    ['not_run', 'failed', 'passed'].includes(String(route['evalStatus'])));
+}
+
+function isModelPurpose(value: unknown): boolean {
+  return value === 'extract_evidence' || value === 'synthesize_hypothesis' ||
+    value === 'strategy_options' || value === 'draft_content' || value === 'evaluate_output';
+}
+
 function isStrategicOutcomeExecutionStatus(value: unknown): value is StrategicOutcomeExecutionStatus {
   return value === 'completed' || value === 'partial' || value === 'not_executed';
 }
@@ -3087,6 +3153,7 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     isFeedbackLearningSnapshot(data['feedback']) &&
     (data['strategicQuality'] === null || isStrategicQualitySnapshot(data['strategicQuality'])) &&
     (data['workflowCosts'] === null || isWorkflowCostSnapshot(data['workflowCosts'])) &&
+    (data['modelGovernance'] === null || isModelGovernanceSnapshot(data['modelGovernance'])) &&
     isAuditTrailSnapshot(data['activity'])
   );
 }

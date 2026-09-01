@@ -100,6 +100,11 @@ import {
   type WorkflowCostSnapshot,
 } from '../observability/workflow-cost-control.js';
 import {
+  ModelGovernancePermissionError,
+  type ModelGovernanceService,
+  type ModelGovernanceSnapshot,
+} from '../providers/model-governance.js';
+import {
   PerceptionConflictError,
   PerceptionNotFoundError,
   PerceptionPermissionError,
@@ -218,6 +223,7 @@ export type ApplicationDependencies = Readonly<{
   expression?: Pick<AuthenticExpressionService, 'snapshot' | 'review'>;
   opportunities?: Pick<OpportunityRadarService, 'snapshot'>;
   workflowCosts?: Pick<WorkflowCostControlService, 'snapshot' | 'reserve' | 'charge'>;
+  modelGovernance?: Pick<ModelGovernanceService, 'snapshot'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -314,6 +320,11 @@ export function createRequestHandler(
 
     if (request.method === 'GET' && path === '/api/workflow-cost') {
       await handleWorkflowCostSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/model-governance') {
+      handleModelGovernanceSnapshot(request, response, dependencies);
       return;
     }
 
@@ -929,6 +940,37 @@ function serializeWorkflowCost(snapshot: WorkflowCostSnapshot): Record<string, u
       chargedAt: entry.chargedAt.toISOString(),
     })),
   };
+}
+
+function handleModelGovernanceSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): void {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.modelGovernance) {
+    sendJson(response, 503, { error: 'model_governance_unavailable' });
+    return;
+  }
+  try {
+    sendJson(response, 200, serializeModelGovernance(
+      dependencies.modelGovernance.snapshot(actorId, now(dependencies)),
+    ));
+  } catch (error: unknown) {
+    if (error instanceof ModelGovernancePermissionError) {
+      sendJson(response, 403, { error: 'model_governance_permission_denied' });
+      return;
+    }
+    sendJson(response, 500, { error: 'model_governance_failed' });
+  }
+}
+
+function serializeModelGovernance(snapshot: ModelGovernanceSnapshot): Record<string, unknown> {
+  return { ...snapshot, generatedAt: snapshot.generatedAt.toISOString() };
 }
 
 function isWorkflowCostKind(value: unknown): value is WorkflowCostKind {
@@ -2410,13 +2452,14 @@ async function handleAccountExport(
   }
   const exportedAt = now(dependencies);
   try {
-    const [workbench, strategy, draft, feedback, strategicQuality, workflowCosts, memory, assets, research, claims, arbitration, initiative, relationships, perception, activity] = await Promise.all([
+    const [workbench, strategy, draft, feedback, strategicQuality, workflowCosts, modelGovernance, memory, assets, research, claims, arbitration, initiative, relationships, perception, activity] = await Promise.all([
       dependencies.workbench.snapshot(),
       dependencies.strategy.snapshot(actorId),
       dependencies.drafts.snapshot(actorId, exportedAt),
       dependencies.learning.snapshot(actorId, exportedAt),
       dependencies.strategicQuality?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.workflowCosts?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
+      Promise.resolve(dependencies.modelGovernance?.snapshot(actorId, exportedAt) ?? null),
       dependencies.conversation.memorySnapshot({
         tenantId: dependencies.tenantId,
         actorId,
@@ -2470,6 +2513,7 @@ async function handleAccountExport(
           feedback: serializeFeedback(feedback),
           strategicQuality: strategicQuality ? serializeStrategicQuality(strategicQuality) : null,
           workflowCosts: workflowCosts ? serializeWorkflowCost(workflowCosts) : null,
+          modelGovernance: modelGovernance ? serializeModelGovernance(modelGovernance) : null,
           activity: serializeAuditTrail(activity),
         },
       },

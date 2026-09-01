@@ -32,6 +32,7 @@ export type RecommendationRequest = Readonly<{
   actorId: UserId;
   goal: Goal;
   dataClass: DataClass;
+  externalProcessingApproved: boolean;
   at: Date;
   attentionBudget: AttentionBudget;
   rankingPolicy: RankingPolicy;
@@ -85,12 +86,17 @@ export async function prepareRecommendation(
     Readonly<{ options: readonly StrategicOption[] }>
   >({
     requestId: request.requestId,
+    workflowId: request.workflowId,
+    invocationId: request.requestId,
     tenantId: request.tenantId,
+    actorId: request.actorId,
     purpose: 'strategy_options',
     input: { goal, memory: memory.assertions },
     dataClasses: [request.dataClass],
+    externalProcessingApproved: request.externalProcessingApproved,
     schemaName: 'strategic-options-v1',
     maxOutputTokens: 4_000,
+    at: request.at,
   });
 
   dependencies.costLedger.record({
@@ -101,7 +107,7 @@ export async function prepareRecommendation(
     inputTokens: modelResult.usage.inputTokens,
     outputTokens: modelResult.usage.outputTokens,
     cachedInputTokens: modelResult.usage.cachedInputTokens,
-    costMinorUnits: modelResult.usage.estimatedCostMinorUnits ?? 0,
+    costMinorUnits: modelResult.usage.costMinorUnits,
   });
 
   const rankedOptions = rankStrategicOptions(

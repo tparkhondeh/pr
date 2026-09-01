@@ -841,6 +841,12 @@ describe('private preview worker draft runtime', () => {
           day: { status: string; chargedCostMinorUnits: number };
           recentCharges: unknown[];
         };
+        modelGovernance: {
+          policyVersion: string;
+          executionEnabled: boolean;
+          costGateRequired: boolean;
+          routes: Array<{ rollout: string; evalStatus: string }>;
+        };
       };
     };
     expect(accountExportResponse.status).toBe(200);
@@ -880,6 +886,14 @@ describe('private preview worker draft runtime', () => {
       day: { status: 'circuit_open', chargedCostMinorUnits: 21 },
     });
     expect(accountExport.data.workflowCosts.recentCharges).toHaveLength(1);
+    expect(accountExport.data.modelGovernance).toMatchObject({
+      policyVersion: 'prompt-model-governance-v1',
+      executionEnabled: false,
+      costGateRequired: true,
+    });
+    expect(accountExport.data.modelGovernance.routes).toHaveLength(5);
+    expect(accountExport.data.modelGovernance.routes.every((route) =>
+      route.rollout === 'disabled' && route.evalStatus === 'not_run')).toBe(true);
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

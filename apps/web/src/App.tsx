@@ -58,6 +58,7 @@ import {
   loadFeedbackLearning,
   loadStrategicQuality,
   loadWorkflowCosts,
+  loadModelGovernance,
   loadAuditTrail,
   loadArbitration,
   loadInitiative,
@@ -93,6 +94,7 @@ import {
   type FeedbackLearningSnapshot,
   type StrategicQualitySnapshot,
   type WorkflowCostSnapshot,
+  type ModelGovernanceSnapshot,
   type StrategicBusinessOutcome,
   type StrategicOutcomeChange,
   type StrategicOutcomeExecutionStatus,
@@ -216,6 +218,7 @@ export function App() {
   const [feedbackSnapshot, setFeedbackSnapshot] = useState<FeedbackLearningSnapshot | null>(null);
   const [strategicQualitySnapshot, setStrategicQualitySnapshot] = useState<StrategicQualitySnapshot | null>(null);
   const [workflowCostSnapshot, setWorkflowCostSnapshot] = useState<WorkflowCostSnapshot | null>(null);
+  const [modelGovernanceSnapshot, setModelGovernanceSnapshot] = useState<ModelGovernanceSnapshot | null>(null);
   const [feedbackViewState, setFeedbackViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [feedbackViewError, setFeedbackViewError] = useState<string | null>(null);
   const [auditSnapshot, setAuditSnapshot] = useState<AuditTrailSnapshot | null>(null);
@@ -728,14 +731,16 @@ export function App() {
     setFeedbackViewState('loading');
     setFeedbackViewError(null);
     try {
-      const [feedback, quality, costs] = await Promise.all([
+      const [feedback, quality, costs, modelGovernance] = await Promise.all([
         loadFeedbackLearning(signal),
         loadStrategicQuality(signal),
         loadWorkflowCosts(signal),
+        loadModelGovernance(signal),
       ]);
       setFeedbackSnapshot(feedback);
       setStrategicQualitySnapshot(quality);
       setWorkflowCostSnapshot(costs);
+      setModelGovernanceSnapshot(modelGovernance);
       setFeedbackViewState('ready');
     } catch (caught: unknown) {
       if (signal?.aborted) return;
@@ -1424,6 +1429,7 @@ export function App() {
             onReview={reviewStrategicRecommendation}
             quality={strategicQualitySnapshot}
             workflowCosts={workflowCostSnapshot}
+            modelGovernance={modelGovernanceSnapshot}
             snapshot={feedbackSnapshot}
             state={feedbackViewState}
             workbench={snapshot}
@@ -2251,6 +2257,7 @@ function FeedbackLearningPanel({
   onReview,
   quality,
   workflowCosts,
+  modelGovernance,
   snapshot,
   state,
   workbench,
@@ -2285,6 +2292,7 @@ function FeedbackLearningPanel({
   }>) => Promise<void>;
   quality: StrategicQualitySnapshot | null;
   workflowCosts: WorkflowCostSnapshot | null;
+  modelGovernance: ModelGovernanceSnapshot | null;
   snapshot: FeedbackLearningSnapshot | null;
   state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
   workbench: WorkbenchSnapshot;
@@ -2355,6 +2363,57 @@ function FeedbackLearningPanel({
           <RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی
         </button>
       </header>
+      {modelGovernance ? (
+        <section className="model-governance" aria-label="حاکمیت Prompt و Model">
+          <div className="workflow-cost-head">
+            <div>
+              <p className="overline">Prompt / Model Registry · {modelGovernance.policyVersion}</p>
+              <h3>{modelGovernance.executionEnabled ? 'مسیر مدل کنترل‌شده فعال است' : 'مدل بیرونی خاموش است'}</h3>
+              <p>هر فراخوانی باید نسخهٔ Prompt، Eval موفق، رضایت پردازش بیرونی و رزرو بودجه داشته باشد. خاموش‌بودن فعلی یک وضعیت ایمن و عمدی است.</p>
+            </div>
+            <div className={`quality-status ${modelGovernance.executionEnabled ? 'pass' : 'collecting'}`}>
+              <span>وضعیت اجرا</span>
+              <strong>{modelGovernance.executionEnabled ? 'فعال و Gate‌شده' : 'Fail-closed'}</strong>
+              <small>{modelGovernance.providerConfigured ? 'Provider پیکربندی شده' : 'Provider پیکربندی نشده'}</small>
+            </div>
+          </div>
+          <div className="workflow-cost-grid">
+            <div>
+              <span>Route ثبت‌شده</span>
+              <strong>{modelGovernance.routes.length.toLocaleString('fa-IR')}</strong>
+            </div>
+            <div>
+              <span>Eval موفق</span>
+              <strong>{modelGovernance.routes.filter((route) => route.evalStatus === 'passed').length.toLocaleString('fa-IR')}</strong>
+            </div>
+            <div>
+              <span>Route فعال</span>
+              <strong>{modelGovernance.routes.filter((route) => route.rollout === 'active').length.toLocaleString('fa-IR')}</strong>
+            </div>
+            <div>
+              <span>Cost Gate</span>
+              <strong>اجباری</strong>
+            </div>
+          </div>
+          <div className="model-route-list" role="list" aria-label="نسخه‌های Prompt و Model">
+            {modelGovernance.routes.map((route) => (
+              <div className="model-route" key={route.id} role="listitem">
+                <div>
+                  <strong>{modelPurposeLabel(route.purpose)}</strong>
+                  <small>{route.promptVersion} · {route.modelTier}</small>
+                </div>
+                <span>{route.evalStatus === 'passed' ? 'Eval: پاس' : 'Eval: اجرا نشده'}</span>
+                <span>{route.rollout === 'active' ? 'فعال' : 'خاموش'}</span>
+              </div>
+            ))}
+          </div>
+          <div className="workflow-cost-truth">
+            <LockKeyhole size={17} />
+            <p>در وضعیت فعلی هیچ دادهٔ شخصی برای مدل بیرونی ارسال نمی‌شود.</p>
+            <small>Journal فراخوانی هنوز حافظه‌ای است؛ فعال‌سازی Provider تا Durable شدن آن، قبولی Evalها و تأیید صریح شما مسدود می‌ماند.</small>
+          </div>
+        </section>
+      ) : null}
       {workflowCosts ? (
         <section className="workflow-cost" aria-label="کنترل هزینه و بودجه Workflow">
           <div className="workflow-cost-head">
@@ -2767,6 +2826,17 @@ function workflowCostTruthLabel(status: WorkflowCostSnapshot['truthStatus']): st
     mixed: 'Ledger ترکیبی از هزینهٔ قطعی، برآوردی یا اندازه‌گیری‌نشده دارد.',
   };
   return labels[status];
+}
+
+function modelPurposeLabel(purpose: ModelGovernanceSnapshot['routes'][number]['purpose']): string {
+  const labels: Readonly<Record<ModelGovernanceSnapshot['routes'][number]['purpose'], string>> = {
+    extract_evidence: 'استخراج شواهد',
+    synthesize_hypothesis: 'ساخت فرضیه',
+    strategy_options: 'گزینه‌های استراتژیک',
+    draft_content: 'پیش‌نویس محتوا',
+    evaluate_output: 'ارزیابی خروجی',
+  };
+  return labels[purpose];
 }
 
 function ResearchWorkspacePanel({

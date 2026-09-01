@@ -262,6 +262,11 @@ PostgreSQL و Preview فعال‌اند. چون Runtime فعلی Provider بیر
 `no_usage` است؛ اثبات «داخل بودجه بودن Workflowهای مدل واقعی» تا اتصال Provider و
 نمونه‌های اجرای Metered باز می‌ماند.
 
+`prompt-model-governance-v1` نیز Prompt/Model Registry را از فهرست شکاف‌ها به Contract
+اجرایی منتقل کرده است: Route نسخه‌دار، Tier، Eval، Rollout، Data Class، رضایت پردازش
+بیرونی، Timeout و Cost Reservation اجباری‌اند. Provider واقعی همچنان Fail-closed است؛
+Durable Invocation Journal، Eval چندزبانه و Billing Reconciliation پیش‌شرط فعال‌سازی‌اند.
+
 مسیر `postgres-commissioning-v1` نیز فعال‌سازی Source of Truth را fail-closed کرده است:
 Migration و Runtime باید Roleهای جدا باشند، Runtime حق superuser/BYPASSRLS/CREATE
 نداشته باشد، Host غیر-loopback فقط با `sslmode=verify-full` پذیرفته می‌شود و Tenant،

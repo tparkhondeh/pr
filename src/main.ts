@@ -53,6 +53,10 @@ import {
   WorkflowCostControlService,
 } from './observability/workflow-cost-control.js';
 import {
+  defaultPromptModelRegistry,
+  ModelGovernanceService,
+} from './providers/model-governance.js';
+import {
   InMemoryPerceptionWorkspaceRepository,
   PerceptionWorkspaceService,
   PostgresPerceptionWorkspaceRepository,
@@ -213,6 +217,11 @@ const workflowCosts = new WorkflowCostControlService(
     : new InMemoryWorkflowCostRepository(),
   { tenantId: activeTenant, ownerUserId: owner },
 );
+const modelGovernance = new ModelGovernanceService(
+  defaultPromptModelRegistry,
+  { tenantId: activeTenant, ownerUserId: owner },
+  false,
+);
 const expression = new AuthenticExpressionService(
   { tenantId: activeTenant, ownerUserId: owner },
   assets,
@@ -314,6 +323,7 @@ const requestHandler = createRequestHandler(
     learning,
     strategicQuality,
     workflowCosts,
+    modelGovernance,
     conversation,
     auditTrail,
     assets,

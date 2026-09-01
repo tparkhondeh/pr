@@ -1,3 +1,5 @@
+import type { TenantId, UserId } from '../kernel/identity.js';
+
 export type ModelPurpose =
   | 'extract_evidence'
   | 'synthesize_hypothesis'
@@ -7,12 +9,17 @@ export type ModelPurpose =
 
 export type ModelRequest<TInput> = Readonly<{
   requestId: string;
-  tenantId: string;
+  workflowId: string;
+  invocationId: string;
+  tenantId: TenantId;
+  actorId: UserId;
   purpose: ModelPurpose;
   input: TInput;
   dataClasses: readonly ('public' | 'internal' | 'confidential' | 'restricted')[];
+  externalProcessingApproved: boolean;
   schemaName: string;
   maxOutputTokens: number;
+  at: Date;
 }>;
 
 export type ModelUsage = Readonly<{
@@ -21,6 +28,8 @@ export type ModelUsage = Readonly<{
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  costMinorUnits: number;
+  costEvidence: 'provider_reported' | 'estimated' | 'none';
   estimatedCostMinorUnits?: number;
 }>;
 
@@ -29,6 +38,15 @@ export type ModelResult<TOutput> = Readonly<{
   output: TOutput;
   usage: ModelUsage;
   providerTraceId?: string;
+  governance?: Readonly<{
+    policyVersion: 'prompt-model-governance-v1';
+    registryEntryId: string;
+    promptVersion: string;
+    modelTier: 'economy' | 'balanced' | 'reasoning';
+    reservationId: string;
+    chargeId: string;
+    circuitOpened: boolean;
+  }>;
 }>;
 
 export interface ModelGateway {
@@ -59,9 +77,10 @@ export class DeterministicModelGateway implements ModelGateway {
         inputTokens: 0,
         outputTokens: 0,
         cachedInputTokens: 0,
+        costMinorUnits: 0,
+        costEvidence: 'none',
         estimatedCostMinorUnits: 0,
       },
     });
   }
 }
-

@@ -73,6 +73,7 @@ function request() {
     actorId: actor,
     channel: 'linkedin',
     dataClass: 'confidential' as const,
+    externalProcessingApproved: true,
     selectedOption: option,
     at: new Date('2026-08-31T00:00:00Z'),
   };

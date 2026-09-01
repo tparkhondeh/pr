@@ -28,6 +28,7 @@ export type DraftRequest = Readonly<{
   actorId: UserId;
   channel: string;
   dataClass: DataClass;
+  externalProcessingApproved: boolean;
   selectedOption: RankedOption;
   at: Date;
 }>;
@@ -90,7 +91,10 @@ export async function prepareDraft(
     }>
   >({
     requestId: request.requestId,
+    workflowId: request.workflowId,
+    invocationId: request.requestId,
     tenantId: request.tenantId,
+    actorId: request.actorId,
     purpose: 'draft_content',
     input: {
       option: request.selectedOption,
@@ -98,8 +102,10 @@ export async function prepareDraft(
       channel: request.channel,
     },
     dataClasses: [request.dataClass],
+    externalProcessingApproved: request.externalProcessingApproved,
     schemaName: 'evidence-bound-draft-v1',
     maxOutputTokens: 3_000,
+    at: request.at,
   });
 
   dependencies.costLedger.record({
@@ -110,7 +116,7 @@ export async function prepareDraft(
     inputTokens: modelResult.usage.inputTokens,
     outputTokens: modelResult.usage.outputTokens,
     cachedInputTokens: modelResult.usage.cachedInputTokens,
-    costMinorUnits: modelResult.usage.estimatedCostMinorUnits ?? 0,
+    costMinorUnits: modelResult.usage.costMinorUnits,
   });
 
   const draft: DraftArtifact = {
@@ -139,4 +145,3 @@ export async function prepareDraft(
     workflowCost: dependencies.costLedger.forWorkflow(request.workflowId),
   };
 }
-

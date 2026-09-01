@@ -325,6 +325,15 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
 .workflow-cost-truth p { margin: 0; color: #d8e7df; line-height: 1.65; }
 .workflow-cost-truth small { grid-column: 2; color: #91a99f; line-height: 1.65; }
 .workflow-cost-circuit { display: flex; gap: 8px; align-items: center; padding: 11px 13px; color: #ffd7bf; border: 1px solid #9a5434; background: #44271c; }
+.model-governance { display: grid; gap: 16px; padding: 22px; color: #e7e3f1; border: 1px solid #59466f; border-radius: 6px; background: linear-gradient(145deg, #241b31, #191523); }
+.model-governance .workflow-cost-head p { color: #bcb0cc; }
+.model-governance .workflow-cost-grid { border-color: #4b3a60; }
+.model-governance .workflow-cost-grid > div { border-color: #4b3a60; }
+.model-route-list { display: grid; border-top: 1px solid #4b3a60; }
+.model-route { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 14px; align-items: center; padding: 12px 2px; border-bottom: 1px solid #4b3a60; }
+.model-route > div { display: grid; gap: 4px; }
+.model-route small, .model-route span { color: #b9aec8; font-size: .76rem; }
+.model-route > span { padding-inline-start: 12px; border-inline-start: 1px solid #4b3a60; }
 .quality-gate-head { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, auto); align-items: center; gap: 15px; padding: 20px; border-bottom: 1px solid #315447; }
 .quality-gate-head h3 { margin: 3px 0 7px; color: #f0f7f3; font-size: 16px; font-weight: 500; }
 .quality-gate-head p:not(.overline) { max-width: 680px; margin: 0; color: #9fb8ac; font-size: 9px; line-height: 1.8; }
@@ -850,6 +859,9 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
   .memory-view-head { display: grid; padding: 18px; }
   .memory-summary { grid-template-columns: 1fr 1fr; }
   .workflow-cost { padding: 18px; }
+  .model-governance { padding: 18px; }
+  .model-route { grid-template-columns: 1fr; gap: 5px; }
+  .model-route > span { padding-inline-start: 0; border-inline-start: 0; }
   .workflow-cost-grid { grid-template-columns: 1fr; }
   .workflow-cost-grid > div { border-inline-end: 0; border-bottom: 1px solid #2a4c40; }
   .workflow-cost-grid > div:last-child { border-bottom: 0; }

@@ -39,6 +39,10 @@ import {
   WorkflowCostControlService,
 } from '../src/observability/workflow-cost-control.js';
 import {
+  defaultPromptModelRegistry,
+  ModelGovernanceService,
+} from '../src/providers/model-governance.js';
+import {
   InMemoryPerceptionWorkspaceRepository,
   PerceptionWorkspaceService,
 } from '../src/perception/workspace.js';
@@ -113,6 +117,34 @@ async function request(
 }
 
 describe('operational endpoints', () => {
+  it('exposes the fail-closed model registry to the owner', async () => {
+    const fixedTime = new Date('2026-09-01T12:00:00.000Z');
+    const owner = userId('owner_primary');
+    const modelGovernance = new ModelGovernanceService(
+      defaultPromptModelRegistry,
+      { tenantId: tenantId('tenant_primary'), ownerUserId: owner },
+      false,
+    );
+    const response = await request(
+      '/api/model-governance',
+      () => ({ ready: true }),
+      undefined,
+      { modelGovernance, resolveActor: () => owner, clock: () => fixedTime },
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await response.json() as {
+      generatedAt: string;
+      executionEnabled: boolean;
+      costGateRequired: boolean;
+      routes: Array<{ rollout: string }>;
+    };
+    expect(payload.generatedAt).toBe(fixedTime.toISOString());
+    expect(payload.executionEnabled).toBe(false);
+    expect(payload.costGateRequired).toBe(true);
+    expect(payload.routes.every((route) => route.rollout === 'disabled')).toBe(true);
+  });
+
   it('reports liveness without testing dependencies', async () => {
     const response = await request('/health', () => ({ ready: false }));
     expect(response.status).toBe(200);

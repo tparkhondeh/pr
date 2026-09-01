@@ -39,6 +39,13 @@ const workflowCostPolicy = {
   dailyBudgetMinorUnits: 2000, maxInvocationsPerWorkflow: 12,
   maxStepsPerWorkflow: 16, warningRatio: 0.8,
 };
+const modelGovernanceRoutes = [
+  modelRoute('extract-evidence-v1', 'extract_evidence', 'evidence-extraction-v1', 'balanced', 'high'),
+  modelRoute('synthesize-hypothesis-v1', 'synthesize_hypothesis', 'hypothesis-synthesis-v1', 'reasoning', 'high'),
+  modelRoute('strategy-options-v1', 'strategy_options', 'strategic-options-v1', 'reasoning', 'high'),
+  modelRoute('draft-content-v1', 'draft_content', 'evidence-bound-draft-v1', 'balanced', 'high'),
+  modelRoute('evaluate-output-v1', 'evaluate_output', 'evaluation-v1', 'economy', 'medium'),
+];
 const conversationTurns = new Map();
 const memoryProposals = new Map();
 const memoryRightRequests = new Map();
@@ -188,6 +195,10 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/api/workflow-cost') {
       return json(workflowCostSnapshot());
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/model-governance') {
+      return json(modelGovernanceSnapshot());
     }
 
     if (request.method === 'POST' && url.pathname === '/api/workflow-cost/reservations') {
@@ -913,6 +924,7 @@ export default {
           feedback: feedbackSnapshot(),
           strategicQuality: strategicQualitySnapshot(),
           workflowCosts: workflowCostSnapshot(),
+          modelGovernance: modelGovernanceSnapshot(),
           activity,
         },
       });
@@ -3486,6 +3498,28 @@ function workflowCostSnapshot(generatedAt = new Date()) {
     workflows,
     recentReservations: reservations.sort((a, b) => b.reservedAt.localeCompare(a.reservedAt)).slice(0, 50),
     recentCharges: charges.sort((a, b) => b.chargedAt.localeCompare(a.chargedAt)).slice(0, 50),
+  };
+}
+
+function modelGovernanceSnapshot(generatedAt = new Date()) {
+  return {
+    policyVersion: 'prompt-model-governance-v1',
+    generatedAt: generatedAt.toISOString(),
+    providerConfigured: false,
+    executionEnabled: false,
+    costGateRequired: true,
+    durableInvocationJournal: false,
+    routes: modelGovernanceRoutes,
+  };
+}
+
+function modelRoute(id, purpose, schemaName, modelTier, risk) {
+  return {
+    id, purpose, schemaName, promptVersion: `${id}.0`,
+    provider: 'not-configured', model: 'not-configured', modelTier, risk,
+    allowedDataClasses: ['public', 'internal'], maxOutputTokens: 4000,
+    estimatedCostMinorUnits: 25, plannedSteps: 1, timeoutMs: 30000,
+    rollout: 'disabled', evalSuite: `${id}-eval-v1`, evalStatus: 'not_run',
   };
 }
 

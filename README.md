@@ -11,6 +11,8 @@ Authentic Expression Gate نیز Narrative Seedهای evidence-bound، Voice Pre
 فرصت نیز Sourceهای Research را بدون Score پنهان، مانیتورینگ یا اقدام خودکار در برابر
 Goal، Audience، Timing، Quality و Conflict می‌سنجد. Workflow Cost Gate نیز پیش از
 اجرای Metered بودجه رزرو می‌کند و مصرف واقعی/اندازه‌گیری‌نشده را بدون عددسازی ثبت می‌کند.
+Prompt/Model Registry نیز نسخه، Tier، Eval، Rollout، Data Class و Timeout هر مسیر مدل
+را ثبت کرده و تا بستن Gateها Provider بیرونی را Fail-closed نگه می‌دارد.
 
 ## اسناد فعلی
 
@@ -25,6 +27,7 @@ Goal، Audience، Timing، Quality و Conflict می‌سنجد. Workflow Cost Ga
 - [Strategic Quality Baseline](docs/architecture/strategic-quality-baseline-v1.0.md)
 - [Strategic Outcome Follow-up](docs/architecture/strategic-outcome-followup-v1.0.md)
 - [Workflow Cost & Budget Gate](docs/architecture/workflow-cost-budget-v1.0.md)
+- [Prompt & Model Governance](docs/architecture/prompt-model-governance-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
@@ -305,9 +308,16 @@ Compute و زمان Human Review را تسویه کند. عبور از سقف In
 تعداد گام Circuit را باز می‌کند. `GET /api/workflow-cost` فقط Usage دارای Evidence را
 گزارش می‌کند؛ مبلغ نامعلوم صفرِ `unmetered` است و «رایگان» تفسیر نمی‌شود.
 
+`GET /api/model-governance` وضعیت `prompt-model-governance-v1` را نشان می‌دهد.
+هر Route بر Purpose و Schema دقیق Resolve می‌شود و فقط با Rollout فعال، Eval پاس‌شده،
+Schema Validator، Data Class مجاز، رضایت صریح پردازش بیرونی و Reservation موفق اجازهٔ
+فراخوانی دارد. Timeout و Provider failure با مبلغ `unmetered` تسویه می‌شوند تا Reservation
+معلق نماند و سیستم هزینه‌ای جعل نکند. Provider واقعی و Durable Invocation Journal هنوز
+فعال نیستند؛ بنابراین هیچ دادهٔ شخصی از این مسیر به بیرون ارسال نمی‌شود.
+
 نمای «داده و شفافیت» ردپای owner-scoped تصمیم‌ها، تأییدها، حقوق حافظه و Exportها را
 از `GET /api/account/activity` نمایش می‌دهد. کاربر از `GET /api/account/export` یک
 فایل JSON قابل‌حمل از Snapshot فعلی Workbench، Strategy، Memory، Assets، Draft،
-Feedback، Strategic Quality، Workflow Cost، Arbitration، Initiative، Relationships و Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
+Feedback، Strategic Quality، Workflow Cost، Model Governance، Arbitration، Initiative، Relationships و Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
 زیرساختی وارد فایل نمی‌شوند. در PostgreSQL این Timeline با RLS به Tenant و مالک فعال
 محدود است؛ نسخه‌های حافظه‌ای و Sites تا Restart موقت‌اند.
