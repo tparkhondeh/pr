@@ -15,6 +15,11 @@ import {
 } from '../src/database/migration-runner.js';
 import type { SqlQueryResult } from '../src/database/sql.js';
 import { PostgresRuntime } from '../src/database/postgres.js';
+import { PostgresStrategicQualityRepository } from '../src/database/postgres-strategic-quality.js';
+import {
+  StrategicQualityConflictError,
+  StrategicQualityService,
+} from '../src/evaluation/strategic-quality.js';
 import { defineMigration } from '../src/kernel/migrations.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
 import {
@@ -132,6 +137,7 @@ async function main(): Promise<void> {
     await verifyTenantPolicies(client);
     await verifyRuntimeIsolation(client);
     await verifyDecisionContextPersistence();
+    await verifyStrategicQualityPersistence();
     await verifyBrandRiskPersistence();
     await verifyConversationOrchestrationPersistence();
     await verifyArbitrationPersistence();
@@ -144,6 +150,107 @@ async function main(): Promise<void> {
     );
   } finally {
     await client.end();
+  }
+}
+
+async function verifyStrategicQualityPersistence(): Promise<void> {
+  const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
+  const owner = userId(userA);
+  const activeTenant = tenantId(tenantA);
+  const at = new Date('2026-09-01T03:00:00.000Z');
+  const action: WorkbenchAction = {
+    id: 'quality_integration_action', kind: 'relationship', title: 'مرور یک رابطه کلیدی',
+    rationale: 'تصمیم تستی متصل به Context.', benefits: ['وضوح'], risks: ['برداشت نادرست'],
+    prerequisites: ['مرور انسانی'], evidenceIds: ['quality_evidence'], evidenceCount: 1,
+    confidence: 0.8, riskLevel: 'low', attentionCostMinutes: 20, energyCost: 1,
+    attentionDemand: 1, visibilityCost: 1, emotionalCost: 1,
+    feasible: true, feasibilityReasons: ['within_budget'], utilityScore: 50,
+    opportunityCost: 0, rank: 1, evidenceState: 'grounded', evidenceSourceTypes: ['text_asset'],
+    interaction: 'approve', decision: integrationDecision('relationship', at),
+  };
+  const workbenchSnapshot: WorkbenchSnapshot = {
+    policyVersion: 'strategic-decision-v1', generatedAt: at.toISOString(),
+    runtime: { source: 'node_api', persistence: 'postgres' },
+    profile: { maturityPercent: 20, evidenceCount: 1, openContradictions: 0 },
+    goal: {
+      id: 'quality-goal', revision: 1, title: 'اعتماد', outcome: 'تعامل عمیق',
+      successMetrics: ['کیفیت تعامل'],
+    },
+    attentionBudget: integrationAttentionBudget,
+    decisionContext: integrationDecisionContext(at),
+    decisionFrame: integrationDecisionFrame(at),
+    evidence: {
+      state: 'grounded', strategyEvidenceCount: 1, withheldEvidenceCount: 0,
+      sourceTypes: ['text_asset'],
+    },
+    actions: [action],
+    workflow: { id: 'workbench_today', status: 'awaiting_approval', revision: 1 },
+  };
+  const service = new StrategicQualityService(
+    new PostgresStrategicQualityRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
+    { tenantId: activeTenant, ownerUserId: owner },
+    { snapshot: () => Promise.resolve(workbenchSnapshot) },
+  );
+  const command = {
+    actorId: owner,
+    requestId: 'strategic_quality_integration_one',
+    actionId: action.id,
+    decision: 'rejected' as const,
+    usefulness: 4,
+    trust: 3,
+    friction: 2,
+    note: 'نیاز به Context بیشتری دارد.',
+    expectedStrategyRevision: 1,
+    expectedDecisionContextRevision: 1,
+    expectedDecisionContextHash: 'a'.repeat(64),
+    expectedDecisionWindowEndsAt: action.decision.decisionWindowEndsAt,
+    reviewedAt: at,
+  };
+  try {
+    const recorded = await service.review(command);
+    const replayed = await service.review(command);
+    let mismatchRejected = false;
+    try {
+      await service.review({ ...command, usefulness: 5 });
+    } catch (error: unknown) {
+      mismatchRejected = error instanceof StrategicQualityConflictError &&
+        error.reason === 'idempotency_mismatch';
+    }
+    if (
+      recorded.persistence !== 'postgres' || recorded.ownerBaseline.sampleSize !== 1 ||
+      replayed.recentReviews.length !== 1 || !mismatchRejected
+    ) throw new Error('Strategic quality persistence or idempotency contract failed.');
+    await runtime.transaction(async (transaction) => {
+      await transaction.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
+      const stored = await transaction.query<Readonly<{
+        reviews: string | number;
+        requests: string | number;
+        completed_requests: boolean;
+        audit_events: string | number;
+        minimal_audit: boolean;
+      }>>(
+        `SELECT
+           (SELECT count(*) FROM app.strategic_recommendation_reviews
+             WHERE tenant_id = $1 AND owner_user_id = $2) AS reviews,
+           (SELECT count(*) FROM app.strategic_review_requests
+             WHERE tenant_id = $1 AND owner_user_id = $2) AS requests,
+           (SELECT bool_and(review_id IS NOT NULL) FROM app.strategic_review_requests
+             WHERE tenant_id = $1 AND owner_user_id = $2) AS completed_requests,
+           (SELECT count(*) FROM app.audit_events
+             WHERE tenant_id = $1 AND event_type = 'strategic_recommendation.rejected') AS audit_events,
+           (SELECT bool_and(NOT (metadata ?| ARRAY['actionTitle', 'note'])) FROM app.audit_events
+             WHERE tenant_id = $1 AND event_type = 'strategic_recommendation.rejected') AS minimal_audit`,
+        [tenantA, userA],
+      );
+      const row = stored.rows[0];
+      if (!row) throw new Error('Stored strategic review verification row is missing.');
+      if (
+        Number(row.reviews) !== 1 || Number(row.requests) !== 1 || !row.completed_requests ||
+        Number(row.audit_events) !== 1 || !row.minimal_audit
+      ) throw new Error('Stored strategic review, request journal or audit trail is incomplete.');
+    });
+  } finally {
+    await runtime.close();
   }
 }
 

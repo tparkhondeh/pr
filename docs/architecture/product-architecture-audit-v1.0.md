@@ -251,6 +251,9 @@ goal، positioning gap، action scenarios، opportunity cost و explainability.
 
 Gate: expert rubric و user acceptance به baseline برسند؛ unsupported claim زیر threshold؛ cost/workflow داخل budget.
 
+وضعیت اجرا: `strategic-quality-v1` ثبت Rubric و Review متصل به Context را فراهم کرده است؛
+تا پیش از پنج نمونه واقعی `baselineMetrics` خالی می‌ماند و Gate همچنان در حالت جمع‌آوری است.
+
 ### Phase 3 — Authentic Execution
 
 voice، narrative، claims، LinkedIn adaptation، approval/export و edit learning.

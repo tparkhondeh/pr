@@ -28,6 +28,11 @@ import {
 import { ConversationIntakeService } from './conversation/intake.js';
 import { PostgresConversationMemoryRepository } from './conversation/repository.js';
 import { PostgresRuntime } from './database/postgres.js';
+import { PostgresStrategicQualityRepository } from './database/postgres-strategic-quality.js';
+import {
+  InMemoryStrategicQualityRepository,
+  StrategicQualityService,
+} from './evaluation/strategic-quality.js';
 import {
   FeedbackLearningService,
   InMemoryFeedbackLearningRepository,
@@ -184,6 +189,16 @@ const learning = new FeedbackLearningService(learningRepository, {
   tenantId: activeTenant,
   ownerUserId: owner,
 });
+const strategicQuality = new StrategicQualityService(
+  postgres && environment.database
+    ? new PostgresStrategicQualityRepository(postgres, {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+      })
+    : new InMemoryStrategicQualityRepository(),
+  { tenantId: activeTenant, ownerUserId: owner },
+  workbench,
+);
 const expression = new AuthenticExpressionService(
   { tenantId: activeTenant, ownerUserId: owner },
   assets,
@@ -283,6 +298,7 @@ const requestHandler = createRequestHandler(
     decisionContext,
     drafts,
     learning,
+    strategicQuality,
     conversation,
     auditTrail,
     assets,

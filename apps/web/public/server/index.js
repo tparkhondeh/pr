@@ -27,6 +27,8 @@ const draftRequests = new Map();
 const feedbackEvents = new Map();
 const preferenceProposals = new Map();
 const feedbackRequests = new Map();
+const strategicRecommendationReviews = new Map();
+const strategicReviewRequests = new Map();
 const conversationTurns = new Map();
 const memoryProposals = new Map();
 const memoryRightRequests = new Map();
@@ -168,6 +170,97 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/api/feedback') {
       return json(feedbackSnapshot());
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/strategic-quality') {
+      return json(strategicQualitySnapshot());
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/strategic-quality/reviews') {
+      const body = await readJson(request);
+      if (!validStrategicReview(body)) {
+        return json({ error: 'invalid_strategic_review_input' }, 400);
+      }
+      const reviewedAt = new Date();
+      if (body.expectedStrategyRevision !== strategy.revision) {
+        return json({ error: 'strategy_changed' }, 409);
+      }
+      if (
+        body.expectedDecisionContextRevision !== decisionContext.revision ||
+        body.expectedDecisionContextHash !== decisionContext.contextHash
+      ) return json({ error: 'decision_context_changed' }, 409);
+      const decisionWindowEndsAt = new Date(body.expectedDecisionWindowEndsAt);
+      if (Number.isNaN(decisionWindowEndsAt.getTime()) || decisionWindowEndsAt <= reviewedAt) {
+        return json({ error: 'decision_expired' }, 409);
+      }
+      const workbench = snapshot();
+      const action = workbench.actions.find((candidate) => candidate.id === body.actionId);
+      if (!action) return json({ error: 'strategic_recommendation_not_found' }, 404);
+      if (
+        action.decision.strategyRevision !== body.expectedStrategyRevision ||
+        action.decision.decisionContextRevision !== body.expectedDecisionContextRevision ||
+        action.decision.decisionContextHash !== body.expectedDecisionContextHash
+      ) return json({ error: 'decision_context_changed' }, 409);
+      if (body.decision === 'accepted' && workbench.workflow.approvedActionId !== action.id) {
+        return json({ error: 'acceptance_not_approved' }, 409);
+      }
+      const normalized = {
+        actionId: body.actionId,
+        decision: body.decision,
+        usefulness: body.usefulness,
+        trust: body.trust,
+        friction: body.friction,
+        note: typeof body.note === 'string' && body.note.trim() ? body.note.trim() : null,
+        strategyRevision: body.expectedStrategyRevision,
+        decisionContextRevision: body.expectedDecisionContextRevision,
+        decisionContextHash: body.expectedDecisionContextHash,
+        decisionWindowEndsAt: decisionWindowEndsAt.toISOString(),
+      };
+      const fingerprint = JSON.stringify(normalized);
+      const repeated = strategicReviewRequests.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json(strategicQualitySnapshot(reviewedAt))
+          : json({ error: 'idempotency_mismatch' }, 409);
+      }
+      const prior = currentStrategicReviews().find((review) =>
+        review.actionId === action.id && review.strategyRevision === strategy.revision &&
+        review.decisionContextRevision === decisionContext.revision &&
+        review.decisionContextHash === decisionContext.contextHash,
+      );
+      const review = {
+        id: crypto.randomUUID(),
+        actionId: action.id,
+        actionTitle: action.title,
+        actionKind: action.kind,
+        actionRank: action.rank,
+        decision: body.decision,
+        usefulness: body.usefulness,
+        trust: body.trust,
+        friction: body.friction,
+        ...(normalized.note ? { note: normalized.note } : {}),
+        strategyRevision: strategy.revision,
+        decisionContextRevision: decisionContext.revision,
+        decisionContextHash: decisionContext.contextHash,
+        decisionWindowEndsAt: normalized.decisionWindowEndsAt,
+        reviewedAt: reviewedAt.toISOString(),
+        ...(prior ? { supersedesReviewId: prior.id } : {}),
+      };
+      strategicRecommendationReviews.set(review.id, review);
+      strategicReviewRequests.set(body.requestId, { fingerprint, reviewId: review.id });
+      recordAudit(`strategic-quality.review:${body.requestId}`, {
+        eventType: `strategic_recommendation.${body.decision}`,
+        resourceType: 'strategic_recommendation_review', resourceId: review.id,
+        purpose: 'personal_understanding', decision: body.decision,
+        metadata: {
+          requestId: body.requestId, actionId: action.id,
+          strategyRevision: strategy.revision, decisionContextRevision: decisionContext.revision,
+          decisionContextHash: decisionContext.contextHash,
+          usefulness: body.usefulness, trust: body.trust, friction: body.friction,
+        },
+        occurredAt: review.reviewedAt,
+      });
+      return json(strategicQualitySnapshot(reviewedAt));
     }
 
     if (request.method === 'GET' && url.pathname === '/api/research') {
@@ -620,6 +713,7 @@ export default {
           relationships: relationshipWorkspaceSnapshot(),
           perception: perceptionWorkspaceSnapshot(),
           feedback: feedbackSnapshot(),
+          strategicQuality: strategicQualitySnapshot(),
           activity,
         },
       });
@@ -3037,6 +3131,155 @@ function feedbackSnapshot() {
   };
 }
 
+function strategicQualitySnapshot(generatedAt = new Date()) {
+  const workbench = snapshot();
+  const recentReviews = [...strategicRecommendationReviews.values()]
+    .sort((left, right) => right.reviewedAt.localeCompare(left.reviewedAt))
+    .slice(0, 50);
+  const current = currentStrategicReviews(recentReviews);
+  const accepted = current.filter((review) => review.decision === 'accepted').length;
+  const rejected = current.filter((review) => review.decision === 'rejected').length;
+  const needsRevision = current.filter((review) => review.decision === 'needs_revision').length;
+  const observedMetrics = current.length === 0 ? null : strategicReviewMetrics(current, accepted);
+  const established = current.length >= 5;
+  return {
+    policyVersion: 'strategic-quality-v1',
+    generatedAt: generatedAt.toISOString(),
+    persistence: 'ephemeral',
+    context: {
+      strategyRevision: workbench.goal.revision,
+      decisionContextRevision: workbench.decisionContext.revision,
+      decisionContextHash: workbench.decisionContext.contextHash,
+      decisionWindowEndsAt: workbench.decisionFrame.decisionWindow.expiresAt,
+    },
+    rubric: strategicQualityRubric(workbench),
+    ownerBaseline: {
+      status: established ? 'established' : 'collecting',
+      minimumSampleSize: 5,
+      sampleSize: current.length,
+      remainingSamples: Math.max(0, 5 - current.length),
+      accepted,
+      rejected,
+      needsRevision,
+      observedMetrics,
+      baselineMetrics: established ? observedMetrics : null,
+    },
+    recentReviews,
+  };
+}
+
+function strategicQualityRubric(workbench) {
+  const meaningfulSignals = new Set([
+    'کیفیت تعامل', 'عمق تعامل', 'تغییر رابطه', 'فرصت ایجادشده',
+    'تغییر ادراک', 'پیام خصوصی', 'پشیمانی کاربر', 'رضایت کاربر', 'انرژی کاربر',
+  ]);
+  const contentActions = workbench.actions.filter((action) => action.kind === 'content');
+  const checks = [
+    {
+      id: 'explicit_decision_frame', severity: 'critical',
+      passed: Boolean(
+        workbench.decisionFrame.why.objective && workbench.decisionFrame.forWhom &&
+        workbench.decisionFrame.decisionWindow.expiresAt &&
+        workbench.decisionFrame.rankingTransparency.opportunityCostVisible &&
+        !workbench.decisionFrame.rankingTransparency.hiddenScoreUsed
+      ),
+      evidence: workbench.decisionFrame.policyVersion,
+    },
+    {
+      id: 'multidimensional_attention_budget', severity: 'high',
+      passed: workbench.actions.every((action) =>
+        action.attentionCostMinutes >= 0 && action.energyCost >= 1 && action.attentionDemand >= 1 &&
+        action.visibilityCost >= 1 && action.emotionalCost >= 1 &&
+        (workbench.evidence.state === 'insufficient' || action.opportunityCost !== null),
+      ),
+      evidence: `${String(workbench.actions.length)} action cost contracts`,
+    },
+    {
+      id: 'human_gated_recommendations', severity: 'critical',
+      passed: workbench.actions.every((action) =>
+        action.decision.requiredApproval === 'human' &&
+        !action.decision.boundaries.recommendationIsExecution &&
+        !action.decision.boundaries.publicApprovalGranted &&
+        !action.decision.boundaries.externalActionPermitted,
+      ),
+      evidence: `${String(workbench.actions.length)} human-gated actions`,
+    },
+    {
+      id: 'deliberate_no_action', severity: 'critical',
+      passed: workbench.actions.some((action) =>
+        action.kind === 'no_action' && action.decision.posture === 'delay' && action.decision.format === 'none',
+      ),
+      evidence: workbench.actions.map((action) => action.kind).join(' | '),
+    },
+    {
+      id: 'grounded_or_abstaining', severity: 'critical',
+      passed: workbench.evidence.state === 'grounded'
+        ? workbench.actions.every((action) => action.evidenceState === 'grounded')
+        : workbench.actions.every((action) => action.interaction !== 'approve' || action.kind === 'no_action'),
+      evidence: `${workbench.evidence.state}:${String(workbench.evidence.strategyEvidenceCount)}`,
+    },
+    {
+      id: 'current_context_binding', severity: 'critical',
+      passed: workbench.actions.every((action) =>
+        action.decision.strategyRevision === workbench.goal.revision &&
+        action.decision.decisionContextRevision === workbench.decisionContext.revision &&
+        action.decision.decisionContextHash === workbench.decisionContext.contextHash,
+      ),
+      evidence: `strategy:${String(workbench.goal.revision)} context:${String(workbench.decisionContext.revision)}`,
+    },
+    {
+      id: 'mother_concept_before_platform', severity: 'high',
+      passed: contentActions.every((action) =>
+        action.decision.format === 'mother_concept' && !action.decision.platformSelected,
+      ),
+      evidence: contentActions.length === 0 ? 'not_applicable' : `${String(contentActions.length)} mother concepts`,
+    },
+    {
+      id: 'meaningful_learning_signals', severity: 'high',
+      passed: workbench.evidence.state === 'insufficient' || workbench.actions.every((action) =>
+        action.decision.measurementPlan.signals.some((signal) => meaningfulSignals.has(signal)),
+      ),
+      evidence: `${String(workbench.actions.length)} meaningful measurement plans`,
+    },
+  ];
+  const passedChecks = checks.filter((check) => check.passed).length;
+  const criticalFailures = checks.filter((check) => !check.passed && check.severity === 'critical').length;
+  return {
+    policyVersion: 'strategic-quality-v1',
+    status: checks.every((check) => check.passed) ? 'pass' : 'fail',
+    passedChecks,
+    totalChecks: checks.length,
+    criticalFailures,
+    checks,
+  };
+}
+
+function currentStrategicReviews(reviews = [...strategicRecommendationReviews.values()]) {
+  const superseded = new Set(reviews.flatMap((review) => review.supersedesReviewId ? [review.supersedesReviewId] : []));
+  const latest = new Map();
+  for (const review of [...reviews]
+    .filter((candidate) => !superseded.has(candidate.id))
+    .sort((left, right) => right.reviewedAt.localeCompare(left.reviewedAt))) {
+    const key = [
+      review.actionId, review.strategyRevision, review.decisionContextRevision, review.decisionContextHash,
+    ].join(':');
+    if (!latest.has(key)) latest.set(key, review);
+  }
+  return [...latest.values()];
+}
+
+function strategicReviewMetrics(reviews, accepted) {
+  const average = (key) => Math.round(
+    (reviews.reduce((total, review) => total + review[key], 0) / reviews.length) * 1000,
+  ) / 1000;
+  return {
+    acceptanceRate: Math.round((accepted / reviews.length) * 1000) / 1000,
+    averageUsefulness: average('usefulness'),
+    averageTrust: average('trust'),
+    averageFriction: average('friction'),
+  };
+}
+
 function memorySnapshot() {
   const records = [...memoryProposals.values()]
     .filter((proposal) => proposal.confirmedAt)
@@ -3170,6 +3413,19 @@ function reserveFeedbackRequest(requestId, fingerprint) {
 
 function validFeedbackRequest(body) {
   return typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId);
+}
+
+function validStrategicReview(body) {
+  return validFeedbackRequest(body) &&
+    typeof body.actionId === 'string' && body.actionId.trim().length >= 1 && body.actionId.length <= 120 &&
+    ['accepted', 'rejected', 'needs_revision'].includes(body.decision) &&
+    [body.usefulness, body.trust, body.friction].every((value) => Number.isInteger(value) && value >= 1 && value <= 5) &&
+    (body.note === undefined || (typeof body.note === 'string' && body.note.trim().length <= 1000)) &&
+    Number.isSafeInteger(body.expectedStrategyRevision) && body.expectedStrategyRevision >= 1 &&
+    Number.isSafeInteger(body.expectedDecisionContextRevision) && body.expectedDecisionContextRevision >= 1 &&
+    typeof body.expectedDecisionContextHash === 'string' &&
+    /^[0-9a-f]{64}$/u.test(body.expectedDecisionContextHash) &&
+    typeof body.expectedDecisionWindowEndsAt === 'string';
 }
 
 function firstLine(value) {

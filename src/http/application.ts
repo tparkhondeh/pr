@@ -62,6 +62,15 @@ import {
   type PreferenceDecision,
 } from '../feedback/workspace.js';
 import {
+  StrategicQualityConflictError,
+  StrategicQualityNotFoundError,
+  StrategicQualityPermissionError,
+  StrategicQualityValidationError,
+  type StrategicQualityService,
+  type StrategicQualitySnapshot,
+  type StrategicRecommendationDecision,
+} from '../evaluation/strategic-quality.js';
+import {
   AuthenticExpressionPermissionError,
   AuthenticExpressionValidationError,
   type AuthenticExpressionReview,
@@ -185,6 +194,7 @@ export type ApplicationDependencies = Readonly<{
     'sources' | 'snapshot' | 'create' | 'edit' | 'approve' | 'export'
   >;
   learning?: Pick<FeedbackLearningService, 'snapshot' | 'rejectDraft' | 'decide'>;
+  strategicQuality?: Pick<StrategicQualityService, 'snapshot' | 'review'>;
   research?: Pick<ResearchWorkspaceService, 'snapshot' | 'importSource'>;
   claims?: Pick<ClaimGovernanceService, 'snapshot' | 'review'>;
   risk?: Pick<BrandProtectionService, 'snapshot' | 'review' | 'authorizeAction'>;
@@ -280,6 +290,16 @@ export function createRequestHandler(
 
     if (request.method === 'GET' && path === '/api/feedback') {
       await handleFeedbackSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/strategic-quality') {
+      await handleStrategicQualitySnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/strategic-quality/reviews') {
+      await handleStrategicQualityReview(request, response, dependencies);
       return;
     }
 
@@ -504,6 +524,132 @@ async function handleFeedbackSnapshot(
   } catch (error: unknown) {
     sendFeedbackError(response, error);
   }
+}
+
+async function handleStrategicQualitySnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = strategicQualityActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.strategicQuality?.snapshot(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Strategic quality service disappeared.');
+    sendJson(response, 200, serializeStrategicQuality(snapshot));
+  } catch (error: unknown) {
+    sendStrategicQualityError(response, error);
+  }
+}
+
+async function handleStrategicQualityReview(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = strategicQualityActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const actionId = body['actionId'];
+    const decision = body['decision'];
+    const usefulness = body['usefulness'];
+    const trust = body['trust'];
+    const friction = body['friction'];
+    const note = body['note'];
+    const expectedStrategyRevision = body['expectedStrategyRevision'];
+    const expectedDecisionContextRevision = body['expectedDecisionContextRevision'];
+    const expectedDecisionContextHash = body['expectedDecisionContextHash'];
+    const expectedDecisionWindowEndsAt = body['expectedDecisionWindowEndsAt'];
+    if (
+      typeof requestId !== 'string' || typeof actionId !== 'string' ||
+      !isStrategicRecommendationDecision(decision) ||
+      typeof usefulness !== 'number' || typeof trust !== 'number' || typeof friction !== 'number' ||
+      (note !== undefined && typeof note !== 'string') ||
+      typeof expectedStrategyRevision !== 'number' ||
+      typeof expectedDecisionContextRevision !== 'number' ||
+      typeof expectedDecisionContextHash !== 'string' ||
+      typeof expectedDecisionWindowEndsAt !== 'string'
+    ) {
+      sendJson(response, 400, { error: 'invalid_strategic_review_input' });
+      return;
+    }
+    const reviewedAt = now(dependencies);
+    const snapshot = await dependencies.strategicQuality?.review({
+      actorId,
+      requestId,
+      actionId,
+      decision,
+      usefulness,
+      trust,
+      friction,
+      ...(note !== undefined ? { note } : {}),
+      expectedStrategyRevision,
+      expectedDecisionContextRevision,
+      expectedDecisionContextHash,
+      expectedDecisionWindowEndsAt,
+      reviewedAt,
+    });
+    if (!snapshot) throw new Error('Strategic quality service disappeared.');
+    await recordMutationAudit(dependencies, {
+      requestId: `strategic-quality.review:${requestId}`,
+      eventType: `strategic_recommendation.${decision}`,
+      resourceType: 'strategic_recommendation_review',
+      resourceId: actionId,
+      actorId,
+      purpose: 'personal_understanding',
+      decision,
+      metadata: {
+        strategyRevision: expectedStrategyRevision,
+        decisionContextRevision: expectedDecisionContextRevision,
+        decisionContextHash: expectedDecisionContextHash,
+        usefulness,
+        trust,
+        friction,
+      },
+      occurredAt: reviewedAt,
+    });
+    sendJson(response, 200, serializeStrategicQuality(snapshot));
+  } catch (error: unknown) {
+    sendStrategicQualityError(response, error);
+  }
+}
+
+function strategicQualityActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.strategicQuality) {
+    sendJson(response, 503, { error: 'strategic_quality_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function serializeStrategicQuality(snapshot: StrategicQualitySnapshot): Record<string, unknown> {
+  return {
+    policyVersion: snapshot.policyVersion,
+    generatedAt: snapshot.generatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    context: {
+      ...snapshot.context,
+      decisionWindowEndsAt: snapshot.context.decisionWindowEndsAt.toISOString(),
+    },
+    rubric: snapshot.rubric,
+    ownerBaseline: snapshot.ownerBaseline,
+    recentReviews: snapshot.recentReviews.map((review) => ({
+      ...review,
+      decisionWindowEndsAt: review.decisionWindowEndsAt.toISOString(),
+      reviewedAt: review.reviewedAt.toISOString(),
+    })),
+  };
 }
 
 async function handleDraftRejection(
@@ -1977,11 +2123,12 @@ async function handleAccountExport(
   }
   const exportedAt = now(dependencies);
   try {
-    const [workbench, strategy, draft, feedback, memory, assets, research, claims, arbitration, initiative, relationships, perception, activity] = await Promise.all([
+    const [workbench, strategy, draft, feedback, strategicQuality, memory, assets, research, claims, arbitration, initiative, relationships, perception, activity] = await Promise.all([
       dependencies.workbench.snapshot(),
       dependencies.strategy.snapshot(actorId),
       dependencies.drafts.snapshot(actorId, exportedAt),
       dependencies.learning.snapshot(actorId, exportedAt),
+      dependencies.strategicQuality?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.conversation.memorySnapshot({
         tenantId: dependencies.tenantId,
         actorId,
@@ -2033,6 +2180,7 @@ async function handleAccountExport(
           perception: perception ? serializePerceptionSnapshot(perception) : null,
           draft: draft ? serializeDraft(draft) : null,
           feedback: serializeFeedback(feedback),
+          strategicQuality: strategicQuality ? serializeStrategicQuality(strategicQuality) : null,
           activity: serializeAuditTrail(activity),
         },
       },
@@ -2332,6 +2480,34 @@ function sendFeedbackError(response: ServerResponse, error: unknown): void {
     return;
   }
   sendJson(response, 500, { error: 'feedback_failed' });
+}
+
+function sendStrategicQualityError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof StrategicQualityValidationError) {
+    sendJson(response, 400, {
+      error: error instanceof InvalidJsonBodyError ? error.code : 'invalid_strategic_review_input',
+    });
+    return;
+  }
+  if (error instanceof StrategicQualityPermissionError) {
+    sendJson(response, 403, { error: 'strategic_quality_permission_denied' });
+    return;
+  }
+  if (error instanceof StrategicQualityNotFoundError) {
+    sendJson(response, 404, { error: 'strategic_recommendation_not_found' });
+    return;
+  }
+  if (error instanceof StrategicQualityConflictError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  sendJson(response, 500, { error: 'strategic_quality_failed' });
+}
+
+function isStrategicRecommendationDecision(
+  value: unknown,
+): value is StrategicRecommendationDecision {
+  return value === 'accepted' || value === 'rejected' || value === 'needs_revision';
 }
 
 function isPreferenceDecision(value: unknown): value is PreferenceDecision {

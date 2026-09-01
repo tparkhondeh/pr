@@ -41,11 +41,12 @@ describe('strategic decision quality gate', () => {
             {
               id: 'multidimensional-attention-budget',
               severity: 'high',
-              description: 'Every option must expose time, energy, visibility and emotional cost.',
+              description: 'Every option must expose time, energy, attention, visibility and emotional cost.',
               evaluate: (output) => ({
                 passed: output.actions.every((action) => (
                   action.attentionCostMinutes >= 0
                   && action.energyCost >= 1
+                  && action.attentionDemand >= 1
                   && action.visibilityCost >= 1
                   && action.emotionalCost >= 1
                   && action.opportunityCost !== null

@@ -56,6 +56,7 @@ import {
   loadDraftWorkspace,
   loadDraftSources,
   loadFeedbackLearning,
+  loadStrategicQuality,
   loadAuditTrail,
   loadArbitration,
   loadInitiative,
@@ -74,6 +75,7 @@ import {
   saveStrategyContext,
   saveDecisionContext,
   submitConversationTurn,
+  submitStrategicRecommendationReview,
   updateInitiativeSettings,
   type AppliedMemoryRight,
   type ArbitrationWorkspaceSnapshot,
@@ -87,6 +89,8 @@ import {
   type DraftSourceSnapshot,
   type DraftWorkspaceSnapshot,
   type FeedbackLearningSnapshot,
+  type StrategicQualitySnapshot,
+  type StrategicRecommendationDecision,
   type MemoryRightKind,
   type OnboardingSnapshot,
   type OpportunityRadarSnapshot,
@@ -204,6 +208,7 @@ export function App() {
   const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [draftViewError, setDraftViewError] = useState<string | null>(null);
   const [feedbackSnapshot, setFeedbackSnapshot] = useState<FeedbackLearningSnapshot | null>(null);
+  const [strategicQualitySnapshot, setStrategicQualitySnapshot] = useState<StrategicQualitySnapshot | null>(null);
   const [feedbackViewState, setFeedbackViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [feedbackViewError, setFeedbackViewError] = useState<string | null>(null);
   const [auditSnapshot, setAuditSnapshot] = useState<AuditTrailSnapshot | null>(null);
@@ -716,7 +721,12 @@ export function App() {
     setFeedbackViewState('loading');
     setFeedbackViewError(null);
     try {
-      setFeedbackSnapshot(await loadFeedbackLearning(signal));
+      const [feedback, quality] = await Promise.all([
+        loadFeedbackLearning(signal),
+        loadStrategicQuality(signal),
+      ]);
+      setFeedbackSnapshot(feedback);
+      setStrategicQualitySnapshot(quality);
       setFeedbackViewState('ready');
     } catch (caught: unknown) {
       if (signal?.aborted) return;
@@ -844,6 +854,39 @@ export function App() {
         decision,
       }));
       setFeedbackViewState('ready');
+    } catch (caught: unknown) {
+      setFeedbackViewError(errorMessage(caught));
+      setFeedbackViewState('error');
+    }
+  };
+
+  const reviewStrategicRecommendation = async (input: Readonly<{
+    actionId: string;
+    decision: StrategicRecommendationDecision;
+    usefulness: number;
+    trust: number;
+    friction: number;
+    note?: string;
+  }>) => {
+    if (feedbackViewState === 'mutating' || !snapshot) return;
+    const action = snapshot.actions.find((candidate) => candidate.id === input.actionId);
+    if (!action) {
+      setFeedbackViewError('این توصیه دیگر در زمینه فعلی وجود ندارد؛ صفحه را به‌روزرسانی کنید.');
+      return;
+    }
+    setFeedbackViewState('mutating');
+    setFeedbackViewError(null);
+    try {
+      setStrategicQualitySnapshot(await submitStrategicRecommendationReview({
+        requestId: `strategic_review_${crypto.randomUUID()}`,
+        ...input,
+        expectedStrategyRevision: action.decision.strategyRevision,
+        expectedDecisionContextRevision: action.decision.decisionContextRevision,
+        expectedDecisionContextHash: action.decision.decisionContextHash,
+        expectedDecisionWindowEndsAt: action.decision.decisionWindowEndsAt,
+      }));
+      setFeedbackViewState('ready');
+      await refreshAudit();
     } catch (caught: unknown) {
       setFeedbackViewError(errorMessage(caught));
       setFeedbackViewState('error');
@@ -1335,8 +1378,11 @@ export function App() {
             error={feedbackViewError}
             onDecide={decidePreference}
             onRefresh={() => refreshFeedback()}
+            onReview={reviewStrategicRecommendation}
+            quality={strategicQualitySnapshot}
             snapshot={feedbackSnapshot}
             state={feedbackViewState}
+            workbench={snapshot}
           />
         ) : activeView === 'data' ? (
           <DataRightsPanel
@@ -2157,15 +2203,39 @@ function FeedbackLearningPanel({
   error,
   onDecide,
   onRefresh,
+  onReview,
+  quality,
   snapshot,
   state,
+  workbench,
 }: Readonly<{
   error: string | null;
   onDecide: (proposalId: string, decision: 'applied' | 'rejected' | 'revoked') => Promise<void>;
   onRefresh: () => Promise<void>;
+  onReview: (input: Readonly<{
+    actionId: string;
+    decision: StrategicRecommendationDecision;
+    usefulness: number;
+    trust: number;
+    friction: number;
+    note?: string;
+  }>) => Promise<void>;
+  quality: StrategicQualitySnapshot | null;
   snapshot: FeedbackLearningSnapshot | null;
   state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
+  workbench: WorkbenchSnapshot;
 }>) {
+  const [reviewActionId, setReviewActionId] = useState(
+    workbench.workflow.approvedActionId ?? workbench.actions[0].id,
+  );
+  const [reviewDecision, setReviewDecision] = useState<StrategicRecommendationDecision>('needs_revision');
+  const [reviewUsefulness, setReviewUsefulness] = useState(3);
+  const [reviewTrust, setReviewTrust] = useState(3);
+  const [reviewFriction, setReviewFriction] = useState(3);
+  const [reviewNote, setReviewNote] = useState('');
+  const reviewAction = workbench.actions.find((action) => action.id === reviewActionId) ?? workbench.actions[0];
+  const acceptanceHasApproval = reviewDecision !== 'accepted' ||
+    workbench.workflow.approvedActionId === reviewAction.id;
   if ((state === 'idle' || state === 'loading') && !snapshot) {
     return (
       <section className="memory-view-state" aria-live="polite">
@@ -2197,6 +2267,114 @@ function FeedbackLearningPanel({
           <RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی
         </button>
       </header>
+      {quality ? (
+        <section className="strategic-quality" aria-label="خط مبنای کیفیت توصیه استراتژیک">
+          <div className="quality-gate-head">
+            <div>
+              <p className="overline">Strategic Quality Gate · {quality.policyVersion}</p>
+              <h3>کیفیت توصیه؛ بدون عددسازی</h3>
+              <p>
+                کنترل خودکار فقط قرارداد تصمیم را می‌سنجد. خط مبنای انسانی تا ثبت {quality.ownerBaseline.minimumSampleSize} بازبینی واقعی، موقت باقی می‌ماند.
+              </p>
+            </div>
+            <div className={`quality-status ${quality.rubric.status}`}>
+              <span>Rubric خودکار</span>
+              <strong>{quality.rubric.passedChecks}/{quality.rubric.totalChecks}</strong>
+              <small>{quality.rubric.status === 'pass' ? 'قرارداد سالم' : `${String(quality.rubric.criticalFailures)} شکست بحرانی`}</small>
+            </div>
+            <div className={`quality-status ${quality.ownerBaseline.status}`}>
+              <span>Baseline مالک</span>
+              <strong>{quality.ownerBaseline.sampleSize}/{quality.ownerBaseline.minimumSampleSize}</strong>
+              <small>{quality.ownerBaseline.status === 'established' ? 'تثبیت‌شده' : `${String(quality.ownerBaseline.remainingSamples)} نمونه تا baseline`}</small>
+            </div>
+          </div>
+          <div className="quality-body">
+            <form
+              className="quality-review-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!acceptanceHasApproval) return;
+                void onReview({
+                  actionId: reviewAction.id,
+                  decision: reviewDecision,
+                  usefulness: reviewUsefulness,
+                  trust: reviewTrust,
+                  friction: reviewFriction,
+                  ...(reviewNote.trim() ? { note: reviewNote.trim() } : {}),
+                }).then(() => { setReviewNote(''); });
+              }}
+            >
+              <h4>بازبینی یک توصیه در همین زمینه</h4>
+              <label>
+                توصیه
+                <select value={reviewAction.id} onChange={(event) => { setReviewActionId(event.target.value); }}>
+                  {workbench.actions.map((action) => (
+                    <option key={action.id} value={action.id}>رتبه {action.rank} · {action.title}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                تصمیم شما
+                <select
+                  value={reviewDecision}
+                  onChange={(event) => { setReviewDecision(event.target.value as StrategicRecommendationDecision); }}
+                >
+                  <option value="needs_revision">نیازمند بازنگری</option>
+                  <option value="rejected">رد می‌کنم</option>
+                  <option value="accepted">می‌پذیرم؛ فقط پس از Approval</option>
+                </select>
+              </label>
+              <div className="quality-ratings">
+                <RatingSelect label="مفیدبودن" onChange={setReviewUsefulness} value={reviewUsefulness} />
+                <RatingSelect label="اعتماد" onChange={setReviewTrust} value={reviewTrust} />
+                <RatingSelect label="اصطکاک" onChange={setReviewFriction} value={reviewFriction} />
+              </div>
+              <label>
+                توضیح اختیاری
+                <textarea
+                  maxLength={1000}
+                  onChange={(event) => { setReviewNote(event.target.value); }}
+                  placeholder="چه چیزی مفید، نامتناسب یا مبهم بود؟"
+                  rows={3}
+                  value={reviewNote}
+                />
+              </label>
+              {!acceptanceHasApproval ? (
+                <small className="quality-warning">برای ثبت «پذیرفته شد»، ابتدا همین Action را در بخش امروز Approve کنید.</small>
+              ) : null}
+              <button disabled={state === 'mutating' || !acceptanceHasApproval} type="submit">
+                {state === 'mutating' ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
+                ثبت بازبینی متصل به زمینه
+              </button>
+              <small>این بازخورد استراتژی یا هویت را خودکار تغییر نمی‌دهد و هیچ اقدام بیرونی اجرا نمی‌کند.</small>
+            </form>
+            <aside className="quality-evidence">
+              <h4>شواهد کیفیت</h4>
+              {quality.ownerBaseline.observedMetrics ? (
+                <div className="quality-metrics">
+                  <div><span>پذیرش مشاهده‌شده</span><strong>{Math.round(quality.ownerBaseline.observedMetrics.acceptanceRate * 100)}٪</strong></div>
+                  <div><span>مفیدبودن</span><strong>{formatRating(quality.ownerBaseline.observedMetrics.averageUsefulness)}</strong></div>
+                  <div><span>اعتماد</span><strong>{formatRating(quality.ownerBaseline.observedMetrics.averageTrust)}</strong></div>
+                  <div><span>اصطکاک</span><strong>{formatRating(quality.ownerBaseline.observedMetrics.averageFriction)}</strong></div>
+                </div>
+              ) : <p>هنوز بازبینی انسانی ثبت نشده است.</p>}
+              {quality.ownerBaseline.status === 'collecting' && quality.ownerBaseline.observedMetrics ? (
+                <small>این اعداد مشاهده‌ی موقت‌اند، نه baseline تثبیت‌شده.</small>
+              ) : null}
+              <ol>
+                {quality.recentReviews.slice(0, 5).map((review) => (
+                  <li key={review.id}>
+                    <span>{strategicReviewDecisionLabel(review.decision)} · {review.actionTitle}</span>
+                    <time>{formatDate(review.reviewedAt)}</time>
+                  </li>
+                ))}
+              </ol>
+            </aside>
+          </div>
+        </section>
+      ) : (
+        <div className="strategy-error" role="status"><TriangleAlert size={15} /> Strategic Quality Gate هنوز دریافت نشده است.</div>
+      )}
       <div className="learning-summary">
         <div><span>سیگنال‌های اخیر</span><strong>{snapshot.summary.recentEvents}</strong></div>
         <div><span>منتظر تصمیم شما</span><strong>{snapshot.summary.proposed}</strong></div>
@@ -2247,6 +2425,39 @@ function FeedbackLearningPanel({
       {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
     </section>
   );
+}
+
+function RatingSelect({
+  label,
+  onChange,
+  value,
+}: Readonly<{
+  label: string;
+  onChange: (value: number) => void;
+  value: number;
+}>) {
+  return (
+    <label>
+      {label}
+      <select onChange={(event) => { onChange(Number(event.target.value)); }} value={value}>
+        {[1, 2, 3, 4, 5].map((rating) => (
+          <option key={rating} value={rating}>{rating} از ۵</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function strategicReviewDecisionLabel(decision: StrategicRecommendationDecision): string {
+  return {
+    accepted: 'پذیرفته شد',
+    rejected: 'رد شد',
+    needs_revision: 'نیازمند بازنگری',
+  }[decision];
+}
+
+function formatRating(value: number): string {
+  return `${new Intl.NumberFormat('fa-IR', { maximumFractionDigits: 1 }).format(value)} از ۵`;
 }
 
 function ResearchWorkspacePanel({
@@ -4381,6 +4592,12 @@ function errorMessage(error: unknown): string {
     strategy_changed: 'استراتژی تغییر کرده است؛ Draft باید با جهت جدید دوباره ساخته شود.',
     draft_not_approved: 'قبل از Export باید همین Revision را تأیید کنید.',
     feedback_unavailable: 'سرویس یادگیری از بازخورد در دسترس نیست.',
+    strategic_quality_unavailable: 'Strategic Quality Gate در دسترس نیست و baseline به‌روزرسانی نشد.',
+    invalid_strategic_review_input: 'تصمیم، امتیازها یا اتصال بازبینی به Context معتبر نیست.',
+    strategic_quality_permission_denied: 'فقط مالک می‌تواند کیفیت توصیه‌های استراتژیک را بازبینی کند.',
+    strategic_recommendation_not_found: 'این توصیه دیگر در Snapshot فعلی وجود ندارد.',
+    acceptance_not_approved: 'پذیرش فقط برای Actionی ثبت می‌شود که قبلاً در بخش امروز Approve شده باشد.',
+    strategic_quality_failed: 'ثبت یا محاسبه کیفیت توصیه کامل نشد؛ دوباره تلاش کنید.',
     audit_trail_unavailable: 'ردپای حساب در دسترس نیست.',
     account_export_unavailable: 'خروجی کامل داده‌های حساب هنوز آماده نیست.',
     account_permission_denied: 'این ردپا فقط برای مالک حساب قابل مشاهده است.',

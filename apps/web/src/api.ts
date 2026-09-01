@@ -892,6 +892,72 @@ export type FeedbackLearningSnapshot = Readonly<{
   }>[];
 }>;
 
+export type StrategicRecommendationDecision = 'accepted' | 'rejected' | 'needs_revision';
+
+export type StrategicQualitySnapshot = Readonly<{
+  policyVersion: 'strategic-quality-v1';
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  context: Readonly<{
+    strategyRevision: number;
+    decisionContextRevision: number;
+    decisionContextHash: string;
+    decisionWindowEndsAt: string;
+  }>;
+  rubric: Readonly<{
+    policyVersion: 'strategic-quality-v1';
+    status: 'pass' | 'fail';
+    passedChecks: number;
+    totalChecks: number;
+    criticalFailures: number;
+    checks: readonly Readonly<{
+      id: string;
+      severity: 'critical' | 'high' | 'medium' | 'low';
+      passed: boolean;
+      evidence: string;
+    }>[];
+  }>;
+  ownerBaseline: Readonly<{
+    status: 'collecting' | 'established';
+    minimumSampleSize: 5;
+    sampleSize: number;
+    remainingSamples: number;
+    accepted: number;
+    rejected: number;
+    needsRevision: number;
+    observedMetrics: Readonly<{
+      acceptanceRate: number;
+      averageUsefulness: number;
+      averageTrust: number;
+      averageFriction: number;
+    }> | null;
+    baselineMetrics: Readonly<{
+      acceptanceRate: number;
+      averageUsefulness: number;
+      averageTrust: number;
+      averageFriction: number;
+    }> | null;
+  }>;
+  recentReviews: readonly Readonly<{
+    id: string;
+    actionId: string;
+    actionTitle: string;
+    actionKind: WorkbenchAction['kind'];
+    actionRank: number;
+    decision: StrategicRecommendationDecision;
+    usefulness: 1 | 2 | 3 | 4 | 5;
+    trust: 1 | 2 | 3 | 4 | 5;
+    friction: 1 | 2 | 3 | 4 | 5;
+    note?: string;
+    strategyRevision: number;
+    decisionContextRevision: number;
+    decisionContextHash: string;
+    decisionWindowEndsAt: string;
+    reviewedAt: string;
+    supersedesReviewId?: string;
+  }>[];
+}>;
+
 export type ConversationTargetView = 'today' | 'memory' | 'strategy' | 'research' | 'draft' | 'risk' | 'data';
 
 export type ConversationOrchestration = Readonly<{
@@ -1131,6 +1197,7 @@ export type AccountDataExport = Readonly<{
     perception: PerceptionWorkspaceSnapshot | null;
     draft: DraftWorkspaceSnapshot | null;
     feedback: FeedbackLearningSnapshot;
+    strategicQuality: StrategicQualitySnapshot | null;
     activity: AuditTrailSnapshot;
   }>;
 }>;
@@ -1672,6 +1739,37 @@ export async function loadFeedbackLearning(signal?: AbortSignal): Promise<Feedba
     ...(signal ? { signal } : {}),
   });
   if (!isFeedbackLearningSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function loadStrategicQuality(signal?: AbortSignal): Promise<StrategicQualitySnapshot> {
+  const payload = await requestJson('/api/strategic-quality', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isStrategicQualitySnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function submitStrategicRecommendationReview(input: Readonly<{
+  requestId: string;
+  actionId: string;
+  decision: StrategicRecommendationDecision;
+  usefulness: number;
+  trust: number;
+  friction: number;
+  note?: string;
+  expectedStrategyRevision: number;
+  expectedDecisionContextRevision: number;
+  expectedDecisionContextHash: string;
+  expectedDecisionWindowEndsAt: string;
+}>): Promise<StrategicQualitySnapshot> {
+  const payload = await requestJson('/api/strategic-quality/reviews', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!isStrategicQualitySnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
   return payload;
 }
 
@@ -2626,6 +2724,56 @@ function isFeedbackLearningSnapshot(payload: unknown): payload is FeedbackLearni
   );
 }
 
+function isStrategicQualitySnapshot(payload: unknown): payload is StrategicQualitySnapshot {
+  if (
+    !isRecord(payload) || payload['policyVersion'] !== 'strategic-quality-v1' ||
+    typeof payload['generatedAt'] !== 'string' || !isPersistence(payload['persistence']) ||
+    !isRecord(payload['context']) || !isRecord(payload['rubric']) ||
+    !isRecord(payload['ownerBaseline']) || !Array.isArray(payload['recentReviews'])
+  ) return false;
+  const context = payload['context'];
+  const rubric = payload['rubric'];
+  const baseline = payload['ownerBaseline'];
+  const isMetrics = (value: unknown): boolean => isRecord(value) &&
+    typeof value['acceptanceRate'] === 'number' && typeof value['averageUsefulness'] === 'number' &&
+    typeof value['averageTrust'] === 'number' && typeof value['averageFriction'] === 'number';
+  return (
+    typeof context['strategyRevision'] === 'number' &&
+    typeof context['decisionContextRevision'] === 'number' &&
+    typeof context['decisionContextHash'] === 'string' &&
+    /^[0-9a-f]{64}$/u.test(context['decisionContextHash']) &&
+    typeof context['decisionWindowEndsAt'] === 'string' &&
+    rubric['policyVersion'] === 'strategic-quality-v1' &&
+    (rubric['status'] === 'pass' || rubric['status'] === 'fail') &&
+    typeof rubric['passedChecks'] === 'number' && typeof rubric['totalChecks'] === 'number' &&
+    typeof rubric['criticalFailures'] === 'number' && Array.isArray(rubric['checks']) &&
+    rubric['checks'].every((check) => isRecord(check) && typeof check['id'] === 'string' &&
+      ['critical', 'high', 'medium', 'low'].includes(String(check['severity'])) &&
+      typeof check['passed'] === 'boolean' && typeof check['evidence'] === 'string') &&
+    (baseline['status'] === 'collecting' || baseline['status'] === 'established') &&
+    baseline['minimumSampleSize'] === 5 && typeof baseline['sampleSize'] === 'number' &&
+    typeof baseline['remainingSamples'] === 'number' && typeof baseline['accepted'] === 'number' &&
+    typeof baseline['rejected'] === 'number' && typeof baseline['needsRevision'] === 'number' &&
+    (baseline['observedMetrics'] === null || isMetrics(baseline['observedMetrics'])) &&
+    (baseline['baselineMetrics'] === null || isMetrics(baseline['baselineMetrics'])) &&
+    payload['recentReviews'].every((review) => isRecord(review) &&
+      typeof review['id'] === 'string' && typeof review['actionId'] === 'string' &&
+      typeof review['actionTitle'] === 'string' && isStrategicActionKind(review['actionKind']) &&
+      typeof review['actionRank'] === 'number' &&
+      (review['decision'] === 'accepted' || review['decision'] === 'rejected' || review['decision'] === 'needs_revision') &&
+      isDecisionScale(review['usefulness']) && isDecisionScale(review['trust']) &&
+      isDecisionScale(review['friction']) && typeof review['strategyRevision'] === 'number' &&
+      typeof review['decisionContextRevision'] === 'number' &&
+      typeof review['decisionContextHash'] === 'string' &&
+      typeof review['decisionWindowEndsAt'] === 'string' && typeof review['reviewedAt'] === 'string')
+  );
+}
+
+function isStrategicActionKind(value: unknown): value is WorkbenchAction['kind'] {
+  return value === 'no_action' || value === 'private_conversation' || value === 'relationship' ||
+    value === 'content' || value === 'media' || value === 'event' || value === 'research';
+}
+
 function isAuditTrailSnapshot(payload: unknown): payload is AuditTrailSnapshot {
   if (!isRecord(payload) || !isRecord(payload['summary']) || !Array.isArray(payload['events'])) {
     return false;
@@ -2658,7 +2806,9 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     (data['relationships'] === null || isRelationshipWorkspaceSnapshot(data['relationships'])) &&
     (data['perception'] === null || isPerceptionWorkspaceSnapshot(data['perception'])) &&
     (data['draft'] === null || isDraftWorkspaceSnapshot(data['draft'])) &&
-    isFeedbackLearningSnapshot(data['feedback']) && isAuditTrailSnapshot(data['activity'])
+    isFeedbackLearningSnapshot(data['feedback']) &&
+    (data['strategicQuality'] === null || isStrategicQualitySnapshot(data['strategicQuality'])) &&
+    isAuditTrailSnapshot(data['activity'])
   );
 }
 

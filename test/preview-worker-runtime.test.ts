@@ -516,6 +516,40 @@ describe('private preview worker draft runtime', () => {
     expect(essayDecision?.measurementPlan.signals).toEqual(
       expect.arrayContaining(['کیفیت تعامل', 'تغییر ادراک']),
     );
+    const qualityBefore = await worker.fetch(
+      new Request('https://preview.example/api/strategic-quality'),
+      env,
+    );
+    await expect(qualityBefore.json()).resolves.toMatchObject({
+      policyVersion: 'strategic-quality-v1',
+      persistence: 'ephemeral',
+      rubric: { status: 'pass', criticalFailures: 0 },
+      ownerBaseline: { status: 'collecting', sampleSize: 0, baselineMetrics: null },
+    });
+    const reviewRequest = {
+      requestId: 'strategic_review_runtime_essay',
+      ...(await approvalBody('essay')),
+      decision: 'accepted',
+      usefulness: 5,
+      trust: 4,
+      friction: 2,
+      note: 'این توصیه به هدف و مختصات امروز متصل بود.',
+    };
+    const qualityReview = await post('/api/strategic-quality/reviews', reviewRequest);
+    expect(qualityReview.status).toBe(200);
+    await expect(qualityReview.json()).resolves.toMatchObject({
+      ownerBaseline: {
+        status: 'collecting', sampleSize: 1, accepted: 1,
+        observedMetrics: { acceptanceRate: 1, averageUsefulness: 5 },
+        baselineMetrics: null,
+      },
+      recentReviews: [{ actionId: 'essay', decision: 'accepted' }],
+    });
+    expect((await post('/api/strategic-quality/reviews', reviewRequest)).status).toBe(200);
+    expect((await post('/api/strategic-quality/reviews', {
+      ...reviewRequest,
+      usefulness: 4,
+    })).status).toBe(409);
 
     const lateAssetResponse = await post('/api/assets/text', {
       requestId: 'asset_runtime_after_approval',
@@ -717,6 +751,7 @@ describe('private preview worker draft runtime', () => {
         initiative: { policyVersion: string; settings: { mode: string }; evaluations: unknown[] };
         relationships: { policyVersion: string; summary: { totalStakeholders: number }; stakeholders: unknown[] };
         perception: { policyVersion: string; summary: { totalSignals: number }; signals: unknown[] };
+        strategicQuality: { policyVersion: string; ownerBaseline: { sampleSize: number }; recentReviews: unknown[] };
       };
     };
     expect(accountExportResponse.status).toBe(200);
@@ -745,6 +780,10 @@ describe('private preview worker draft runtime', () => {
       summary: { totalSignals: 3 },
     });
     expect(accountExport.data.perception.signals).toHaveLength(3);
+    expect(accountExport.data.strategicQuality).toMatchObject({
+      policyVersion: 'strategic-quality-v1', ownerBaseline: { sampleSize: 1 },
+    });
+    expect(accountExport.data.strategicQuality.recentReviews).toHaveLength(1);
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

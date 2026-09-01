@@ -102,6 +102,10 @@ const decisionContextMigrationPath = fileURLToPath(
   new URL('../db/migrations/0024_decision_context.sql', import.meta.url),
 );
 const decisionContextSql = readFileSync(decisionContextMigrationPath, 'utf8');
+const strategicQualityMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0025_strategic_quality_baseline.sql', import.meta.url),
+);
+const strategicQualitySql = readFileSync(strategicQualityMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -198,6 +202,20 @@ describe('foundation migration', () => {
     expect(decisionContextSql).toContain('ADD COLUMN approved_context_sha256 text');
     expect(decisionContextSql).toContain('ADD COLUMN decision_window_ends_at timestamptz');
     expect(decisionContextSql).toContain('workbench_approved_context_complete');
+  });
+
+  it('adds append-only, tenant-isolated reviews for a non-fabricated strategic baseline', () => {
+    defineMigration('0025_strategic_quality_baseline', strategicQualitySql);
+    for (const table of ['strategic_recommendation_reviews', 'strategic_review_requests']) {
+      expect(strategicQualitySql).toContain(`CREATE TABLE app.${table}`);
+      expect(strategicQualitySql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
+      expect(strategicQualitySql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
+    expect(strategicQualitySql).toContain("decision IN ('accepted', 'rejected', 'needs_revision')");
+    expect(strategicQualitySql).toContain('usefulness BETWEEN 1 AND 5');
+    expect(strategicQualitySql).toContain('decision_context_sha256');
+    expect(strategicQualitySql).toContain('supersedes_review_id');
+    expect(strategicQualitySql).toContain('Baselines remain provisional until the policy minimum sample size is reached');
   });
 
   it('defines the required tenant-owned tables', () => {

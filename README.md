@@ -21,6 +21,7 @@ Goal، Audience، Timing، Quality و Conflict می‌سنجد.
 - [Controlled Proactive Initiative](docs/architecture/proactive-initiative-v1.0.md)
 - [Perception Engine](docs/architecture/perception-engine-v1.0.md)
 - [Decision Context و Attention Budget نسخه‌دار](docs/architecture/decision-context-v1.0.md)
+- [Strategic Quality Baseline](docs/architecture/strategic-quality-baseline-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
@@ -276,9 +277,17 @@ Signal ثبت می‌کند. یک Edit یا Reject منفرد Voice Model را �
 `GET /api/feedback`، `POST /api/feedback/drafts/:id/reject` و
 `POST /api/feedback/preferences/:id/decision` هستند.
 
+نمای «یادگیری» یک Strategic Quality Gate مستقل نیز دارد. Rubric خودکار، قرارداد تصمیم،
+Attention Budget پنج‌بعدی، Human Gate، مسیر No-action، Grounding/Abstention و اتصال به
+نسخه Strategy و Decision Context را می‌سنجد. بازبینی مالک با امتیازهای Usefulness، Trust
+و Friction در `app.strategic_recommendation_reviews` به‌صورت append-only و RLS-protected
+ثبت می‌شود. پذیرش فقط برای Action تأییدشده معتبر است و تا پنج نمونه واقعی، اعداد صرفاً
+مشاهده موقت‌اند و `baselineMetrics` عمداً `null` می‌ماند. APIهای این بخش
+`GET /api/strategic-quality` و `POST /api/strategic-quality/reviews` هستند.
+
 نمای «داده و شفافیت» ردپای owner-scoped تصمیم‌ها، تأییدها، حقوق حافظه و Exportها را
 از `GET /api/account/activity` نمایش می‌دهد. کاربر از `GET /api/account/export` یک
 فایل JSON قابل‌حمل از Snapshot فعلی Workbench، Strategy، Memory، Assets، Draft،
-Feedback، Arbitration، Initiative، Relationships و Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
+Feedback، Strategic Quality، Arbitration، Initiative، Relationships و Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
 زیرساختی وارد فایل نمی‌شوند. در PostgreSQL این Timeline با RLS به Tenant و مالک فعال
 محدود است؛ نسخه‌های حافظه‌ای و Sites تا Restart موقت‌اند.

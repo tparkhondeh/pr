@@ -19,6 +19,10 @@ import {
   FeedbackLearningService,
   InMemoryFeedbackLearningRepository,
 } from '../src/feedback/workspace.js';
+import {
+  InMemoryStrategicQualityRepository,
+  StrategicQualityService,
+} from '../src/evaluation/strategic-quality.js';
 import { AuthenticExpressionService } from '../src/expression/authentic-expression.js';
 import {
   InMemoryInitiativeRepository,
@@ -1484,6 +1488,79 @@ describe('operational endpoints', () => {
     expect(decisionResponse.status).toBe(200);
     await expect(decisionResponse.json()).resolves.toMatchObject({
       summary: { applied: 1 },
+    });
+  });
+
+  it('exposes a provisional strategic quality gate and records a context-bound owner review', async () => {
+    const activeTenant = tenantId('tenant_primary');
+    const owner = userId('owner_primary');
+    const fixedTime = new Date('2026-08-31T20:30:00.000Z');
+    const workbench = createDefaultWorkbenchService(
+      () => fixedTime,
+      undefined,
+      { tenantId: activeTenant, ownerUserId: owner },
+      undefined,
+      groundedEvidence(fixedTime),
+    );
+    await workbench.approve('essay', owner, fixedTime);
+    const strategicQuality = new StrategicQualityService(
+      new InMemoryStrategicQualityRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+      workbench,
+    );
+    const dependencies: ApplicationDependencies = {
+      strategicQuality,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+    const qualityResponse = await request(
+      '/api/strategic-quality',
+      () => ({ ready: true }),
+      undefined,
+      dependencies,
+    );
+    expect(qualityResponse.status).toBe(200);
+    await expect(qualityResponse.json()).resolves.toMatchObject({
+      policyVersion: 'strategic-quality-v1',
+      rubric: { status: 'pass', criticalFailures: 0 },
+      ownerBaseline: { status: 'collecting', sampleSize: 0, baselineMetrics: null },
+    });
+
+    const source = await workbench.snapshot();
+    const action = source.actions.find((candidate) => candidate.id === 'essay');
+    if (!action) throw new Error('Expected essay recommendation.');
+    const reviewResponse = await request(
+      '/api/strategic-quality/reviews',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'strategic_review_http_one',
+          actionId: action.id,
+          decision: 'accepted',
+          usefulness: 5,
+          trust: 4,
+          friction: 2,
+          note: 'توصیه روشن و متناسب با زمینه بود.',
+          expectedStrategyRevision: action.decision.strategyRevision,
+          expectedDecisionContextRevision: action.decision.decisionContextRevision,
+          expectedDecisionContextHash: action.decision.decisionContextHash,
+          expectedDecisionWindowEndsAt: action.decision.decisionWindowEndsAt,
+        }),
+      },
+      dependencies,
+    );
+    expect(reviewResponse.status).toBe(200);
+    await expect(reviewResponse.json()).resolves.toMatchObject({
+      ownerBaseline: {
+        status: 'collecting',
+        sampleSize: 1,
+        accepted: 1,
+        observedMetrics: { acceptanceRate: 1, averageUsefulness: 5 },
+        baselineMetrics: null,
+      },
+      recentReviews: [{ actionId: 'essay', decision: 'accepted' }],
     });
   });
 
