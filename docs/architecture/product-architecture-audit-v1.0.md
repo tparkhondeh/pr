@@ -316,13 +316,21 @@ Gate: citation coverage/freshness؛ privacy review؛ connector revocation test.
 Citation/Freshness/Conflict. `research-source-safety-v1` URL، DNS، Address Pinning،
 Redirect، Content-Type، Size و Credential forwarding را Fail-closed تعریف می‌کند و
 Fetch خودکار همچنان خاموش است. Citation-ready هیچ Claimی را Verified/Public نمی‌کند.
-اتصال واقعی Connector و Revocation drill تا انتخاب Provider و دریافت Scope مستقل باز است.
+قرارداد مشترک Connector و Revocation/Deletion/Incident drill با
+`connector-lifecycle-v1` و `connector-governance-eval-v1` بسته شده است: ۲۴/۲۴ Case،
+۱۳/۱۳ حمله مسدود و Side Effect/Network/Raw Secret صفر. اتصال واقعی هر Provider، Secret
+Store، Approval Token، Persistence و Drill اختصاصی Adapter تا دریافت Scope مستقل باز است.
 
 ### Phase 5 — Relationships & Controlled Automation
 
 stakeholders، relationship context، 360 با consent مستقل، publishing محدود و crisis assist.
 
 Gate: red-team، incident drill، autonomy policy و explicit owner approval.
+
+وضعیت اجرا: شش پروفایل Web Research، Calendar، Email، CRM، Social Listening و Publishing
+در UI/API فقط با وضعیت `disabled` قابل مشاهده‌اند. Revocation و Incident contract آماده
+است، اما هیچ OAuth Route، Credential، Notification، Monitoring یا Publishing واقعی وجود
+ندارد؛ بنابراین Controlled Automation هنوز وارد Level 6/7 نشده است.
 
 ## N. Risk Register
 

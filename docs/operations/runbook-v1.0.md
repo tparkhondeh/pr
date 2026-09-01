@@ -80,6 +80,14 @@ CI drill فقط portability منطقی Schema و RPO صفر برای snapshot آ
 
 در SEV-1: public actions متوقف، credentials مرتبط rotate، evidence حفظ، مالک محصول مطلع و incident timeline ثبت شود.
 
+برای Incident هر Connector، پیش از بررسی علت باید Outbound/Network همان Adapter Hold شود،
+کارهای in-flight لغو، Grant سمت Provider revoke و Credential reference برای Rotation یا
+Destruction علامت‌گذاری شود. Cache و داده مشتق‌شده باید پاک و فقط Evidence Hash نگه‌داری
+شود. بستن Incident بدون Receipt حذف، Attestation مالک و اجرای دوباره
+`pnpm eval:connector-governance` مجاز نیست. در Runtime فعلی هیچ Connector فعالی وجود ندارد؛
+مشاهده مقدار غیرصفر در `GET /api/connectors` برای `activeConnectors` یا
+`activationEligibleConnectors` یک SEV-1 و trigger فوری rollback است.
+
 ## Deployment safety
 
 - فقط Commit سبز و Push‌شده به `main` قابل Deploy است.
@@ -90,3 +98,6 @@ CI drill فقط portability منطقی Schema و RPO صفر برای snapshot آ
   Auth باید `401` شود. عبور نکردن هرکدام trigger فوری rollback است.
 - schema change از الگوی expand/migrate/contract پیروی کند.
 - Smoke test دامنه: TLS، status، `/health`، `/ready` و نسخه release.
+- Smoke Connector: `GET /api/connectors` باید `connector-lifecycle-v1`، شش Profile،
+  `runtimeEnabled=false`، `externalNetworkCallsPermitted=false`،
+  `automaticExecutionAllowed=false` و صفر Active/Eligible برگرداند.

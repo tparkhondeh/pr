@@ -201,6 +201,10 @@ export default {
       return json(modelGovernanceSnapshot());
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/connectors') {
+      return json(connectorLifecycleSnapshot());
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/workflow-cost/reservations') {
       const body = await readJson(request);
       if (!validWorkflowCostReservation(body)) {
@@ -925,6 +929,7 @@ export default {
           strategicQuality: strategicQualitySnapshot(),
           workflowCosts: workflowCostSnapshot(),
           modelGovernance: modelGovernanceSnapshot(),
+          connectors: connectorLifecycleSnapshot(),
           activity,
         },
       });
@@ -3579,6 +3584,87 @@ function modelGovernanceSnapshot(generatedAt = new Date()) {
       recentInvocations: [],
     },
     routes: modelGovernanceRoutes,
+  };
+}
+
+function connectorLifecycleSnapshot(generatedAt = new Date()) {
+  const profiles = [
+    connectorProfile({
+      kind: 'research_web', label: 'Web Research', risk: 'yellow',
+      allowedPurposes: ['external_research'], allowedOperations: ['read', 'process', 'derive'],
+      allowedDataClasses: ['public', 'internal'], allowedChannels: ['web'],
+      allowedResourceTypes: ['research_source'], thirdPartyData: 'forbidden',
+      credentialReferenceRequired: false, maximumRetentionDays: 30, maximumOperationsPerHour: 20,
+    }),
+    connectorProfile({
+      kind: 'calendar', label: 'Calendar', risk: 'red',
+      allowedPurposes: ['relationship_planning', 'strategy_reasoning'], allowedOperations: ['read', 'process'],
+      allowedDataClasses: ['internal', 'confidential'], allowedChannels: ['calendar'],
+      allowedResourceTypes: ['event_metadata'], thirdPartyData: 'metadata_only',
+      credentialReferenceRequired: true, maximumRetentionDays: 14, maximumOperationsPerHour: 30,
+    }),
+    connectorProfile({
+      kind: 'email', label: 'Email', risk: 'red',
+      allowedPurposes: ['relationship_planning', 'perception_analysis'], allowedOperations: ['read', 'process'],
+      allowedDataClasses: ['internal', 'confidential'], allowedChannels: ['email'],
+      allowedResourceTypes: ['message_metadata'], thirdPartyData: 'metadata_only',
+      credentialReferenceRequired: true, maximumRetentionDays: 7, maximumOperationsPerHour: 10,
+    }),
+    connectorProfile({
+      kind: 'crm', label: 'CRM', risk: 'red',
+      allowedPurposes: ['relationship_planning'], allowedOperations: ['read', 'process', 'derive'],
+      allowedDataClasses: ['internal', 'confidential'], allowedChannels: ['crm'],
+      allowedResourceTypes: ['relationship_metadata'], thirdPartyData: 'metadata_only',
+      credentialReferenceRequired: true, maximumRetentionDays: 30, maximumOperationsPerHour: 20,
+    }),
+    connectorProfile({
+      kind: 'social_listening', label: 'Social Listening', risk: 'red',
+      allowedPurposes: ['external_research', 'perception_analysis'], allowedOperations: ['read', 'process', 'derive'],
+      allowedDataClasses: ['public', 'internal'], allowedChannels: ['social'],
+      allowedResourceTypes: ['public_signal'], thirdPartyData: 'metadata_only',
+      credentialReferenceRequired: true, maximumRetentionDays: 14, maximumOperationsPerHour: 20,
+    }),
+    connectorProfile({
+      kind: 'publishing', label: 'Publishing', risk: 'red',
+      allowedPurposes: ['public_drafting', 'external_sharing'], allowedOperations: ['export', 'share'],
+      allowedDataClasses: ['public', 'internal'],
+      allowedChannels: ['linkedin', 'instagram', 'x', 'youtube', 'podcast', 'newsletter', 'blog'],
+      allowedResourceTypes: ['approved_draft'], thirdPartyData: 'forbidden',
+      credentialReferenceRequired: true, maximumRetentionDays: 1, maximumOperationsPerHour: 2,
+    }),
+  ];
+  return {
+    policyVersion: 'connector-lifecycle-v1', generatedAt: generatedAt.toISOString(),
+    runtimeEnabled: false, externalNetworkCallsPermitted: false, automaticExecutionAllowed: false,
+    rawCredentialAccepted: false, credentialReferenceFormat: 'sha256_only',
+    shortLivedApprovalTokensEnabled: false, activationEligibleConnectors: 0, activeConnectors: 0,
+    summary: {
+      supportedProfiles: profiles.length,
+      yellowProfiles: profiles.filter((profile) => profile.risk === 'yellow').length,
+      redProfiles: profiles.filter((profile) => profile.risk === 'red').length,
+      profilesRequiringCredentialReference: profiles.filter((profile) => profile.credentialReferenceRequired).length,
+    },
+    revocation: {
+      cancelInFlightRequired: true, providerGrantRevocationRequired: true,
+      credentialDestructionRequiredWhenBound: true, cachePurgeRequired: true,
+      derivedDataDeletionRequired: true, verificationReceiptRequired: true,
+    },
+    incident: {
+      immediateHoldRequired: true, evidenceRetention: 'hash_only',
+      credentialRotationRequiredWhenBound: true, ownerNotificationRequired: true,
+    },
+    profiles,
+  };
+}
+
+function connectorProfile(profile) {
+  return {
+    ...profile,
+    runtimeStatus: 'disabled',
+    activationBlockers: [
+      'adapter_not_configured', 'runtime_globally_disabled',
+      'short_lived_approval_token_unavailable', 'connector_specific_revocation_drill_required',
+    ],
   };
 }
 

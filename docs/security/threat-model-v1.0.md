@@ -65,6 +65,7 @@ Trust Boundaryها:
 | T-24 | اجرای هم‌زمان خارج از بودجه، ثبت دوبارهٔ Charge، یا سبز نشان‌دادن هزینهٔ نامعلوم با عدد ساختگی | P0 | Reservation پیش از Spend، Lock روزانه Tenant/Owner، Idempotency fingerprint، Ledger append-only تفکیک‌شده، `costEvidence` صریح، صفر اجباری برای unmetered و Circuit Breaker در Overrun | Provider Adapter واقعی باید Reservation/Charge را اجباری و Usage گزارش‌شده را با صورتحساب مستقل reconcile کند؛ بدون نمونهٔ Metered ادعای cost/workflow pass مجاز نیست |
 | T-25 | Adopt کردن Database ناشناخته/عمومی، شنود credential روی PostgreSQL بدون TLS، یا اجرای Runtime با Role مالک DDL | P0 | دو URL و Role جدا، `sslmode=verify-full` برای Host غیرمحلی، commissioning fail-closed، revoke مجوز CREATE، verification دوباره Principal/Schema/RLS و عدم چاپ URL | Production تا Provision دو Role از مالک زیرساخت، Secret injection، restore drill و بستن listener عمومی فاقد TLS موقت باقی می‌ماند |
 | T-26 | دورزدن Cost/Consent/Eval توسط Provider، Retry تکراری، خروجی خارج Schema یا نسبت‌دادن هزینه ساختگی | P0 | Registry نسخه‌دار بر Purpose+Schema، Rollout و Eval fail-closed، Tenant/Owner binding، Data Class allowlist، رضایت پردازش بیرونی، Model Input Safety قبل از Side Effect، Golden Safety Eval چندزبانه در CI، Reservation اجباری، Timeout/Abort، Durable Invocation Journal metadata-only با RLS و terminal transition واحد، Reconciliation انسانی hash-only بدون Retry خودکار، Crash-after-charge replay و `unmetered` برای قیمت نامعلوم | Provider واقعی تا فعال‌شدن Journal PostgreSQL در Production، Safety eval روی Corpus ناشناس‌شده، اتصال Evidence/Billing به API واقعی Provider، canary rollback و تأیید مالک غیرفعال می‌ماند |
+| T-27 | فعال‌شدن Connector بدون Scope/Review، نشت Token، ادامه دسترسی پس از Revoke یا حذف ناقص داده مشتق‌شده | P0 | `connector-lifecycle-v1` با شش پروفایل disabled، exact-key input، SHA-256 reference-only، Tenant/Owner/Expiry/Scope/Rate/Approval gate، Runtime/Network/Outbound خاموش، Revocation/Deletion Receipt و Incident Hold؛ `connector-governance-eval-v1` با ۲۴/۲۴ Case، ۱۳/۱۳ حمله و Leakage/Side Effect صفر | هر Adapter واقعی به Secret Store، Session-bound approval token، RLS/Audit/Outbox، Provider-specific revoke/delete drill، canary و تأیید مالک نیاز دارد؛ این Golden Set به‌تنهایی مجوز فعال‌سازی نیست |
 
 ## P0 Gate
 
@@ -73,7 +74,7 @@ Trust Boundaryها:
 - Shared/public release با T-02 باز ممنوع است.
 - Durable production با PostgreSQL تا commissioning دو Role، integration isolation test،
   TLS دارای hostname verification و restore drill ممنوع است.
-- Model/Research/Publishing واقعی تا بستن T-06/T-16/T-26 و eval مربوط فعال نمی‌شود.
+- Model/Research/Publishing واقعی تا بستن T-06/T-16/T-26/T-27 و eval اختصاصی Provider فعال نمی‌شود.
 
 ## Verification evidence
 
@@ -83,4 +84,5 @@ Trust Boundaryها:
 - Automated: policy، cross-tenant، claim guard، revocation، deletion، readiness،
   architecture fitness و `memory-retrieval-eval-v1` با precision/recall کامل، نشت صفر
   و Abstention نسخه‌دار؛ `authentic-execution-eval-v1` با Hallucinated Approval صفر،
-  هفت Platform، Authenticity/Learning و Side Effect صفر.
+  هفت Platform، Authenticity/Learning و Side Effect صفر؛ `connector-governance-eval-v1`
+  با ۲۴/۲۴ Case، ۱۳/۱۳ حمله، ۴/۴ Drill و Network/Activation/Raw Credential صفر.

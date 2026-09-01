@@ -27,6 +27,7 @@ import {
 } from './claims/governance.js';
 import { ConversationIntakeService } from './conversation/intake.js';
 import { PostgresConversationMemoryRepository } from './conversation/repository.js';
+import { ConnectorLifecycleService } from './connectors/lifecycle.js';
 import { PostgresRuntime } from './database/postgres.js';
 import { PostgresStrategicQualityRepository } from './database/postgres-strategic-quality.js';
 import { PostgresWorkflowCostRepository } from './database/postgres-workflow-cost.js';
@@ -247,6 +248,10 @@ const modelGovernance = new ModelGovernanceService(
   modelInputSafety,
   modelInvocationReconciliation,
 );
+const connectors = new ConnectorLifecycleService({
+  tenantId: activeTenant,
+  ownerUserId: owner,
+});
 const expression = new AuthenticExpressionService(
   { tenantId: activeTenant, ownerUserId: owner },
   assets,
@@ -349,6 +354,7 @@ const requestHandler = createRequestHandler(
     strategicQuality,
     workflowCosts,
     modelGovernance,
+    connectors,
     modelInvocationReconciliation,
     conversation,
     auditTrail,

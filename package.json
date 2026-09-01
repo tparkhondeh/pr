@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm eval:model-input-safety && pnpm eval:memory-retrieval && pnpm eval:authentic-execution && pnpm eval:external-intelligence",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm eval:model-input-safety && pnpm eval:memory-retrieval && pnpm eval:authentic-execution && pnpm eval:external-intelligence && pnpm eval:connector-governance",
     "dev": "tsx watch src/main.ts",
     "db:test:integration": "tsx scripts/postgres-integration.ts",
     "db:test:restore": "tsx scripts/postgres-restore-verify.ts",
@@ -18,6 +18,7 @@
     "eval:memory-retrieval": "tsx scripts/run-memory-retrieval-evaluation.ts",
     "eval:authentic-execution": "tsx scripts/run-authentic-execution-evaluation.ts",
     "eval:external-intelligence": "tsx scripts/run-external-intelligence-evaluation.ts",
+    "eval:connector-governance": "tsx scripts/run-connector-governance-evaluation.ts",
     "lint": "eslint .",
     "security:audit": "pnpm audit --prod --audit-level high",
     "security:scan": "tsx scripts/scan-secrets.ts && pnpm security:audit",

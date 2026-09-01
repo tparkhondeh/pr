@@ -303,6 +303,35 @@ describe('private preview worker draft runtime', () => {
         { factCheckStatus: 'conflicted', usableForPublicClaim: false },
       ],
     });
+    const connectorResponse = await worker.fetch(
+      new Request('https://preview.example/api/connectors'),
+      env,
+    );
+    const connectorPayload = await connectorResponse.json() as {
+      policyVersion: string;
+      runtimeEnabled: boolean;
+      externalNetworkCallsPermitted: boolean;
+      automaticExecutionAllowed: boolean;
+      rawCredentialAccepted: boolean;
+      activationEligibleConnectors: number;
+      activeConnectors: number;
+      summary: { supportedProfiles: number; yellowProfiles: number; redProfiles: number };
+      profiles: Array<{ kind: string; runtimeStatus: string }>;
+    };
+    expect(connectorPayload).toMatchObject({
+      policyVersion: 'connector-lifecycle-v1',
+      runtimeEnabled: false,
+      externalNetworkCallsPermitted: false,
+      automaticExecutionAllowed: false,
+      rawCredentialAccepted: false,
+      activationEligibleConnectors: 0,
+      activeConnectors: 0,
+      summary: { supportedProfiles: 6, yellowProfiles: 1, redProfiles: 5 },
+    });
+    expect(connectorPayload.profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'research_web', runtimeStatus: 'disabled' }),
+      expect.objectContaining({ kind: 'publishing', runtimeStatus: 'disabled' }),
+    ]));
     const opportunityResponse = await worker.fetch(
       new Request('https://preview.example/api/opportunities'),
       env,
@@ -868,6 +897,12 @@ describe('private preview worker draft runtime', () => {
           costGateRequired: boolean;
           routes: Array<{ rollout: string; evalStatus: string }>;
         };
+        connectors: {
+          policyVersion: string;
+          runtimeEnabled: boolean;
+          activeConnectors: number;
+          summary: { supportedProfiles: number };
+        };
       };
     };
     expect(accountExportResponse.status).toBe(200);
@@ -937,6 +972,12 @@ describe('private preview worker draft runtime', () => {
     expect(accountExport.data.modelGovernance.routes).toHaveLength(5);
     expect(accountExport.data.modelGovernance.routes.every((route) =>
       route.rollout === 'disabled' && route.evalStatus === 'not_run')).toBe(true);
+    expect(accountExport.data.connectors).toMatchObject({
+      policyVersion: 'connector-lifecycle-v1',
+      runtimeEnabled: false,
+      activeConnectors: 0,
+      summary: { supportedProfiles: 6 },
+    });
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

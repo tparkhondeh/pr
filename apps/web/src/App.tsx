@@ -59,6 +59,7 @@ import {
   loadStrategicQuality,
   loadWorkflowCosts,
   loadModelGovernance,
+  loadConnectors,
   loadAuditTrail,
   loadArbitration,
   loadInitiative,
@@ -95,6 +96,7 @@ import {
   type StrategicQualitySnapshot,
   type WorkflowCostSnapshot,
   type ModelGovernanceSnapshot,
+  type ConnectorLifecycleSnapshot,
   type StrategicBusinessOutcome,
   type StrategicOutcomeChange,
   type StrategicOutcomeExecutionStatus,
@@ -151,7 +153,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'opportunities' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'relationships' | 'perception' | 'expression' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'opportunities' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'relationships' | 'perception' | 'expression' | 'strategy' | 'draft' | 'learning' | 'connectors' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -219,6 +221,9 @@ export function App() {
   const [strategicQualitySnapshot, setStrategicQualitySnapshot] = useState<StrategicQualitySnapshot | null>(null);
   const [workflowCostSnapshot, setWorkflowCostSnapshot] = useState<WorkflowCostSnapshot | null>(null);
   const [modelGovernanceSnapshot, setModelGovernanceSnapshot] = useState<ModelGovernanceSnapshot | null>(null);
+  const [connectorSnapshot, setConnectorSnapshot] = useState<ConnectorLifecycleSnapshot | null>(null);
+  const [connectorViewState, setConnectorViewState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [connectorViewError, setConnectorViewError] = useState<string | null>(null);
   const [feedbackViewState, setFeedbackViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [feedbackViewError, setFeedbackViewError] = useState<string | null>(null);
   const [auditSnapshot, setAuditSnapshot] = useState<AuditTrailSnapshot | null>(null);
@@ -762,6 +767,19 @@ export function App() {
     }
   }, []);
 
+  const refreshConnectors = useCallback(async (signal?: AbortSignal) => {
+    setConnectorViewState('loading');
+    setConnectorViewError(null);
+    try {
+      setConnectorSnapshot(await loadConnectors(signal));
+      setConnectorViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setConnectorViewError(errorMessage(caught));
+      setConnectorViewState('error');
+    }
+  }, []);
+
   const exportMyData = async () => {
     if (dataViewState === 'exporting') return;
     setDataViewState('exporting');
@@ -1177,6 +1195,11 @@ export function App() {
       view: 'learning' as const,
       badge: feedbackSnapshot?.summary.proposed ? String(feedbackSnapshot.summary.proposed) : undefined,
     },
+    {
+      label: 'اتصال‌ها',
+      icon: Network,
+      view: 'connectors' as const,
+    },
     { label: 'داده و شفافیت', icon: History, view: 'data' as const },
     {
       label: 'تأییدها',
@@ -1212,6 +1235,7 @@ export function App() {
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
                 if (view === 'learning') void refreshFeedback();
+                if (view === 'connectors') void refreshConnectors();
                 if (view === 'data') void refreshAudit();
               }}
               type="button"
@@ -1261,6 +1285,8 @@ export function App() {
                   ? 'از شاهد تا متن قابل‌دفاع.'
                   : activeView === 'learning'
                     ? 'سیستم پیشنهاد می‌دهد؛ شما تصمیم می‌گیرید.'
+                    : activeView === 'connectors'
+                      ? 'هر اتصال باید محدود، قابل ابطال و قابل اثبات باشد.'
                     : activeView === 'data'
                       ? 'داده‌های شما، زیر کنترل شما.'
                 : 'حرکت بعدی، نه پست بعدی.'}</h1>
@@ -1433,6 +1459,13 @@ export function App() {
             snapshot={feedbackSnapshot}
             state={feedbackViewState}
             workbench={snapshot}
+          />
+        ) : activeView === 'connectors' ? (
+          <ConnectorLifecyclePanel
+            error={connectorViewError}
+            onRefresh={() => refreshConnectors()}
+            snapshot={connectorSnapshot}
+            state={connectorViewState}
           />
         ) : activeView === 'data' ? (
           <DataRightsPanel
@@ -4157,6 +4190,88 @@ function riskDimensionLabel(dimension: BrandProtectionSnapshot['assessments'][nu
   }[dimension];
 }
 
+function ConnectorLifecyclePanel({
+  error,
+  onRefresh,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onRefresh: () => Promise<void>;
+  snapshot: ConnectorLifecycleSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'error';
+}>) {
+  if ((state === 'idle' || state === 'loading') && !snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><LoaderCircle className="spin" size={24} /><h2>در حال بازیابی قرارداد اتصال‌ها…</h2><p>Scope، Credential Reference، ابطال و Incident Hold بررسی می‌شوند.</p></section>;
+  }
+  if (!snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><TriangleAlert size={25} /><h2>حاکمیت اتصال‌ها در دسترس نیست</h2><p>{error ?? 'هیچ اتصال بیرونی فعال نشد؛ برای دریافت دوباره تلاش کنید.'}</p><button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button></section>;
+  }
+  return (
+    <section className="connector-view" aria-label="حاکمیت اتصال‌های بیرونی">
+      <header className="draft-head">
+        <div>
+          <p className="overline">Connector Lifecycle · {snapshot.policyVersion}</p>
+          <h2>اتصال تعریف شده است؛ اختیار هنوز صادر نشده</h2>
+          <p>این صفحه Provider یا OAuth فعال نمی‌کند. هر Adapter تا تکمیل Scope Review، Approval Token کوتاه‌عمر، Revocation Drill و ذخیره‌سازی امن Credential به‌صورت Fail-closed خاموش است.</p>
+        </div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button"><RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی</button>
+      </header>
+
+      <div className="connector-posture" role="status">
+        <LockKeyhole size={21} />
+        <div><strong>External execution: خاموش</strong><span>Network، اجرای خودکار و پذیرش Raw Credential همگی مسدودند.</span></div>
+        <code>{snapshot.activeConnectors} active / {snapshot.activationEligibleConnectors} eligible</code>
+      </div>
+
+      <div className="connector-metrics">
+        <div><span>پروفایل تعریف‌شده</span><strong>{snapshot.summary.supportedProfiles.toLocaleString('fa-IR')}</strong></div>
+        <div><span>ریسک Red</span><strong>{snapshot.summary.redProfiles.toLocaleString('fa-IR')}</strong></div>
+        <div><span>نیازمند Credential Ref</span><strong>{snapshot.summary.profilesRequiringCredentialReference.toLocaleString('fa-IR')}</strong></div>
+        <div><span>نگه‌داری Raw Secret</span><strong>ممنوع</strong></div>
+      </div>
+
+      <div className="connector-profiles" role="list" aria-label="پروفایل اتصال‌های پشتیبانی‌شده">
+        {snapshot.profiles.map((profile) => (
+          <article className={`connector-profile risk-${profile.risk}`} key={profile.kind} role="listitem">
+            <header><div><strong>{profile.label}</strong><code>{profile.kind}</code></div><span>{profile.risk.toUpperCase()}</span></header>
+            <dl>
+              <div><dt>عملیات</dt><dd>{profile.allowedOperations.join(' · ')}</dd></div>
+              <div><dt>کانال</dt><dd>{profile.allowedChannels.join(' · ')}</dd></div>
+              <div><dt>Retention</dt><dd>حداکثر {profile.maximumRetentionDays.toLocaleString('fa-IR')} روز</dd></div>
+              <div><dt>Rate limit</dt><dd>{profile.maximumOperationsPerHour.toLocaleString('fa-IR')} عملیات/ساعت</dd></div>
+            </dl>
+            <footer><LockKeyhole size={14} /> Runtime: disabled · {profile.activationBlockers.length.toLocaleString('fa-IR')} مانع فعال‌سازی</footer>
+          </article>
+        ))}
+      </div>
+
+      <div className="connector-controls">
+        <section>
+          <h3>Revocation & deletion propagation</h3>
+          <ul>
+            <li>لغو عملیات درحال اجرا</li>
+            <li>ابطال Grant سمت Provider</li>
+            <li>نابودی Credential Reference و پاک‌سازی Cache</li>
+            <li>حذف داده مشتق‌شده با Receipt Hash</li>
+          </ul>
+        </section>
+        <section>
+          <h3>Incident containment</h3>
+          <ul>
+            <li>Hold فوری و توقف Outbound</li>
+            <li>Rotation اجباری Credential متصل</li>
+            <li>نگه‌داری فقط Evidence Hash</li>
+            <li>اطلاع به مالک و تأیید انسانی</li>
+          </ul>
+        </section>
+      </div>
+      <p className="connector-generated">Snapshot مالک · {formatDate(snapshot.generatedAt)} · فرمت Credential: {snapshot.credentialReferenceFormat}</p>
+      {error ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
+    </section>
+  );
+}
+
 function DataRightsPanel({
   error,
   onExport,
@@ -5026,6 +5141,9 @@ function errorMessage(error: unknown): string {
     reconciliation_mismatch: 'Recovery قبلی با Evidence یا Usage متفاوت ثبت شده است.',
     existing_charge_mismatch: 'Charge موجود با Provider Evidence این Recovery هم‌خوان نیست.',
     model_reconciliation_failed: 'تطبیق Billing و Journal کامل نشد؛ Retry خودکار مدل مجاز نیست.',
+    connector_governance_unavailable: 'قرارداد حاکمیت اتصال‌ها در دسترس نیست؛ همه اتصال‌ها خاموش می‌مانند.',
+    connector_governance_permission_denied: 'فقط مالک می‌تواند Scope و وضعیت چرخه اتصال‌ها را ببیند.',
+    connector_governance_failed: 'بازیابی وضعیت اتصال‌ها کامل نشد و هیچ اتصال بیرونی فعال نشد.',
     audit_trail_unavailable: 'ردپای حساب در دسترس نیست.',
     account_export_unavailable: 'خروجی کامل داده‌های حساب هنوز آماده نیست.',
     account_permission_denied: 'این ردپا فقط برای مالک حساب قابل مشاهده است.',

@@ -10,6 +10,7 @@ import {
   TextAssetIntakeService,
 } from '../src/assets/text-asset-intake.js';
 import { ConversationIntakeService } from '../src/conversation/intake.js';
+import { ConnectorLifecycleService } from '../src/connectors/lifecycle.js';
 import { ContentDraftService, InMemoryDraftWorkspaceRepository } from '../src/claims/workspace.js';
 import {
   ClaimGovernanceService,
@@ -178,6 +179,41 @@ describe('operational endpoints', () => {
       automaticRetryAllowed: false,
     }));
     expect(payload.routes.every((route) => route.rollout === 'disabled')).toBe(true);
+  });
+
+  it('exposes disabled connector profiles and lifecycle controls to the owner', async () => {
+    const fixedTime = new Date('2026-09-01T12:00:00.000Z');
+    const owner = userId('owner_primary');
+    const connectors = new ConnectorLifecycleService({
+      tenantId: tenantId('tenant_primary'),
+      ownerUserId: owner,
+    });
+    const response = await request(
+      '/api/connectors',
+      () => ({ ready: true }),
+      undefined,
+      { connectors, resolveActor: () => owner, clock: () => fixedTime },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      policyVersion: 'connector-lifecycle-v1',
+      generatedAt: fixedTime.toISOString(),
+      runtimeEnabled: false,
+      externalNetworkCallsPermitted: false,
+      automaticExecutionAllowed: false,
+      rawCredentialAccepted: false,
+      activationEligibleConnectors: 0,
+      activeConnectors: 0,
+      summary: { supportedProfiles: 6, yellowProfiles: 1, redProfiles: 5 },
+      revocation: {
+        cancelInFlightRequired: true,
+        cachePurgeRequired: true,
+        derivedDataDeletionRequired: true,
+        verificationReceiptRequired: true,
+      },
+      incident: { immediateHoldRequired: true, evidenceRetention: 'hash_only' },
+    });
   });
 
   it('rejects recovery mutation when the invocation journal is ephemeral', async () => {

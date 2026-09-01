@@ -20,6 +20,9 @@ Provider بیرونی Fail-closed می‌ماند. Recovery Invocationهای م�
 پایدار، با Evidence Hash و تأیید انسانی انجام می‌شود و هرگز Retry خودکار ندارد.
 Research Source Safety نیز URLهای Local/Private/Credential-bearing، DNS rebinding،
 Redirect و Response ناامن را پیش از Connector متوقف می‌کند؛ Fetch خودکار همچنان خاموش است.
+Connector Lifecycle نیز شش پروفایل Research، Calendar، Email، CRM، Social Listening و
+Publishing را با Scope، Retention، Rate Limit، Revocation و Incident policy ثبت کرده،
+اما Network، OAuth، Raw Credential و اجرای بیرونی را عمداً خاموش نگه می‌دارد.
 
 ## اسناد فعلی
 
@@ -42,6 +45,8 @@ Redirect و Response ناامن را پیش از Connector متوقف می‌ک�
 - [Authentic Execution Evaluation](docs/architecture/authentic-execution-evaluation-v1.0.md)
 - [Research Layer](docs/architecture/research-layer-v1.0.md)
 - [External Intelligence Evaluation](docs/architecture/external-intelligence-evaluation-v1.0.md)
+- [Connector Lifecycle](docs/architecture/connector-lifecycle-v1.0.md)
+- [Connector Governance Evaluation](docs/architecture/connector-governance-evaluation-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
 - [Master Implementation Prompt مرحله Foundation](docs/implementation/foundation-master-prompt-v1.0.md)
@@ -77,9 +82,10 @@ pnpm check
 pnpm dev
 ```
 
-`pnpm check` علاوه بر lint، typecheck و test، چهار ارزیابی نسخه‌دار
+`pnpm check` علاوه بر lint، typecheck و test، پنج ارزیابی نسخه‌دار
 `model-input-safety-eval-v1`، `memory-retrieval-eval-v1` و
-`authentic-execution-eval-v1` و `external-intelligence-eval-v1` را نیز اجرا می‌کند.
+`authentic-execution-eval-v1`، `external-intelligence-eval-v1` و
+`connector-governance-eval-v1` را نیز اجرا می‌کند.
 اجرای مستقل آنها:
 
 ```bash
@@ -87,12 +93,19 @@ pnpm eval:model-input-safety
 pnpm eval:memory-retrieval
 pnpm eval:authentic-execution
 pnpm eval:external-intelligence
+pnpm eval:connector-governance
 ```
 
 Gate حافظه با ۱۶ Case فارسی/انگلیسی، `precision@k` و `recall@k` کامل، نشت Permission
 صفر و Abstention صحیح برای داده حذف‌شده، مورد اعتراض، Superseded، منقضی یا هنوز
 نامعتبر را الزام می‌کند. جزئیات در
 [`docs/architecture/memory-retrieval-evaluation-v1.0.md`](docs/architecture/memory-retrieval-evaluation-v1.0.md)
+ثبت شده است.
+
+Gate حاکمیت اتصال ۲۴ Case نسخه‌دار دارد: شش پروفایل خاموش، سیزده حمله Scope/Secret،
+چهار Drill ابطال/حذف/Incident و یک Authorization درون Scope. Network، External Action،
+Active Connector و Raw Credential leakage باید همگی صفر بمانند. جزئیات در
+[`docs/architecture/connector-governance-evaluation-v1.0.md`](docs/architecture/connector-governance-evaluation-v1.0.md)
 ثبت شده است.
 
 Gate اجرای اصیل ۳۱ Case نسخه‌دار Claim، Platform، Authenticity و Learning را اجرا
@@ -311,6 +324,14 @@ Review است و Action Recommendation، Public Approval یا External Action ا
 Fetch و Monitoring بیرونی در این Slice وجود ندارد. API این نمای owner-only برابر
 `GET /api/opportunities` است و جزئیات در
 [`docs/architecture/opportunity-radar-v1.0.md`](docs/architecture/opportunity-radar-v1.0.md)
+ثبت شده است.
+
+نمای «اتصال‌ها» Snapshot نسخه‌دار `connector-lifecycle-v1` را از `GET /api/connectors`
+نمایش می‌دهد. شش پروفایل فقط به‌صورت `disabled` تعریف شده‌اند؛ Raw Secret پذیرفته
+نمی‌شود و هر Registration احتمالی نیز مجوز Network یا Outbound ندارد. Revocation، حذف
+داده مشتق‌شده و Incident containment پیش از انتخاب Provider به‌صورت deterministic drill
+شده‌اند. قرارداد کامل در
+[`docs/architecture/connector-lifecycle-v1.0.md`](docs/architecture/connector-lifecycle-v1.0.md)
 ثبت شده است.
 
 نمای «دفتر ادعاها» Claimهای ساخته‌شده از Draft و Research را با Statement دقیق، Evidence،

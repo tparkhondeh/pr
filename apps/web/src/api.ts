@@ -1092,6 +1092,58 @@ export type ModelGovernanceSnapshot = Readonly<{
   }>[];
 }>;
 
+export type ConnectorKind =
+  | 'research_web' | 'calendar' | 'email' | 'crm' | 'social_listening' | 'publishing';
+
+export type ConnectorLifecycleSnapshot = Readonly<{
+  policyVersion: 'connector-lifecycle-v1';
+  generatedAt: string;
+  runtimeEnabled: false;
+  externalNetworkCallsPermitted: false;
+  automaticExecutionAllowed: false;
+  rawCredentialAccepted: false;
+  credentialReferenceFormat: 'sha256_only';
+  shortLivedApprovalTokensEnabled: false;
+  activationEligibleConnectors: 0;
+  activeConnectors: 0;
+  summary: Readonly<{
+    supportedProfiles: number;
+    yellowProfiles: number;
+    redProfiles: number;
+    profilesRequiringCredentialReference: number;
+  }>;
+  revocation: Readonly<{
+    cancelInFlightRequired: true;
+    providerGrantRevocationRequired: true;
+    credentialDestructionRequiredWhenBound: true;
+    cachePurgeRequired: true;
+    derivedDataDeletionRequired: true;
+    verificationReceiptRequired: true;
+  }>;
+  incident: Readonly<{
+    immediateHoldRequired: true;
+    evidenceRetention: 'hash_only';
+    credentialRotationRequiredWhenBound: true;
+    ownerNotificationRequired: true;
+  }>;
+  profiles: readonly Readonly<{
+    kind: ConnectorKind;
+    label: string;
+    risk: 'yellow' | 'red';
+    allowedPurposes: readonly string[];
+    allowedOperations: readonly string[];
+    allowedDataClasses: readonly string[];
+    allowedChannels: readonly string[];
+    allowedResourceTypes: readonly string[];
+    thirdPartyData: 'forbidden' | 'metadata_only';
+    credentialReferenceRequired: boolean;
+    maximumRetentionDays: number;
+    maximumOperationsPerHour: number;
+    runtimeStatus: 'disabled';
+    activationBlockers: readonly string[];
+  }>[];
+}>;
+
 export type StrategicQualitySnapshot = Readonly<{
   policyVersion: 'strategic-quality-v1';
   generatedAt: string;
@@ -1448,6 +1500,7 @@ export type AccountDataExport = Readonly<{
     strategicQuality: StrategicQualitySnapshot | null;
     workflowCosts: WorkflowCostSnapshot | null;
     modelGovernance: ModelGovernanceSnapshot | null;
+    connectors: ConnectorLifecycleSnapshot | null;
     activity: AuditTrailSnapshot;
   }>;
 }>;
@@ -2016,6 +2069,15 @@ export async function loadModelGovernance(signal?: AbortSignal): Promise<ModelGo
     ...(signal ? { signal } : {}),
   });
   if (!isModelGovernanceSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function loadConnectors(signal?: AbortSignal): Promise<ConnectorLifecycleSnapshot> {
+  const payload = await requestJson('/api/connectors', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isConnectorLifecycleSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
   return payload;
 }
 
@@ -3206,6 +3268,43 @@ function isModelGovernanceSnapshot(payload: unknown): payload is ModelGovernance
     ['not_run', 'failed', 'passed'].includes(String(route['evalStatus'])));
 }
 
+function isConnectorLifecycleSnapshot(payload: unknown): payload is ConnectorLifecycleSnapshot {
+  if (
+    !isRecord(payload) || payload['policyVersion'] !== 'connector-lifecycle-v1' ||
+    typeof payload['generatedAt'] !== 'string' || payload['runtimeEnabled'] !== false ||
+    payload['externalNetworkCallsPermitted'] !== false || payload['automaticExecutionAllowed'] !== false ||
+    payload['rawCredentialAccepted'] !== false || payload['credentialReferenceFormat'] !== 'sha256_only' ||
+    payload['shortLivedApprovalTokensEnabled'] !== false || payload['activationEligibleConnectors'] !== 0 ||
+    payload['activeConnectors'] !== 0 || !isRecord(payload['summary']) ||
+    !isRecord(payload['revocation']) || !isRecord(payload['incident']) || !Array.isArray(payload['profiles'])
+  ) return false;
+  const summary = payload['summary'];
+  const revocation = payload['revocation'];
+  const incident = payload['incident'];
+  const kinds = ['research_web', 'calendar', 'email', 'crm', 'social_listening', 'publishing'];
+  return (
+    ['supportedProfiles', 'yellowProfiles', 'redProfiles', 'profilesRequiringCredentialReference']
+      .every((key) => typeof summary[key] === 'number') &&
+    revocation['cancelInFlightRequired'] === true &&
+    revocation['providerGrantRevocationRequired'] === true &&
+    revocation['credentialDestructionRequiredWhenBound'] === true &&
+    revocation['cachePurgeRequired'] === true && revocation['derivedDataDeletionRequired'] === true &&
+    revocation['verificationReceiptRequired'] === true && incident['immediateHoldRequired'] === true &&
+    incident['evidenceRetention'] === 'hash_only' && incident['credentialRotationRequiredWhenBound'] === true &&
+    incident['ownerNotificationRequired'] === true && payload['profiles'].every((profile) =>
+      isRecord(profile) && kinds.includes(String(profile['kind'])) && typeof profile['label'] === 'string' &&
+      (profile['risk'] === 'yellow' || profile['risk'] === 'red') &&
+      isStringArray(profile['allowedPurposes']) && isStringArray(profile['allowedOperations']) &&
+      isStringArray(profile['allowedDataClasses']) && isStringArray(profile['allowedChannels']) &&
+      isStringArray(profile['allowedResourceTypes']) &&
+      (profile['thirdPartyData'] === 'forbidden' || profile['thirdPartyData'] === 'metadata_only') &&
+      typeof profile['credentialReferenceRequired'] === 'boolean' &&
+      typeof profile['maximumRetentionDays'] === 'number' &&
+      typeof profile['maximumOperationsPerHour'] === 'number' && profile['runtimeStatus'] === 'disabled' &&
+      isStringArray(profile['activationBlockers']))
+  );
+}
+
 function isModelInvocationReconciliationSnapshot(value: unknown): boolean {
   return isRecord(value) &&
     value['policyVersion'] === 'model-invocation-reconciliation-v1' &&
@@ -3328,6 +3427,7 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     (data['strategicQuality'] === null || isStrategicQualitySnapshot(data['strategicQuality'])) &&
     (data['workflowCosts'] === null || isWorkflowCostSnapshot(data['workflowCosts'])) &&
     (data['modelGovernance'] === null || isModelGovernanceSnapshot(data['modelGovernance'])) &&
+    (data['connectors'] === null || isConnectorLifecycleSnapshot(data['connectors'])) &&
     isAuditTrailSnapshot(data['activity'])
   );
 }

@@ -34,6 +34,11 @@ import {
 } from '../claims/governance.js';
 import type { ClaimStatus } from '../claims/claim-registry.js';
 import {
+  ConnectorLifecyclePermissionError,
+  type ConnectorLifecycleService,
+  type ConnectorLifecycleSnapshot,
+} from '../connectors/lifecycle.js';
+import {
   DraftBlockedError,
   DraftConflictError,
   DraftNotFoundError,
@@ -234,6 +239,7 @@ export type ApplicationDependencies = Readonly<{
   opportunities?: Pick<OpportunityRadarService, 'snapshot'>;
   workflowCosts?: Pick<WorkflowCostControlService, 'snapshot' | 'reserve' | 'charge'>;
   modelGovernance?: Pick<ModelGovernanceService, 'snapshot'>;
+  connectors?: Pick<ConnectorLifecycleService, 'snapshot'>;
   modelInvocationReconciliation?: Pick<ModelInvocationReconciliationService, 'reconcile'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
@@ -336,6 +342,11 @@ export function createRequestHandler(
 
     if (request.method === 'GET' && path === '/api/model-governance') {
       await handleModelGovernanceSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/connectors') {
+      await handleConnectorLifecycleSnapshot(request, response, dependencies);
       return;
     }
 
@@ -1006,6 +1017,40 @@ function serializeModelGovernance(snapshot: ModelGovernanceSnapshot): Record<str
         ...(entry.completedAt ? { completedAt: entry.completedAt.toISOString() } : {}),
       })),
     },
+  };
+}
+
+async function handleConnectorLifecycleSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.connectors) {
+    sendJson(response, 503, { error: 'connector_governance_unavailable' });
+    return;
+  }
+  try {
+    sendJson(response, 200, serializeConnectorLifecycle(
+      await Promise.resolve(dependencies.connectors.snapshot(actorId, now(dependencies))),
+    ));
+  } catch (error: unknown) {
+    if (error instanceof ConnectorLifecyclePermissionError) {
+      sendJson(response, 403, { error: 'connector_governance_permission_denied' });
+      return;
+    }
+    sendJson(response, 500, { error: 'connector_governance_failed' });
+  }
+}
+
+function serializeConnectorLifecycle(snapshot: ConnectorLifecycleSnapshot): Record<string, unknown> {
+  return {
+    ...snapshot,
+    generatedAt: snapshot.generatedAt.toISOString(),
   };
 }
 
@@ -2567,7 +2612,7 @@ async function handleAccountExport(
   }
   const exportedAt = now(dependencies);
   try {
-    const [workbench, strategy, draft, feedback, strategicQuality, workflowCosts, modelGovernance, memory, assets, research, claims, arbitration, initiative, relationships, perception, activity] = await Promise.all([
+    const [workbench, strategy, draft, feedback, strategicQuality, workflowCosts, modelGovernance, connectors, memory, assets, research, claims, arbitration, initiative, relationships, perception, activity] = await Promise.all([
       dependencies.workbench.snapshot(),
       dependencies.strategy.snapshot(actorId),
       dependencies.drafts.snapshot(actorId, exportedAt),
@@ -2575,6 +2620,7 @@ async function handleAccountExport(
       dependencies.strategicQuality?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.workflowCosts?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       Promise.resolve(dependencies.modelGovernance?.snapshot(actorId, exportedAt) ?? null),
+      Promise.resolve(dependencies.connectors?.snapshot(actorId, exportedAt) ?? null),
       dependencies.conversation.memorySnapshot({
         tenantId: dependencies.tenantId,
         actorId,
@@ -2629,6 +2675,7 @@ async function handleAccountExport(
           strategicQuality: strategicQuality ? serializeStrategicQuality(strategicQuality) : null,
           workflowCosts: workflowCosts ? serializeWorkflowCost(workflowCosts) : null,
           modelGovernance: modelGovernance ? serializeModelGovernance(modelGovernance) : null,
+          connectors: connectors ? serializeConnectorLifecycle(connectors) : null,
           activity: serializeAuditTrail(activity),
         },
       },
