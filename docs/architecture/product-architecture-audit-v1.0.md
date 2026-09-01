@@ -270,7 +270,9 @@ PostgreSQL و Preview فعال‌اند. چون Runtime فعلی Provider بیر
 PostgreSQL در Production، Eval چندزبانه و Billing Reconciliation هنوز پیش‌شرط Provider هستند.
 `model-input-safety-v1` نیز ورودی Credential-bearing، Prompt Injection فارسی/انگلیسی،
 Payload opaque و Shape/Size غیرقابل‌اعتماد را پیش از Journal/Cost بدون نگهداری متن خام
-متوقف می‌کند. کیفیت Detection هنوز باید با مجموعه adversarial مستقل سنجیده شود.
+متوقف می‌کند. `model-input-safety-eval-v1` اکنون ۲۱ Case adversarial مستقل فارسی/انگلیسی
+را در CI با شرط صفر False Positive/False Negative و عدم نشت Raw Marker اجرا می‌کند؛
+اندازه‌گیری آماری روی Corpus واقعی ناشناس‌شده هنوز پیش‌شرط فعال‌سازی Provider است.
 
 مسیر `postgres-commissioning-v1` نیز فعال‌سازی Source of Truth را fail-closed کرده است:
 Migration و Runtime باید Roleهای جدا باشند، Runtime حق superuser/BYPASSRLS/CREATE

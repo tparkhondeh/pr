@@ -67,21 +67,28 @@ const defaultSafetyLimits: SafetyLimits = {
 const credentialPatterns = [
   /-----BEGIN [A-Z0-9 ]{0,24}PRIVATE KEY-----/u,
   /\bAKIA[0-9A-Z]{16}\b/u,
+  /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/u,
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/u,
   /\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*\b/iu,
   /\bAuthorization\s*:\s*Basic\s+[A-Za-z0-9+/]{12,}={0,2}\b/iu,
   /\b(?:api[ _-]?key|client[ _-]?secret|password|passwd|access[ _-]?token|refresh[ _-]?token)\s*[:=]\s*[^\s,;]{8,}/iu,
-  /(?:رمز|گذرواژه|توکن|کلید[ _-]?API)\s*[:=]\s*[^\s،؛]{8,}/u,
+  /(?:رمز(?:[ _-]?عبور)?|گذرواژه|توکن|کلید[ _-]?API)\s*[:=]\s*[^\s،؛]{8,}/u,
   /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s:/]+:[^\s@/]+@/iu,
 ] as const;
 
+const credentialFieldNamePatterns = [
+  /^(?:api[ _-]?key|client[ _-]?secret|password|passwd|access[ _-]?token|refresh[ _-]?token|authorization)$/iu,
+  /^(?:رمز(?:[ _-]?عبور)?|گذرواژه|توکن|کلید[ _-]?api)$/u,
+] as const;
+
 const promptInjectionPatterns = [
-  /\b(?:ignore|disregard|override)\s+(?:all\s+)?(?:previous|prior|system|developer)\s+(?:instructions|messages|rules)\b/iu,
+  /\b(?:ignore|disregard|override|forget|bypass)\s+(?:(?:all|any|the|every)\s+)?(?:previous|prior|earlier|system|developer)\s+(?:instructions?|messages?|rules?|prompts?)\b/iu,
   /\b(?:reveal|show|print|return|expose)\s+(?:the\s+)?(?:system|developer|hidden)\s+(?:prompt|instructions|message)\b/iu,
   /\b(?:send|upload|post|exfiltrate)\b.{0,60}\b(?:secret|credential|token|password|system prompt)\b/iu,
-  /(?:دستور|پیام|قانون)(?:های)?\s+(?:قبلی|بالا|سیستم).{0,40}(?:نادیده|لغو|دور بزن)/u,
+  /(?:دستور|پیام|قانون|پرامپت)(?:ها|های)?\s+(?:قبلی|پیشین|بالا|سیستم|توسعه دهنده).{0,50}(?:نادیده|لغو|دور\s*بزن|فراموش|بی اثر)/u,
   /(?:پرامپت|دستور)(?:‌| )?(?:های)?\s+(?:سیستم|مخفی).{0,40}(?:نشان|افشا|چاپ|ارسال)/u,
   /(?:ارسال|آپلود|منتشر).{0,40}(?:رمز|گذرواژه|توکن|پرامپت سیستم)/u,
+  /(?:رمز|گذرواژه|توکن|پرامپت سیستم).{0,50}(?:ارسال|آپلود|منتشر)/u,
 ] as const;
 
 const opaqueEncodedPayloadPattern = /(?:^|\s)[A-Za-z0-9+/]{160,}={0,2}(?:\s|$)/u;
@@ -191,6 +198,10 @@ export class ModelInputSafetyService {
         return;
       }
       const descriptors = Object.getOwnPropertyDescriptors(value);
+      if (Object.getOwnPropertySymbols(value).length > 0) {
+        hash.update(`${fieldPath}\0symbol-key\0`);
+        addFinding('unsupported_input_shape', 'high', `${fieldPath}[symbol]`);
+      }
       for (const key of Object.keys(descriptors).sort()) {
         const childPath = pathForKey(fieldPath, key);
         const descriptor = descriptors[key];
@@ -201,6 +212,13 @@ export class ModelInputSafetyService {
           continue;
         }
         const descriptorValue = descriptor.value as unknown;
+        if (
+          isCredentialFieldName(key) &&
+          typeof descriptorValue === 'string' &&
+          descriptorValue.trim().length >= 8
+        ) {
+          addFinding('credential_material', 'critical', childPath);
+        }
         visit(descriptorValue, childPath, depth + 1);
       }
       ancestors.delete(value);
@@ -254,7 +272,7 @@ function inspectString(
     fieldPath: string,
   ) => void,
 ): void {
-  const normalized = value.normalize('NFKC');
+  const normalized = normalizeInspectionText(value);
   if (credentialPatterns.some((pattern) => pattern.test(normalized))) {
     addFinding('credential_material', 'critical', fieldPath);
   }
@@ -264,6 +282,21 @@ function inspectString(
   if (opaqueEncodedPayloadPattern.test(normalized)) {
     addFinding('opaque_encoded_payload', 'high', fieldPath);
   }
+}
+
+function isCredentialFieldName(value: string): boolean {
+  const normalized = normalizeInspectionText(value);
+  return credentialFieldNamePatterns.some((pattern) => pattern.test(normalized));
+}
+
+function normalizeInspectionText(value: string): string {
+  return value
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/gu, '')
+    .replace(/ك/gu, 'ک')
+    .replace(/[يى]/gu, 'ی')
+    .replace(/[‐‑‒–—―]/gu, '-')
+    .replace(/\s+/gu, ' ');
 }
 
 function pathForKey(parent: string, key: string): string {

@@ -14,8 +14,9 @@ Goal، Audience، Timing، Quality و Conflict می‌سنجد. Workflow Cost Ga
 Prompt/Model Registry نیز نسخه، Tier، Eval، Rollout، Data Class و Timeout هر مسیر مدل
 را ثبت کرده و Durable Invocation Journal اجرای هر فراخوانی را فقط با Metadata و Hash
 قابل‌بازیابی می‌کند. Model Input Safety نیز Credential، Prompt Injection و ورودی
-غیرقابل‌اسکن را پیش از هر Side Effect متوقف می‌کند. تا بستن Gateها Provider بیرونی
-Fail-closed می‌ماند.
+غیرقابل‌اسکن را پیش از هر Side Effect متوقف می‌کند و Golden adversarial set فارسی/انگلیسی
+آن در CI Release را با شرط صفر False Positive/False Negative می‌بندد. تا بستن Gateها
+Provider بیرونی Fail-closed می‌ماند.
 
 ## اسناد فعلی
 
@@ -67,6 +68,13 @@ Node نباید از IP عمومی سرور قابل دسترسی باشد و ت
 pnpm install
 pnpm check
 pnpm dev
+```
+
+`pnpm check` علاوه بر lint، typecheck و test، ارزیابی نسخه‌دار
+`model-input-safety-eval-v1` را نیز اجرا می‌کند. اجرای مستقل آن:
+
+```bash
+pnpm eval:model-input-safety
 ```
 
 Health endpoint پس از اجرا: `GET /health`

@@ -9,11 +9,12 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm eval:model-input-safety",
     "dev": "tsx watch src/main.ts",
     "db:test:integration": "tsx scripts/postgres-integration.ts",
     "db:test:restore": "tsx scripts/postgres-restore-verify.ts",
     "db:commission": "tsx scripts/postgres-commission.ts",
+    "eval:model-input-safety": "tsx scripts/run-model-input-safety-evaluation.ts",
     "lint": "eslint .",
     "security:audit": "pnpm audit --prod --audit-level high",
     "security:scan": "tsx scripts/scan-secrets.ts && pnpm security:audit",

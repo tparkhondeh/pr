@@ -73,7 +73,8 @@ Export نیز همین Metadata حکمرانی را بدون Prompt Content یا
 2. Session/Actor binding معتبر؛
 3. Provider Adapter با Secret خارج Git و Retention policy؛
 4. Eval چندزبانه و Adversarial برای هر Route؛
-5. Eval چندزبانه و adversarial برای Safety Gate و Data Processing Approval؛
+5. گسترش Safety Eval فعلی از Golden regression set به Corpus ناشناس‌شده و Eval مستقل
+   Data Processing Approval؛
 6. Cost reconciliation و Crash/Timeout/Retry drill؛
 7. Canaried rollout و rollback اثبات‌شده؛
 8. تأیید صریح مالک.

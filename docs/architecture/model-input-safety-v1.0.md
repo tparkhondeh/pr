@@ -51,6 +51,11 @@ Scanner فقط JSON-like object، Array، primitive و Date معتبر را می
 اجرا نمی‌شود، Cycle مسدود است و Hash به‌صورت deterministic بر کلیدهای مرتب ساخته می‌شود.
 سقف پیش‌فرض: Depth 20، ده‌هزار Node، دوهزار String و دو میلیون Character.
 
+نام فیلدهای Credential رایج مانند `apiKey`، `clientSecret` و `password` نیز همراه مقدار
+غیرخالی اسکن می‌شوند. نویسه‌های Format نامرئی، شکل عربی ی/ک، Dashهای Unicode و فاصله‌های
+تکراری پیش از Pattern matching نرمال می‌شوند. Symbol key خارج از قرارداد JSON-like است و
+Fail-closed رد می‌شود؛ Getter همچنان برای بازرسی فراخوانی نمی‌شود.
+
 ## Trace و Migration
 
 Gateway نسخه Safety و `scanSha256` را در نتیجه Governance حمل می‌کند. Migration
@@ -58,8 +63,24 @@ Gateway نسخه Safety و `scanSha256` را در نتیجه Governance حمل �
 Journal اضافه می‌کند. `NULL` برای رکورد تاریخی به معنی «قبل از این Gate» است و عمداً
 Backfill نمی‌شود؛ اجرای جدید همیشه نسخه `model-input-safety-v1` را ثبت می‌کند.
 
+## Release evaluation
+
+`model-input-safety-eval-v1` یک Golden adversarial set نسخه‌دار با ۲۱ Case فارسی و
+انگلیسی است: چهار Allow و هفده Deny برای Credential، Prompt Injection، Payload کدشده،
+سقف اسکن و Shape غیرقابل‌اعتماد. Release gate سه شرط را برای هر Case بحرانی می‌سنجد:
+Disposition، Finding Code و عدم بازگشت Raw Marker. گزارش فقط Case ID و Metric نگه می‌دارد.
+
+```bash
+pnpm eval:model-input-safety
+```
+
+این فرمان جزئی از `pnpm check` و در نتیجه CI است. نسخه فعلی باید ۲۱/۲۱، بدون False
+Positive، False Negative یا Critical Failure عبور کند. این Dataset مصنوعی است و Secret
+واقعی در Repo ندارد.
+
 ## محدودیت نسخه اول
 
-این Gate جایگزین Eval چندزبانه، Malware scanner، Provider-side DLP، Tool Authorization یا
-Human Review نیست. الگوها عمداً High-confidence هستند؛ Dataset adversarial و اندازه‌گیری
-False Positive/False Negative پیش از فعال‌سازی Provider هنوز لازم است.
+این Gate جایگزین Eval هر Route مدل، Malware scanner، Provider-side DLP، Tool Authorization
+یا Human Review نیست. الگوها عمداً High-confidence هستند؛ Golden set فعلی یک Release
+regression gate است، نه تخمین آماری عملکرد روی داده واقعی. Corpus ناشناس‌شده و Review
+انسانی برای برآورد Recall/Precision واقعی پیش از فعال‌سازی Provider همچنان لازم است.
