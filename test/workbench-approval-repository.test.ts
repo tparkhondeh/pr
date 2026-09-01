@@ -43,6 +43,9 @@ const approvedRow = {
   workflow_id: context.workflowId,
   revision: '2',
   strategy_revision: '1',
+  decision_context_revision: '1',
+  approved_context_sha256: 'a'.repeat(64),
+  decision_window_ends_at: '2026-09-01T12:00:00.000Z',
   approved_action_ref: 'conversation',
   approved_evidence_ids: ['evidence_conversation'],
   approved_by: context.ownerUserId,
@@ -85,13 +88,15 @@ describe('Postgres workbench approval repository', () => {
       actorUserId: context.ownerUserId,
       occurredAt: new Date('2026-08-31T12:00:00.000Z'),
       expectedRevision: 1,
+      decisionContextHash: 'a'.repeat(64),
+      decisionWindowEndsAt: new Date('2026-09-01T12:00:00.000Z'),
     });
 
     expect(result.outcome).toBe('approved');
     expect(runner.transactions).toBe(1);
     expect(transaction.queries).toHaveLength(5);
     expect(transaction.queries[2]?.sql).toContain("status = 'awaiting_approval'");
-    expect(transaction.queries[2]?.sql).toContain('revision = $8');
+    expect(transaction.queries[2]?.sql).toContain('revision = $10');
     expect(transaction.queries[2]?.values[4]).toEqual(['evidence_conversation']);
     expect(transaction.queries[3]?.sql).toContain('app.audit_events');
     expect(transaction.queries[4]?.sql).toContain('app.outbox_events');
@@ -118,6 +123,8 @@ describe('Postgres workbench approval repository', () => {
       actorUserId: context.ownerUserId,
       occurredAt: new Date('2026-08-31T12:01:00.000Z'),
       expectedRevision: 1,
+      decisionContextHash: 'a'.repeat(64),
+      decisionWindowEndsAt: new Date('2026-09-01T12:00:00.000Z'),
     });
 
     expect(result).toMatchObject({

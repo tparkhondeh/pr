@@ -21,6 +21,7 @@ let strategy = {
   },
 };
 const strategyRequests = new Map();
+const decisionContextRequests = new Map();
 let currentDraft = null;
 const draftRequests = new Map();
 const feedbackEvents = new Map();
@@ -71,6 +72,7 @@ const groundedActions = [
     riskLevel: 'low',
     attentionCostMinutes: 30,
     energyCost: 2,
+    attentionDemand: 2,
     visibilityCost: 1,
     emotionalCost: 2,
     feasible: true,
@@ -92,6 +94,7 @@ const groundedActions = [
     riskLevel: 'medium',
     attentionCostMinutes: 120,
     energyCost: 3,
+    attentionDemand: 3,
     visibilityCost: 4,
     emotionalCost: 3,
     feasible: true,
@@ -113,6 +116,7 @@ const groundedActions = [
     riskLevel: 'low',
     attentionCostMinutes: 0,
     energyCost: 1,
+    attentionDemand: 1,
     visibilityCost: 1,
     emotionalCost: 1,
     feasible: true,
@@ -123,11 +127,19 @@ const groundedActions = [
   },
 ];
 
-const decisionAttentionBudget = {
-  availableMinutes: 150,
-  maximumEnergyCost: 3,
-  visibilityTolerance: 4,
-  emotionalBandwidth: 3,
+let decisionContext = {
+  policyVersion: 'decision-context-v1',
+  revision: 1,
+  contextHash: '3202024badf63007236919b1d36dbc5ca2f7e733307ca0832e7f969b84a62910',
+  updatedAt: new Date(0).toISOString(),
+  persistence: 'ephemeral',
+  attentionBudget: {
+    availableMinutes: 150,
+    maximumEnergyCost: 3,
+    attentionCapacity: 3,
+    visibilityTolerance: 4,
+    emotionalBandwidth: 3,
+  },
 };
 
 export default {
@@ -140,6 +152,10 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/api/strategy') {
       return json(strategy);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/decision-context') {
+      return json(decisionContext);
     }
 
     if (request.method === 'GET' && url.pathname === '/api/drafts/current') {
@@ -792,7 +808,7 @@ export default {
       const repeated = repeatedDraftRequest(body.requestId, 'create', body);
       if (repeated?.error) return json({ error: repeated.error }, 409);
       if (repeated?.snapshot) {
-        if (approval?.actionId !== 'essay' || approval.strategyRevision !== strategy.revision) {
+        if (!currentContentApproval()) {
           return json({ error: 'content_action_not_approved' }, 409);
         }
         if (repeated.snapshot.strategyRevision !== strategy.revision) {
@@ -810,7 +826,7 @@ export default {
         }
         return json({ outcome: 'already_applied', ...repeated.snapshot });
       }
-      if (approval?.actionId !== 'essay' || approval.strategyRevision !== strategy.revision) {
+      if (!currentContentApproval()) {
         return json({ error: 'content_action_not_approved' }, 409);
       }
       const source = resolveDraftSource(body.sourceKind, body.sourceRef);
@@ -979,6 +995,43 @@ export default {
       return json({ outcome: 'saved', ...strategy });
     }
 
+    if (request.method === 'PUT' && url.pathname === '/api/decision-context') {
+      const body = await readJson(request);
+      if (!validDecisionContextRequest(body)) return json({ error: 'invalid_decision_context' }, 400);
+      const normalizedBudget = canonicalDecisionContextBudget(body.value.attentionBudget);
+      const fingerprint = JSON.stringify({
+        expectedRevision: body.expectedRevision,
+        value: { attentionBudget: normalizedBudget },
+      });
+      const existing = decisionContextRequests.get(body.requestId);
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) return json({ error: 'idempotency_mismatch' }, 409);
+        return json({ outcome: 'already_saved', ...existing.snapshot });
+      }
+      if (body.expectedRevision !== decisionContext.revision) {
+        return json({ error: 'revision_changed' }, 409);
+      }
+      const revision = decisionContext.revision + 1;
+      const contextHash = await sha256Hex(JSON.stringify({
+        policyVersion: 'decision-context-v1',
+        revision,
+        attentionBudget: normalizedBudget,
+      }));
+      decisionContext = {
+        policyVersion: 'decision-context-v1', revision, contextHash,
+        updatedAt: new Date().toISOString(), persistence: 'ephemeral',
+        attentionBudget: normalizedBudget,
+      };
+      approval = null;
+      decisionContextRequests.set(body.requestId, { fingerprint, snapshot: decisionContext });
+      recordAudit(`decision-context.save:${body.requestId}`, {
+        eventType: 'decision.context_saved', resourceType: 'decision_context', resourceId: 'owner_primary',
+        purpose: 'strategy_reasoning', decision: 'saved',
+        metadata: { requestId: body.requestId, revision, contextHash }, occurredAt: decisionContext.updatedAt,
+      });
+      return json({ outcome: 'saved', ...decisionContext });
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/memory') {
       return json(memorySnapshot());
     }
@@ -990,8 +1043,27 @@ export default {
       } catch {
         return json({ error: 'invalid_json' }, 400);
       }
+      if (
+        typeof body?.actionId !== 'string' || !Number.isSafeInteger(body.expectedStrategyRevision) ||
+        !Number.isSafeInteger(body.expectedDecisionContextRevision) ||
+        typeof body.expectedDecisionContextHash !== 'string' ||
+        !/^[0-9a-f]{64}$/u.test(body.expectedDecisionContextHash) ||
+        typeof body.expectedDecisionWindowEndsAt !== 'string'
+      ) return json({ error: 'invalid_approval_context' }, 400);
+      const decisionWindowEndsAt = new Date(body.expectedDecisionWindowEndsAt);
+      const approvedAt = new Date();
+      if (body.expectedStrategyRevision !== strategy.revision) {
+        return json({ error: 'strategy_changed' }, 409);
+      }
+      if (
+        body.expectedDecisionContextRevision !== decisionContext.revision ||
+        body.expectedDecisionContextHash !== decisionContext.contextHash
+      ) return json({ error: 'decision_context_changed' }, 409);
+      if (Number.isNaN(decisionWindowEndsAt.getTime()) || decisionWindowEndsAt <= approvedAt) {
+        return json({ error: 'decision_expired' }, 409);
+      }
       const context = ownerEvidenceContext();
-      const action = workbenchActions(context, new Date()).find((candidate) => candidate.id === body?.actionId);
+      const action = workbenchActions(context, approvedAt).find((candidate) => candidate.id === body.actionId);
       if (!action) return json({ error: 'action_not_found' }, 404);
       if (action.interaction !== 'approve') {
         return json({ error: 'action_not_approvable' }, 409);
@@ -1007,19 +1079,32 @@ export default {
       if (risk.level === 'yellow' && (!riskReview || riskReview.assessmentHash !== risk.assessmentHash || riskReview.decision !== 'acknowledge')) {
         return json({ error: 'risk_review_required' }, 409);
       }
+      if (approval && (
+        approval.strategyRevision !== strategy.revision ||
+        approval.decisionContextRevision !== decisionContext.revision ||
+        approval.decisionContextHash !== decisionContext.contextHash ||
+        new Date(approval.decisionWindowEndsAt) <= approvedAt
+      )) approval = null;
       if (approval && approval.actionId !== action.id) {
         return json({ error: 'different_action_approved' }, 409);
       }
       approval ??= {
         actionId: action.id,
         evidenceIds: [...action.evidenceIds],
-        approvedAt: new Date().toISOString(),
+        approvedAt: approvedAt.toISOString(),
         strategyRevision: strategy.revision,
+        decisionContextRevision: decisionContext.revision,
+        decisionContextHash: decisionContext.contextHash,
+        decisionWindowEndsAt: body.expectedDecisionWindowEndsAt,
       };
       recordAudit(`workbench.approve:workbench_today:${action.id}`, {
         eventType: 'workbench.action_approved', resourceType: 'workbench', resourceId: 'workbench_today',
         purpose: 'strategy_reasoning', decision: 'approved',
-        metadata: { actionId: action.id, revision: 2 }, occurredAt: approval.approvedAt,
+        metadata: {
+          actionId: action.id, revision: 2, strategyRevision: strategy.revision,
+          decisionContextRevision: decisionContext.revision,
+          decisionContextHash: decisionContext.contextHash,
+        }, occurredAt: approval.approvedAt,
       });
       return json(snapshot());
     }
@@ -1211,8 +1296,15 @@ export default {
 function snapshot() {
   const generatedAt = new Date();
   const context = ownerEvidenceContext();
-  const effectiveApproval = context.strategy.evidenceIds.length > 0 || approval?.actionId === 'wait'
+  const currentApproval = approval &&
+    approval.strategyRevision === strategy.revision &&
+    approval.decisionContextRevision === decisionContext.revision &&
+    approval.decisionContextHash === decisionContext.contextHash &&
+    new Date(approval.decisionWindowEndsAt) > generatedAt
     ? approval
+    : null;
+  const effectiveApproval = context.strategy.evidenceIds.length > 0 || currentApproval?.actionId === 'wait'
+    ? currentApproval
     : null;
   return {
     policyVersion: 'strategic-decision-v1',
@@ -1230,7 +1322,8 @@ function snapshot() {
       outcome: strategy.goal.outcome,
       successMetrics: strategy.goal.successMetrics,
     },
-    attentionBudget: decisionAttentionBudget,
+    attentionBudget: decisionContext.attentionBudget,
+    decisionContext,
     decisionFrame: strategicDecisionFrame(generatedAt),
     evidence: {
       state: context.strategy.evidenceIds.length > 0 ? 'grounded' : 'insufficient',
@@ -1350,7 +1443,7 @@ function ownerEvidenceContext() {
 
 function workbenchActions(context, generatedAt) {
   if (context.strategy.evidenceIds.length === 0) return coldStartActions(context, generatedAt);
-  return groundedActions.map((action) => {
+  return rankGroundedActions().map((action) => {
     const evidenceIds = action.kind === 'content'
       ? context.strategy.evidenceIds
       : context.strategy.evidenceIds.slice(0, action.kind === 'no_action' ? 1 : 2);
@@ -1369,6 +1462,34 @@ function workbenchActions(context, generatedAt) {
   });
 }
 
+function rankGroundedActions() {
+  const budget = decisionContext.attentionBudget;
+  const evaluated = groundedActions.map((action) => {
+    const reasons = [];
+    if (action.attentionCostMinutes > budget.availableMinutes) reasons.push('attention_time_exceeded');
+    if (action.energyCost > budget.maximumEnergyCost) reasons.push('energy_exceeded');
+    if (action.attentionDemand > budget.attentionCapacity) reasons.push('attention_capacity_exceeded');
+    if (action.visibilityCost > budget.visibilityTolerance) reasons.push('visibility_tolerance_exceeded');
+    if (action.emotionalCost > budget.emotionalBandwidth) reasons.push('emotional_bandwidth_exceeded');
+    const feasible = reasons.length === 0;
+    return {
+      ...action,
+      feasible,
+      feasibilityReasons: feasible ? ['within_budget'] : reasons,
+      utilityScore: feasible ? action.utilityScore : Number.NEGATIVE_INFINITY,
+    };
+  });
+  const best = Math.max(...evaluated.map((action) => action.utilityScore));
+  return evaluated
+    .sort((left, right) => right.utilityScore - left.utilityScore)
+    .map((action, index) => ({
+      ...action,
+      utilityScore: action.feasible ? action.utilityScore : null,
+      opportunityCost: action.feasible ? Math.round((best - action.utilityScore) * 10) / 10 : null,
+      rank: index + 1,
+    }));
+}
+
 function coldStartActions(context, generatedAt) {
   const withheld = context.strategy.withheldEvidenceCount;
   return [
@@ -1380,7 +1501,8 @@ function coldStartActions(context, generatedAt) {
       benefits: ['ساخت پایه قابل‌ردیابی برای تصمیم بعدی'], risks: ['ورود متن نامرتبط یا بیش‌ازحد حساس'],
       prerequisites: ['انتخاب یک متن واقعی', 'تعیین صریح مجوز تحلیل برند'], evidenceIds: [], evidenceCount: 0,
       confidence: 1, riskLevel: 'low', attentionCostMinutes: 10, energyCost: 1,
-      visibilityCost: 1, emotionalCost: 1, feasible: true, feasibilityReasons: ['within_budget'],
+      attentionDemand: 2, visibilityCost: 1, emotionalCost: 1,
+      feasible: true, feasibilityReasons: ['within_budget'],
       utilityScore: null, opportunityCost: null, rank: 1, evidenceState: 'insufficient',
       evidenceSourceTypes: [], interaction: 'open_intake',
       decision: strategicActionDecision({ kind: 'research', feasible: true, feasibilityReasons: ['within_budget'] }, generatedAt, 0, true),
@@ -1391,7 +1513,8 @@ function coldStartActions(context, generatedAt) {
       benefits: ['شروع کم‌اصطکاک مدل شخصی'], risks: ['یک Self-report منفرد هنوز شاهد مستقل نیست'],
       prerequisites: ['تعریف یک موقعیت مشخص', 'تأیید جداگانه حافظه'], evidenceIds: [], evidenceCount: 0,
       confidence: 1, riskLevel: 'low', attentionCostMinutes: 8, energyCost: 1,
-      visibilityCost: 1, emotionalCost: 2, feasible: true, feasibilityReasons: ['within_budget'],
+      attentionDemand: 2, visibilityCost: 1, emotionalCost: 2,
+      feasible: true, feasibilityReasons: ['within_budget'],
       utilityScore: null, opportunityCost: null, rank: 2, evidenceState: 'insufficient',
       evidenceSourceTypes: [], interaction: 'open_conversation',
       decision: strategicActionDecision({ kind: 'private_conversation', feasible: true, feasibilityReasons: ['within_budget'] }, generatedAt, 0, true),
@@ -1402,7 +1525,8 @@ function coldStartActions(context, generatedAt) {
       benefits: ['پرهیز از توصیه و ادعای بدون پشتوانه'], risks: ['عقب‌افتادن یک پنجره زمانی کوتاه'],
       prerequisites: ['بازبینی پس از ورود اولین منبع مجاز'], evidenceIds: [], evidenceCount: 0,
       confidence: 1, riskLevel: 'low', attentionCostMinutes: 0, energyCost: 1,
-      visibilityCost: 1, emotionalCost: 1, feasible: true, feasibilityReasons: ['within_budget'],
+      attentionDemand: 1, visibilityCost: 1, emotionalCost: 1,
+      feasible: true, feasibilityReasons: ['within_budget'],
       utilityScore: null, opportunityCost: null, rank: 3, evidenceState: 'insufficient',
       evidenceSourceTypes: [], interaction: 'approve',
       decision: strategicActionDecision({ kind: 'no_action', feasible: true, feasibilityReasons: ['within_budget'] }, generatedAt, 0, true),
@@ -1416,7 +1540,13 @@ function strategicDecisionFrame(generatedAt) {
     policyVersion: 'strategic-decision-v1',
     why: { goalId: strategy.goalId, objective: strategy.goal.outcome },
     forWhom: strategy.desiredPositioning.audience,
-    currentContext: { ...decisionAttentionBudget },
+    currentContext: { ...decisionContext.attentionBudget },
+    contextBinding: {
+      strategyRevision: strategy.revision,
+      decisionContextRevision: decisionContext.revision,
+      decisionContextHash: decisionContext.contextHash,
+      decisionContextUpdatedAt: decisionContext.updatedAt,
+    },
     decisionWindow: { generatedAt: generatedAt.toISOString(), expiresAt, durationHours: 24 },
     rankingTransparency: {
       method: 'declared_weighted_policy',
@@ -1439,6 +1569,9 @@ function strategicActionDecision(action, generatedAt, evidenceCount, coldStart) 
         : 'Action در بودجه فعلی جا می‌گیرد، اما اجرا همچنان به تصمیم انسانی نیاز دارد.';
   return {
     policyVersion: 'strategic-decision-v1',
+    strategyRevision: strategy.revision,
+    decisionContextRevision: decisionContext.revision,
+    decisionContextHash: decisionContext.contextHash,
     objective: strategy.goal.outcome,
     stakeholder: strategy.desiredPositioning.audience,
     posture,
@@ -1487,6 +1620,9 @@ function strategicMeasurementSignals(kind) {
 function stableStrategicDecision(action) {
   return {
     policyVersion: action.decision.policyVersion,
+    strategyRevision: action.decision.strategyRevision,
+    decisionContextRevision: action.decision.decisionContextRevision,
+    decisionContextHash: action.decision.decisionContextHash,
     objective: action.decision.objective,
     stakeholder: action.decision.stakeholder,
     posture: action.decision.posture,
@@ -1593,7 +1729,8 @@ async function assessRiskAction(action) {
       risks: action.risks, prerequisites: action.prerequisites, evidenceIds: action.evidenceIds,
       evidenceState: action.evidenceState, riskLevel: action.riskLevel,
       attentionCostMinutes: action.attentionCostMinutes, energyCost: action.energyCost,
-      visibilityCost: action.visibilityCost, emotionalCost: action.emotionalCost,
+      attentionDemand: action.attentionDemand, visibilityCost: action.visibilityCost,
+      emotionalCost: action.emotionalCost,
       feasibilityReasons: action.feasibilityReasons, decision: stableStrategicDecision(action),
     }, findings: ordered,
   }));
@@ -1797,6 +1934,8 @@ async function arbitrationContextHash(action, context) {
   return sha256Hex(JSON.stringify({
     policyVersion: 'intermodule-arbitration-v1', actionHash: await arbitrationActionHash(action),
     strategyRevision: context.workbench.goal.revision,
+    decisionContextRevision: context.workbench.decisionContext.revision,
+    decisionContextHash: context.workbench.decisionContext.contextHash,
     risk: assessment ? {
       assessmentHash: assessment.assessmentHash, gate: assessment.gate,
       reviewId: assessment.lastReview?.reviewId ?? null,
@@ -1812,7 +1951,8 @@ async function arbitrationActionHash(action) {
     evidenceState: action.evidenceState, confidence: action.confidence, riskLevel: action.riskLevel,
     utilityScore: action.utilityScore, opportunityCost: action.opportunityCost, feasible: action.feasible,
     feasibilityReasons: action.feasibilityReasons, attentionCostMinutes: action.attentionCostMinutes,
-    energyCost: action.energyCost, visibilityCost: action.visibilityCost, emotionalCost: action.emotionalCost,
+    energyCost: action.energyCost, attentionDemand: action.attentionDemand,
+    visibilityCost: action.visibilityCost, emotionalCost: action.emotionalCost,
     decision: stableStrategicDecision(action),
   }));
 }
@@ -1825,12 +1965,15 @@ async function initiativeContext() {
   const contextHash = await sha256Hex(JSON.stringify({
     policyVersion: 'initiative-policy-v1',
     goalRevision: workbench.goal.revision,
+    decisionContextRevision: workbench.decisionContext.revision,
+    decisionContextHash: workbench.decisionContext.contextHash,
     evidence: workbench.evidence,
     actions: workbench.actions.map((action) => ({
       id: action.id, kind: action.kind, rank: action.rank, feasible: action.feasible,
       evidenceIds: action.evidenceIds, evidenceState: action.evidenceState,
       confidence: action.confidence, attentionCostMinutes: action.attentionCostMinutes,
-      energyCost: action.energyCost, visibilityCost: action.visibilityCost,
+      energyCost: action.energyCost, attentionDemand: action.attentionDemand,
+      visibilityCost: action.visibilityCost,
       emotionalCost: action.emotionalCost, feasibilityReasons: action.feasibilityReasons,
       riskLevel: action.riskLevel, decision: stableStrategicDecision(action),
     })),
@@ -2346,6 +2489,31 @@ function validStrategyRequest(body) {
   );
 }
 
+function validDecisionContextRequest(body) {
+  const budget = body?.value?.attentionBudget;
+  return typeof body?.requestId === 'string' &&
+    /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) &&
+    Number.isSafeInteger(body.expectedRevision) && body.expectedRevision >= 1 &&
+    Number.isSafeInteger(budget?.availableMinutes) &&
+    budget.availableMinutes >= 0 && budget.availableMinutes <= 10080 &&
+    [
+      budget.maximumEnergyCost,
+      budget.attentionCapacity,
+      budget.visibilityTolerance,
+      budget.emotionalBandwidth,
+    ].every((value) => [1, 2, 3, 4, 5].includes(value));
+}
+
+function canonicalDecisionContextBudget(budget) {
+  return {
+    availableMinutes: budget.availableMinutes,
+    maximumEnergyCost: budget.maximumEnergyCost,
+    attentionCapacity: budget.attentionCapacity,
+    visibilityTolerance: budget.visibilityTolerance,
+    emotionalBandwidth: budget.emotionalBandwidth,
+  };
+}
+
 const researchQualities = ['primary', 'authoritative_secondary', 'secondary', 'unverified'];
 const researchStances = ['supports', 'contradicts'];
 const researchQualityScores = {
@@ -2771,9 +2939,16 @@ function resolveDraftSource(kind, ref) {
 }
 
 function sourceAuthorizedForContentAction(source) {
-  if (approval?.actionId !== 'essay' || approval.strategyRevision !== strategy.revision) return false;
+  if (!currentContentApproval()) return false;
   return Boolean(Array.isArray(approval.evidenceIds) && source.evidenceIds.length > 0 &&
     source.evidenceIds.every((id) => approval.evidenceIds.includes(id)));
+}
+
+function currentContentApproval() {
+  return approval?.actionId === 'essay' && approval.strategyRevision === strategy.revision &&
+    approval.decisionContextRevision === decisionContext.revision &&
+    approval.decisionContextHash === decisionContext.contextHash &&
+    new Date(approval.decisionWindowEndsAt) > new Date();
 }
 
 function draftSnapshot() {

@@ -586,6 +586,8 @@ function contextHash(action: WorkbenchAction, context: ArbitrationContext): stri
     policyVersion: arbitrationPolicyVersion,
     actionHash: actionHash(action),
     strategyRevision: context.workbench.goal.revision,
+    decisionContextRevision: context.workbench.decisionContext.revision,
+    decisionContextHash: context.workbench.decisionContext.contextHash,
     risk: assessment ? {
       assessmentHash: assessment.assessmentHash,
       gate: assessment.gate,
@@ -613,6 +615,7 @@ function actionHash(action: WorkbenchAction): string {
     feasibilityReasons: action.feasibilityReasons,
     attentionCostMinutes: action.attentionCostMinutes,
     energyCost: action.energyCost,
+    attentionDemand: action.attentionDemand,
     visibilityCost: action.visibilityCost,
     emotionalCost: action.emotionalCost,
     decision: stableDecisionContract(action),
@@ -622,6 +625,9 @@ function actionHash(action: WorkbenchAction): string {
 function stableDecisionContract(action: WorkbenchAction): Record<string, unknown> {
   return {
     policyVersion: action.decision.policyVersion,
+    strategyRevision: action.decision.strategyRevision,
+    decisionContextRevision: action.decision.decisionContextRevision,
+    decisionContextHash: action.decision.decisionContextHash,
     objective: action.decision.objective,
     stakeholder: action.decision.stakeholder,
     posture: action.decision.posture,

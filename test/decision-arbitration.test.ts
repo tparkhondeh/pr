@@ -201,6 +201,7 @@ function groundedAction(): WorkbenchAction {
     riskLevel: 'medium',
     attentionCostMinutes: 120,
     energyCost: 3,
+    attentionDemand: 4,
     visibilityCost: 4,
     emotionalCost: 3,
     feasible: true,
@@ -225,6 +226,10 @@ function workbenchSnapshot(action: WorkbenchAction): WorkbenchSnapshot {
       id: 'goal-1', revision: 3, title: 'اعتماد', outcome: 'تعامل عمیق', successMetrics: ['کیفیت'],
     },
     attentionBudget: testAttentionBudget,
+    decisionContext: {
+      policyVersion: 'decision-context-v1', revision: 1, contextHash: 'a'.repeat(64),
+      updatedAt: now.toISOString(), persistence: 'memory', attentionBudget: testAttentionBudget,
+    },
     decisionFrame: testDecisionFrame(now),
     evidence: {
       state: action.evidenceState,

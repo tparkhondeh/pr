@@ -4,6 +4,7 @@ import type { AttentionBudget, StrategicOption } from '../../src/strategy/strate
 export const testAttentionBudget: AttentionBudget = {
   availableMinutes: 150,
   maximumEnergyCost: 3,
+  attentionCapacity: 3,
   visibilityTolerance: 4,
   emotionalBandwidth: 3,
 };
@@ -19,6 +20,9 @@ export function testDecisionContract(
   };
   return {
     policyVersion: 'strategic-decision-v1',
+    strategyRevision: 1,
+    decisionContextRevision: 1,
+    decisionContextHash: 'a'.repeat(64),
     objective: 'تعامل عمیق',
     stakeholder: 'تصمیم‌گیران',
     posture: kind === 'no_action' ? 'delay' : 'now',
@@ -44,6 +48,12 @@ export function testDecisionFrame(
     why: { goalId: 'goal-1', objective: 'تعامل عمیق' },
     forWhom: 'تصمیم‌گیران',
     currentContext: testAttentionBudget,
+    contextBinding: {
+      strategyRevision: 1,
+      decisionContextRevision: 1,
+      decisionContextHash: 'a'.repeat(64),
+      decisionContextUpdatedAt: at.toISOString(),
+    },
     decisionWindow: { generatedAt: at.toISOString(), expiresAt, durationHours: 24 },
     rankingTransparency: {
       method: 'declared_weighted_policy',

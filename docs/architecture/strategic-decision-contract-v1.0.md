@@ -11,10 +11,11 @@ Platform در این مرحله انتخاب نمی‌شود. Action محتوا�
 
 ## Attention Budget
 
-Feasibility چهار منبع محدود را جداگانه بررسی می‌کند:
+Feasibility پنج منبع محدود را جداگانه بررسی می‌کند:
 
 - زمان در دسترس؛
 - Energy؛
+- Attention/Focus مستقل از زمان؛
 - Visibility Tolerance؛
 - Emotional Bandwidth.
 
@@ -43,10 +44,7 @@ Recommendation مساوی Execution نیست. همه خروجی‌ها مرزه�
 نبود Evidence مجاز، Action بیرونی جعلی یا Urgency ساختگی تولید نمی‌کند. مسیرهای جمع‌آوری
 Evidence با Posture برابر `when_ready` نمایش داده می‌شوند و عدم اقدام یک گزینه معتبر
 باقی می‌ماند. Decision Brief پس از ۲۴ ساعت منقضی است و باید با Strategy، Evidence و
-Context تازه دوباره ساخته شود.
-
-## محدودیت v1
-
-Attention Context این Preview از preset صریح Workbench می‌آید. قبل از استفاده پایدار
-چندجلسه‌ای، ثبت owner-controlled و نسخه‌دار این Context باید با invalidation تأیید قبلی
-و PostgreSQL/RLS اضافه شود. این محدودیت هیچ مجوز بیرونی را گسترش نمی‌دهد.
+Context تازه دوباره ساخته شود. هر Brief و Action به Strategy revision، Decision Context
+revision و Context hash متصل است؛ Client قدیمی یا Approval منقضی به‌صورت fail-closed رد
+می‌شود. جزئیات Persistence، RLS و Race Safety در
+[Decision Context v1.0](decision-context-v1.0.md) ثبت شده است.

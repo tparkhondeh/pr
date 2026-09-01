@@ -30,6 +30,29 @@ describe('private preview worker draft runtime', () => {
       }),
       env,
     );
+    const approvalBody = async (actionId: string) => {
+      const response = await worker.fetch(new Request('https://preview.example/api/workbench'), env);
+      const workbench = await response.json() as {
+        actions: Array<{
+          id: string;
+          decision: {
+            strategyRevision: number;
+            decisionContextRevision: number;
+            decisionContextHash: string;
+            decisionWindowEndsAt: string;
+          };
+        }>;
+      };
+      const action = workbench.actions.find((candidate) => candidate.id === actionId);
+      if (!action) throw new Error(`Missing workbench action: ${actionId}`);
+      return {
+        actionId,
+        expectedStrategyRevision: action.decision.strategyRevision,
+        expectedDecisionContextRevision: action.decision.decisionContextRevision,
+        expectedDecisionContextHash: action.decision.decisionContextHash,
+        expectedDecisionWindowEndsAt: action.decision.decisionWindowEndsAt,
+      };
+    };
 
     const coldWorkbench = await worker.fetch(
       new Request('https://preview.example/api/workbench'),
@@ -37,20 +60,44 @@ describe('private preview worker draft runtime', () => {
     );
     const coldSnapshot = await coldWorkbench.json() as {
       policyVersion: string;
-      attentionBudget: { visibilityTolerance: number; emotionalBandwidth: number };
+      attentionBudget: { attentionCapacity: number; visibilityTolerance: number; emotionalBandwidth: number };
+      decisionContext: { revision: number; contextHash: string };
       decisionFrame: { rankingTransparency: { hiddenScoreUsed: boolean }; boundaries: { externalActionPermitted: boolean } };
       evidence: { state: string; strategyEvidenceCount: number };
       actions: Array<{ id: string; interaction: string; decision: { requiredApproval: string; boundaries: { externalActionPermitted: boolean } } }>;
     };
     expect(coldSnapshot).toMatchObject({
       policyVersion: 'strategic-decision-v1',
-      attentionBudget: { visibilityTolerance: 4, emotionalBandwidth: 3 },
+      attentionBudget: { attentionCapacity: 3, visibilityTolerance: 4, emotionalBandwidth: 3 },
+      decisionContext: { revision: 1 },
       decisionFrame: { rankingTransparency: { hiddenScoreUsed: false }, boundaries: { externalActionPermitted: false } },
     });
     expect(coldSnapshot.evidence).toMatchObject({ state: 'insufficient', strategyEvidenceCount: 0 });
     expect(coldSnapshot.actions[0]).toMatchObject({
       id: 'collect_evidence', interaction: 'open_intake',
       decision: { requiredApproval: 'human', boundaries: { externalActionPermitted: false } },
+    });
+    const savedDecisionContext = await put('/api/decision-context', {
+      requestId: 'decision_context_runtime',
+      expectedRevision: 1,
+      value: {
+        attentionBudget: {
+          availableMinutes: 150,
+          maximumEnergyCost: 3,
+          attentionCapacity: 3,
+          visibilityTolerance: 4,
+          emotionalBandwidth: 3,
+        },
+      },
+    });
+    expect(savedDecisionContext.status).toBe(200);
+    await expect(savedDecisionContext.json()).resolves.toMatchObject({
+      outcome: 'saved', policyVersion: 'decision-context-v1', revision: 2,
+    });
+    const rebound = await worker.fetch(new Request('https://preview.example/api/workbench'), env);
+    await expect(rebound.json()).resolves.toMatchObject({
+      decisionContext: { revision: 2 },
+      decisionFrame: { contextBinding: { decisionContextRevision: 2 } },
     });
     const initialInitiative = await worker.fetch(
       new Request('https://preview.example/api/initiative'),
@@ -196,7 +243,7 @@ describe('private preview worker draft runtime', () => {
     await expect((await post(perceptionDeletePath, { requestId: 'perception_runtime_delete' })).json()).resolves.toMatchObject({
       outcome: 'already_applied',
     });
-    const routedApproval = await post('/api/workbench/approval', { actionId: 'collect_evidence' });
+    const routedApproval = await post('/api/workbench/approval', await approvalBody('collect_evidence'));
     expect(routedApproval.status).toBe(409);
     await expect(routedApproval.json()).resolves.toEqual({ error: 'action_not_approvable' });
 
@@ -377,7 +424,7 @@ describe('private preview worker draft runtime', () => {
       content: 'در دنیای امروز همه ما می‌دانیم که گفت‌وگو همیشه مهم است.',
       assetRefs: [],
     })).json()).resolves.toMatchObject({ outcome: 'block' });
-    const blockedByRisk = await post('/api/workbench/approval', { actionId: 'essay' });
+    const blockedByRisk = await post('/api/workbench/approval', await approvalBody('essay'));
     expect(blockedByRisk.status).toBe(409);
     await expect(blockedByRisk.json()).resolves.toEqual({ error: 'risk_review_required' });
     const riskResponse = await worker.fetch(new Request('https://preview.example/api/risk'), env);
@@ -447,7 +494,7 @@ describe('private preview worker draft runtime', () => {
       mvpExecutionEnabled: false,
       cases: [{ stale: true, decision: { executionPermitted: false } }],
     });
-    expect((await post('/api/workbench/approval', { actionId: 'essay' })).status).toBe(200);
+    expect((await post('/api/workbench/approval', await approvalBody('essay'))).status).toBe(200);
 
     const approvedWorkbench = await worker.fetch(
       new Request('https://preview.example/api/workbench'),

@@ -54,6 +54,7 @@ const option: RankedOption = {
   confidence: 0.8,
   attentionCostMinutes: 60,
   energyCost: 3,
+  attentionDemand: 3,
   visibilityCost: 3,
   emotionalCost: 2,
   feasible: true,

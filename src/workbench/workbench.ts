@@ -13,6 +13,12 @@ import {
   type StrategicDecisionFrame,
 } from '../strategy/decision-contract.js';
 import {
+  DecisionContextService,
+  InMemoryDecisionContextRepository,
+  decisionContextHash,
+  type DecisionContextSnapshot,
+} from '../strategy/decision-context.js';
+import {
   rankStrategicOptions,
   validateGoal,
   type AttentionBudget,
@@ -55,6 +61,7 @@ export type WorkbenchAction = Readonly<{
   riskLevel: 'low' | 'medium' | 'high';
   attentionCostMinutes: number;
   energyCost: StrategicOption['energyCost'];
+  attentionDemand: StrategicOption['attentionDemand'];
   visibilityCost: StrategicOption['visibilityCost'];
   emotionalCost: StrategicOption['emotionalCost'];
   feasible: boolean;
@@ -85,6 +92,14 @@ export type WorkbenchSnapshot = Readonly<{
     successMetrics: readonly string[];
   }>;
   attentionBudget: AttentionBudget;
+  decisionContext: Readonly<{
+    policyVersion: 'decision-context-v1';
+    revision: number;
+    contextHash: string;
+    updatedAt: string;
+    persistence: 'memory' | 'postgres';
+    attentionBudget: AttentionBudget;
+  }>;
   decisionFrame: StrategicDecisionFrame;
   evidence: Readonly<{
     state: 'insufficient' | 'grounded';
@@ -110,6 +125,13 @@ export type WorkbenchSeed = Readonly<{
   rankingPolicy: RankingPolicy;
 }>;
 
+export type WorkbenchApprovalExpectation = Readonly<{
+  strategyRevision: number;
+  decisionContextRevision: number;
+  decisionContextHash: string;
+  decisionWindowEndsAt: string;
+}>;
+
 export class WorkbenchActionNotFoundError extends Error {
   public constructor(public readonly actionId: string) {
     super(`Workbench action not found: ${actionId}`);
@@ -122,19 +144,24 @@ export class WorkbenchApprovalConflictError extends Error {
       | 'action_not_feasible'
       | 'action_not_approvable'
       | 'different_action_approved'
-      | 'insufficient_evidence',
+      | 'insufficient_evidence'
+      | 'strategy_changed'
+      | 'decision_context_changed'
+      | 'decision_expired',
   ) {
     super(`Workbench approval conflict: ${reason}`);
   }
 }
 
 export class WorkbenchService {
-  readonly #rankedOptions: readonly RankedOption[];
-  readonly #attentionBudget: AttentionBudget;
+  readonly #tenantId: Goal['tenantId'];
+  readonly #options: readonly StrategicOption[];
+  readonly #rankingPolicy: RankingPolicy;
   readonly #clock: () => Date;
   readonly #awaitingWorkflow: WorkflowState;
   readonly #approvalRepository: WorkbenchApprovalRepository;
   readonly #strategyContext: Pick<StrategyContextService, 'snapshot'>;
+  readonly #decisionContext: Pick<DecisionContextService, 'snapshot'>;
   readonly #ownerUserId: UserId;
   readonly #evidenceContext: OwnerEvidenceContextProvider;
 
@@ -144,15 +171,13 @@ export class WorkbenchService {
     approvalRepository: WorkbenchApprovalRepository = new InMemoryWorkbenchApprovalRepository(),
     strategyContext?: Pick<StrategyContextService, 'snapshot'>,
     evidenceContext: OwnerEvidenceContextProvider = emptyEvidenceContextProvider(),
+    decisionContext?: Pick<DecisionContextService, 'snapshot'>,
   ) {
     validateGoal(seed.goal);
-    this.#rankedOptions = rankStrategicOptions(
-      seed.goal.tenantId,
-      seed.options,
-      seed.attentionBudget,
-      seed.rankingPolicy,
-    );
-    this.#attentionBudget = seed.attentionBudget;
+    rankStrategicOptions(seed.goal.tenantId, seed.options, seed.attentionBudget, seed.rankingPolicy);
+    this.#tenantId = seed.goal.tenantId;
+    this.#options = seed.options;
+    this.#rankingPolicy = seed.rankingPolicy;
     this.#clock = clock;
     this.#approvalRepository = approvalRepository;
     this.#ownerUserId = seed.goal.ownerUserId;
@@ -161,6 +186,18 @@ export class WorkbenchService {
         defaultStrategyContext(seed.goal.tenantId, seed.goal.ownerUserId, clock()),
         approvalRepository,
       ),
+      { tenantId: seed.goal.tenantId, ownerUserId: seed.goal.ownerUserId },
+    );
+    const initialDecisionContext: DecisionContextSnapshot = {
+      policyVersion: 'decision-context-v1',
+      revision: 1,
+      contextHash: decisionContextHash({ revision: 1, attentionBudget: seed.attentionBudget }),
+      updatedAt: clock(),
+      persistence: 'memory',
+      attentionBudget: { ...seed.attentionBudget },
+    };
+    this.#decisionContext = decisionContext ?? new DecisionContextService(
+      new InMemoryDecisionContextRepository(initialDecisionContext, approvalRepository),
       { tenantId: seed.goal.tenantId, ownerUserId: seed.goal.ownerUserId },
     );
     this.#evidenceContext = evidenceContext;
@@ -172,13 +209,29 @@ export class WorkbenchService {
 
   public async snapshot(): Promise<WorkbenchSnapshot> {
     const generatedAt = this.#clock();
-    const [strategy, evidence] = await Promise.all([
+    const [strategy, evidence, decisionContext] = await Promise.all([
       this.#strategyContext.snapshot(this.#ownerUserId),
       this.#evidenceContext.snapshot(),
+      this.#decisionContext.snapshot(this.#ownerUserId),
     ]);
-    const approval = await this.#approvalRepository.find(strategy.revision);
+    const rankedOptions = rankStrategicOptions(
+      this.#tenantId,
+      this.#options,
+      decisionContext.attentionBudget,
+      this.#rankingPolicy,
+    );
+    const approval = await this.#approvalRepository.find(
+      strategy.revision,
+      decisionContext.revision,
+      generatedAt,
+    );
+    const currentApproval = approval?.decisionContextHash === decisionContext.contextHash
+      ? approval
+      : null;
     const grounded = evidence.strategy.evidenceIds.length > 0;
-    const effectiveApproval = grounded || approval?.actionId === 'wait' ? approval : null;
+    const effectiveApproval = grounded || currentApproval?.actionId === 'wait'
+      ? currentApproval
+      : null;
     return {
       policyVersion: 'strategic-decision-v1',
       generatedAt: generatedAt.toISOString(),
@@ -195,8 +248,14 @@ export class WorkbenchService {
         outcome: strategy.goal.outcome,
         successMetrics: strategy.goal.successMetrics,
       },
-      attentionBudget: this.#attentionBudget,
-      decisionFrame: createStrategicDecisionFrame(strategy, this.#attentionBudget, generatedAt),
+      attentionBudget: decisionContext.attentionBudget,
+      decisionContext: serializeDecisionContext(decisionContext),
+      decisionFrame: createStrategicDecisionFrame(
+        strategy,
+        decisionContext.attentionBudget,
+        generatedAt,
+        decisionContext,
+      ),
       evidence: {
         state: grounded ? 'grounded' : 'insufficient',
         strategyEvidenceCount: evidence.strategy.evidenceIds.length,
@@ -204,8 +263,14 @@ export class WorkbenchService {
         sourceTypes: evidence.strategy.sourceTypes,
       },
       actions: grounded
-        ? this.#rankedOptions.map((option) => toWorkbenchAction(option, strategy, evidence, generatedAt))
-        : coldStartActions(strategy, evidence, generatedAt),
+        ? rankedOptions.map((option) => toWorkbenchAction(
+          option,
+          strategy,
+          decisionContext,
+          evidence,
+          generatedAt,
+        ))
+        : coldStartActions(strategy, decisionContext, evidence, generatedAt),
       workflow: {
         id: this.#awaitingWorkflow.id,
         status: effectiveApproval ? 'approved' : this.#awaitingWorkflow.status,
@@ -221,13 +286,42 @@ export class WorkbenchService {
     actionId: string,
     actorId: UserId,
     occurredAt: Date,
+    expectation?: WorkbenchApprovalExpectation,
   ): Promise<WorkbenchSnapshot> {
-    const [strategy, evidence] = await Promise.all([
+    const [strategy, evidence, decisionContext] = await Promise.all([
       this.#strategyContext.snapshot(this.#ownerUserId),
       this.#evidenceContext.snapshot(),
+      this.#decisionContext.snapshot(this.#ownerUserId),
     ]);
+    const decisionWindowEndsAt = new Date(
+      expectation?.decisionWindowEndsAt ?? occurredAt.getTime() + 24 * 60 * 60 * 1000,
+    );
+    if (expectation?.strategyRevision !== undefined && expectation.strategyRevision !== strategy.revision) {
+      throw new WorkbenchApprovalConflictError('strategy_changed');
+    }
+    if (
+      expectation?.decisionContextRevision !== undefined &&
+      expectation.decisionContextRevision !== decisionContext.revision
+    ) {
+      throw new WorkbenchApprovalConflictError('decision_context_changed');
+    }
+    if (
+      expectation?.decisionContextHash !== undefined &&
+      expectation.decisionContextHash !== decisionContext.contextHash
+    ) {
+      throw new WorkbenchApprovalConflictError('decision_context_changed');
+    }
+    if (Number.isNaN(decisionWindowEndsAt.getTime()) || decisionWindowEndsAt.getTime() <= occurredAt.getTime()) {
+      throw new WorkbenchApprovalConflictError('decision_expired');
+    }
+    const rankedOptions = rankStrategicOptions(
+      this.#tenantId,
+      this.#options,
+      decisionContext.attentionBudget,
+      this.#rankingPolicy,
+    );
     if (evidence.strategy.evidenceIds.length === 0) {
-      const coldAction = coldStartActions(strategy, evidence, occurredAt).find(
+      const coldAction = coldStartActions(strategy, decisionContext, evidence, occurredAt).find(
         (candidate) => candidate.id === actionId,
       );
       if (!coldAction) throw new WorkbenchActionNotFoundError(actionId);
@@ -238,11 +332,11 @@ export class WorkbenchService {
         throw new WorkbenchApprovalConflictError('insufficient_evidence');
       }
     }
-    const option = this.#rankedOptions.find((candidate) => candidate.id === actionId);
+    const option = rankedOptions.find((candidate) => candidate.id === actionId);
     if (!option) throw new WorkbenchActionNotFoundError(actionId);
     if (!option.feasible) throw new WorkbenchApprovalConflictError('action_not_feasible');
     const approvedEvidenceIds = evidence.strategy.evidenceIds.length > 0
-      ? toWorkbenchAction(option, strategy, evidence, occurredAt).evidenceIds
+      ? toWorkbenchAction(option, strategy, decisionContext, evidence, occurredAt).evidenceIds
       : [];
 
     evolveWorkflow(this.#awaitingWorkflow, {
@@ -258,9 +352,15 @@ export class WorkbenchService {
       occurredAt,
       expectedRevision: this.#awaitingWorkflow.revision,
       strategyRevision: strategy.revision,
+      decisionContextRevision: decisionContext.revision,
+      decisionContextHash: decisionContext.contextHash,
+      decisionWindowEndsAt,
     });
     if (result.outcome === 'conflict') {
       throw new WorkbenchApprovalConflictError('different_action_approved');
+    }
+    if (result.outcome === 'stale_context') {
+      throw new WorkbenchApprovalConflictError('decision_context_changed');
     }
     return this.snapshot();
   }
@@ -275,6 +375,7 @@ export function createDefaultWorkbenchService(
   },
   strategyContext?: Pick<StrategyContextService, 'snapshot'>,
   evidenceContext?: OwnerEvidenceContextProvider,
+  decisionContext?: Pick<DecisionContextService, 'snapshot'>,
 ): WorkbenchService {
   const tenant = tenantId(identity.tenantId);
   const owner = userId(identity.ownerUserId);
@@ -297,6 +398,7 @@ export function createDefaultWorkbenchService(
       attentionBudget: {
         availableMinutes: 150,
         maximumEnergyCost: 3,
+        attentionCapacity: 3,
         visibilityTolerance: 4,
         emotionalBandwidth: 3,
       },
@@ -326,6 +428,7 @@ export function createDefaultWorkbenchService(
           confidence: 0.84,
           attentionCostMinutes: 30,
           energyCost: 2,
+          attentionDemand: 2,
           visibilityCost: 1,
           emotionalCost: 2,
         },
@@ -346,6 +449,7 @@ export function createDefaultWorkbenchService(
           confidence: 0.78,
           attentionCostMinutes: 120,
           energyCost: 3,
+          attentionDemand: 3,
           visibilityCost: 4,
           emotionalCost: 3,
         },
@@ -366,6 +470,7 @@ export function createDefaultWorkbenchService(
           confidence: 0.71,
           attentionCostMinutes: 0,
           energyCost: 1,
+          attentionDemand: 1,
           visibilityCost: 1,
           emotionalCost: 1,
         },
@@ -375,12 +480,14 @@ export function createDefaultWorkbenchService(
     approvalRepository,
     strategyContext,
     evidenceContext,
+    decisionContext,
   );
 }
 
 function toWorkbenchAction(
   option: RankedOption,
   strategy: StrategyContextSnapshot,
+  decisionContext: DecisionContextSnapshot,
   evidence: OwnerEvidenceContextSnapshot,
   generatedAt: Date,
 ): WorkbenchAction {
@@ -405,6 +512,7 @@ function toWorkbenchAction(
     riskLevel: option.riskScore < 30 ? 'low' : option.riskScore < 60 ? 'medium' : 'high',
     attentionCostMinutes: option.attentionCostMinutes,
     energyCost: option.energyCost,
+    attentionDemand: option.attentionDemand,
     visibilityCost: option.visibilityCost,
     emotionalCost: option.emotionalCost,
     feasible: option.feasible,
@@ -422,6 +530,7 @@ function toWorkbenchAction(
       feasible: option.feasible,
       feasibilityReasons: option.feasibilityReasons,
       evidenceCount: usableEvidenceIds.length,
+      decisionContext,
     }),
   };
 }
@@ -442,6 +551,7 @@ function contextualRationale(
 
 function coldStartActions(
   strategy: StrategyContextSnapshot,
+  decisionContext: DecisionContextSnapshot,
   evidence: OwnerEvidenceContextSnapshot,
   generatedAt: Date,
 ): readonly WorkbenchAction[] {
@@ -463,6 +573,7 @@ function coldStartActions(
       riskLevel: 'low',
       attentionCostMinutes: 10,
       energyCost: 1,
+      attentionDemand: 2,
       visibilityCost: 1,
       emotionalCost: 1,
       feasible: true,
@@ -476,6 +587,7 @@ function coldStartActions(
       decision: createActionDecisionContract({
         kind: 'research', strategy, generatedAt, feasible: true,
         feasibilityReasons: ['within_budget'], evidenceCount: 0, coldStart: true,
+        decisionContext,
       }),
     },
     {
@@ -492,6 +604,7 @@ function coldStartActions(
       riskLevel: 'low',
       attentionCostMinutes: 8,
       energyCost: 1,
+      attentionDemand: 2,
       visibilityCost: 1,
       emotionalCost: 2,
       feasible: true,
@@ -505,6 +618,7 @@ function coldStartActions(
       decision: createActionDecisionContract({
         kind: 'private_conversation', strategy, generatedAt, feasible: true,
         feasibilityReasons: ['within_budget'], evidenceCount: 0, coldStart: true,
+        decisionContext,
       }),
     },
     {
@@ -521,6 +635,7 @@ function coldStartActions(
       riskLevel: 'low',
       attentionCostMinutes: 0,
       energyCost: 1,
+      attentionDemand: 1,
       visibilityCost: 1,
       emotionalCost: 1,
       feasible: true,
@@ -534,9 +649,23 @@ function coldStartActions(
       decision: createActionDecisionContract({
         kind: 'no_action', strategy, generatedAt, feasible: true,
         feasibilityReasons: ['within_budget'], evidenceCount: 0, coldStart: true,
+        decisionContext,
       }),
     },
   ];
+}
+
+function serializeDecisionContext(
+  context: DecisionContextSnapshot,
+): WorkbenchSnapshot['decisionContext'] {
+  return {
+    policyVersion: context.policyVersion,
+    revision: context.revision,
+    contextHash: context.contextHash,
+    updatedAt: context.updatedAt.toISOString(),
+    persistence: context.persistence,
+    attentionBudget: context.attentionBudget,
+  };
 }
 
 function emptyEvidenceContextProvider(): OwnerEvidenceContextProvider {

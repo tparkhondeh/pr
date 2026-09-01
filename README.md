@@ -20,6 +20,7 @@ Goal، Audience، Timing، Quality و Conflict می‌سنجد.
 - [Inter-module Contract & Decision Arbitration](docs/architecture/intermodule-arbitration-v1.0.md)
 - [Controlled Proactive Initiative](docs/architecture/proactive-initiative-v1.0.md)
 - [Perception Engine](docs/architecture/perception-engine-v1.0.md)
+- [Decision Context و Attention Budget نسخه‌دار](docs/architecture/decision-context-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
@@ -65,7 +66,7 @@ pnpm web:dev
 ```
 
 Workbench فعلی قرارداد `strategic-decision-v1` را نمایش می‌دهد: Goal، Action شامل
-عدم اقدام، Attention Budget چندبعدی، Evidence، Risk و Approval انسانی. هر Action
+عدم اقدام، Attention Budget پنج‌بعدی و مالک‌محور، Evidence، Risk و Approval انسانی. هر Action
 Why/What/For Whom/When/Format، Assumption، Uncertainty، Decision Window، برنامه سنجش،
 Utility و Opportunity Cost قابل مشاهده دارد. Platform قبل از انتخاب Action وارد تصمیم
 نمی‌شود و Recommendation هیچ Execution/Public Approval ایجاد نمی‌کند. تا وقتی هیچ Evidence با رضایت

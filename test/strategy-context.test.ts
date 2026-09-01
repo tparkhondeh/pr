@@ -53,6 +53,8 @@ describe('strategy context lifecycle', () => {
       occurredAt: changedAt,
       expectedRevision: 1,
       strategyRevision: 1,
+      decisionContextHash: 'a'.repeat(64),
+      decisionWindowEndsAt: new Date('2026-09-01T12:00:00.000Z'),
     });
     const repository = new InMemoryStrategyContextRepository(
       defaultStrategyContext(tenant, owner),

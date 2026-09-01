@@ -151,6 +151,14 @@ import {
   type StrategyContextSnapshot,
 } from '../strategy/context.js';
 import {
+  DecisionContextConflictError,
+  DecisionContextPermissionError,
+  DecisionContextValidationError,
+  type DecisionContextService,
+  type DecisionContextSnapshot,
+  type EditableDecisionContext,
+} from '../strategy/decision-context.js';
+import {
   WorkbenchActionNotFoundError,
   WorkbenchApprovalConflictError,
   type WorkbenchService,
@@ -171,6 +179,7 @@ export type ReadinessStatus = Readonly<{
 export type ApplicationDependencies = Readonly<{
   workbench?: Pick<WorkbenchService, 'snapshot' | 'approve'>;
   strategy?: Pick<StrategyContextService, 'snapshot' | 'save'>;
+  decisionContext?: Pick<DecisionContextService, 'snapshot' | 'save'>;
   drafts?: Pick<
     ContentDraftService,
     'sources' | 'snapshot' | 'create' | 'edit' | 'approve' | 'export'
@@ -246,6 +255,16 @@ export function createRequestHandler(
 
     if (request.method === 'PUT' && path === '/api/strategy') {
       await handleStrategySave(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/decision-context') {
+      await handleDecisionContextSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'PUT' && path === '/api/decision-context') {
+      await handleDecisionContextSave(request, response, dependencies);
       return;
     }
 
@@ -2748,6 +2767,141 @@ function sendStrategyError(response: ServerResponse, error: unknown): void {
   sendJson(response, 500, { error: 'strategy_failed' });
 }
 
+async function handleDecisionContextSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.decisionContext) {
+    sendJson(response, 503, { error: 'decision_context_unavailable' });
+    return;
+  }
+  try {
+    sendJson(
+      response,
+      200,
+      serializeDecisionContext(await dependencies.decisionContext.snapshot(actorId)),
+    );
+  } catch (error: unknown) {
+    sendDecisionContextError(response, error);
+  }
+}
+
+async function handleDecisionContextSave(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.decisionContext) {
+    sendJson(response, 503, { error: 'decision_context_unavailable' });
+    return;
+  }
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const expectedRevision = body['expectedRevision'];
+    const value = parseEditableDecisionContext(body['value']);
+    if (typeof requestId !== 'string' || typeof expectedRevision !== 'number' || !value) {
+      sendJson(response, 400, { error: 'invalid_decision_context' });
+      return;
+    }
+    const occurredAt = now(dependencies);
+    const result = await dependencies.decisionContext.save({
+      actorId,
+      requestId,
+      expectedRevision,
+      value,
+      occurredAt,
+    });
+    await recordMutationAudit(dependencies, {
+      actorId,
+      requestId: `decision-context.save:${requestId}`,
+      eventType: 'decision.context_saved',
+      resourceType: 'decision_context',
+      resourceId: actorId,
+      purpose: 'strategy_reasoning',
+      decision: 'saved',
+      metadata: {
+        requestId,
+        revision: result.snapshot.revision,
+        contextHash: result.snapshot.contextHash,
+      },
+      occurredAt,
+    });
+    sendJson(response, 200, {
+      outcome: result.outcome,
+      ...serializeDecisionContext(result.snapshot),
+    });
+  } catch (error: unknown) {
+    sendDecisionContextError(response, error);
+  }
+}
+
+function parseEditableDecisionContext(value: unknown): EditableDecisionContext | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const budgetValue = (value as Record<string, unknown>)['attentionBudget'];
+  if (!budgetValue || typeof budgetValue !== 'object' || Array.isArray(budgetValue)) return null;
+  const budget = budgetValue as Record<string, unknown>;
+  const keys = [
+    'maximumEnergyCost',
+    'attentionCapacity',
+    'visibilityTolerance',
+    'emotionalBandwidth',
+  ] as const;
+  if (
+    typeof budget['availableMinutes'] !== 'number' ||
+    !keys.every((key) => typeof budget[key] === 'number' && [1, 2, 3, 4, 5].includes(budget[key]))
+  ) return null;
+  return {
+    attentionBudget: {
+      availableMinutes: budget['availableMinutes'],
+      maximumEnergyCost: budget['maximumEnergyCost'] as 1 | 2 | 3 | 4 | 5,
+      attentionCapacity: budget['attentionCapacity'] as 1 | 2 | 3 | 4 | 5,
+      visibilityTolerance: budget['visibilityTolerance'] as 1 | 2 | 3 | 4 | 5,
+      emotionalBandwidth: budget['emotionalBandwidth'] as 1 | 2 | 3 | 4 | 5,
+    },
+  };
+}
+
+function serializeDecisionContext(snapshot: DecisionContextSnapshot): Record<string, unknown> {
+  return {
+    policyVersion: snapshot.policyVersion,
+    revision: snapshot.revision,
+    contextHash: snapshot.contextHash,
+    updatedAt: snapshot.updatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    attentionBudget: snapshot.attentionBudget,
+  };
+}
+
+function sendDecisionContextError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof DecisionContextValidationError) {
+    sendJson(response, 400, {
+      error: error instanceof InvalidJsonBodyError ? error.code : 'invalid_decision_context',
+    });
+    return;
+  }
+  if (error instanceof DecisionContextPermissionError) {
+    sendJson(response, 403, { error: 'decision_context_permission_denied' });
+    return;
+  }
+  if (error instanceof DecisionContextConflictError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  sendJson(response, 500, { error: 'decision_context_failed' });
+}
+
 async function handleMemorySnapshot(
   request: IncomingMessage,
   response: ServerResponse,
@@ -3080,8 +3234,19 @@ async function handleApproval(
   try {
     const body = await readJsonObject(request);
     const actionId = body['actionId'];
-    if (typeof actionId !== 'string' || actionId.trim().length === 0) {
-      sendJson(response, 400, { error: 'invalid_action_id' });
+    const expectedStrategyRevision = body['expectedStrategyRevision'];
+    const expectedDecisionContextRevision = body['expectedDecisionContextRevision'];
+    const expectedDecisionContextHash = body['expectedDecisionContextHash'];
+    const expectedDecisionWindowEndsAt = body['expectedDecisionWindowEndsAt'];
+    if (
+      typeof actionId !== 'string' || actionId.trim().length === 0 ||
+      typeof expectedStrategyRevision !== 'number' ||
+      typeof expectedDecisionContextRevision !== 'number' ||
+      typeof expectedDecisionContextHash !== 'string' ||
+      !/^[0-9a-f]{64}$/u.test(expectedDecisionContextHash) ||
+      typeof expectedDecisionWindowEndsAt !== 'string'
+    ) {
+      sendJson(response, 400, { error: 'invalid_approval_context' });
       return;
     }
     const occurredAt = now(dependencies);
@@ -3095,6 +3260,12 @@ async function handleApproval(
       actionId,
       actorId,
       occurredAt,
+      {
+        strategyRevision: expectedStrategyRevision,
+        decisionContextRevision: expectedDecisionContextRevision,
+        decisionContextHash: expectedDecisionContextHash,
+        decisionWindowEndsAt: expectedDecisionWindowEndsAt,
+      },
     );
     await recordMutationAudit(dependencies, {
       actorId,
@@ -3104,7 +3275,13 @@ async function handleApproval(
       resourceId: snapshot.workflow.id,
       purpose: 'strategy_reasoning',
       decision: 'approved',
-      metadata: { actionId, revision: snapshot.workflow.revision },
+      metadata: {
+        actionId,
+        revision: snapshot.workflow.revision,
+        strategyRevision: expectedStrategyRevision,
+        decisionContextRevision: expectedDecisionContextRevision,
+        decisionContextHash: expectedDecisionContextHash,
+      },
       occurredAt,
     });
     sendJson(response, 200, snapshot);

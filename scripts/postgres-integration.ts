@@ -18,6 +18,11 @@ import { PostgresRuntime } from '../src/database/postgres.js';
 import { defineMigration } from '../src/kernel/migrations.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
 import {
+  DecisionContextService,
+  PostgresDecisionContextRepository,
+  defaultDecisionContext,
+} from '../src/strategy/decision-context.js';
+import {
   PerceptionConflictError,
   PerceptionWorkspaceService,
   PostgresPerceptionWorkspaceRepository,
@@ -42,8 +47,16 @@ const userA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const userB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const applicationRolePassword = 'pr_app_test_password';
 const integrationAttentionBudget: WorkbenchSnapshot['attentionBudget'] = {
-  availableMinutes: 150, maximumEnergyCost: 3, visibilityTolerance: 4, emotionalBandwidth: 3,
+  availableMinutes: 150, maximumEnergyCost: 3, attentionCapacity: 3,
+  visibilityTolerance: 4, emotionalBandwidth: 3,
 };
+
+function integrationDecisionContext(at: Date): WorkbenchSnapshot['decisionContext'] {
+  return {
+    policyVersion: 'decision-context-v1', revision: 1, contextHash: 'a'.repeat(64),
+    updatedAt: at.toISOString(), persistence: 'postgres', attentionBudget: integrationAttentionBudget,
+  };
+}
 
 function integrationDecision(
   kind: WorkbenchAction['kind'],
@@ -55,7 +68,9 @@ function integrationDecision(
     content: 'mother_concept', media: 'media_response', event: 'event_participation', research: 'research_brief',
   };
   return {
-    policyVersion: 'strategic-decision-v1', objective: 'تعامل عمیق', stakeholder: 'تصمیم‌گیران',
+    policyVersion: 'strategic-decision-v1', strategyRevision: 1,
+    decisionContextRevision: 1, decisionContextHash: 'a'.repeat(64),
+    objective: 'تعامل عمیق', stakeholder: 'تصمیم‌گیران',
     posture: kind === 'no_action' ? 'delay' : 'now', timingRationale: 'Integration fixture.',
     decisionWindowEndsAt: expiresAt,
     format: formats[kind],
@@ -70,6 +85,10 @@ function integrationDecisionFrame(at: Date): WorkbenchSnapshot['decisionFrame'] 
   return {
     policyVersion: 'strategic-decision-v1', why: { goalId: 'integration-goal', objective: 'تعامل عمیق' },
     forWhom: 'تصمیم‌گیران', currentContext: integrationAttentionBudget,
+    contextBinding: {
+      strategyRevision: 1, decisionContextRevision: 1,
+      decisionContextHash: 'a'.repeat(64), decisionContextUpdatedAt: at.toISOString(),
+    },
     decisionWindow: { generatedAt: at.toISOString(), expiresAt: new Date(at.getTime() + 86400000).toISOString(), durationHours: 24 },
     rankingTransparency: {
       method: 'declared_weighted_policy', dimensions: ['benefit', 'strategic_fit', 'risk', 'reversibility', 'confidence', 'attention'],
@@ -112,6 +131,7 @@ async function main(): Promise<void> {
     await seedIsolationFixtures(client);
     await verifyTenantPolicies(client);
     await verifyRuntimeIsolation(client);
+    await verifyDecisionContextPersistence();
     await verifyBrandRiskPersistence();
     await verifyConversationOrchestrationPersistence();
     await verifyArbitrationPersistence();
@@ -124,6 +144,68 @@ async function main(): Promise<void> {
     );
   } finally {
     await client.end();
+  }
+}
+
+async function verifyDecisionContextPersistence(): Promise<void> {
+  const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
+  const owner = userId(userA);
+  const activeTenant = tenantId(tenantA);
+  const at = new Date('2026-08-31T22:40:00.000Z');
+  const service = new DecisionContextService(
+    new PostgresDecisionContextRepository(
+      runtime,
+      { tenantId: tenantA, ownerUserId: userA, workflowId: 'workbench_today' },
+      defaultDecisionContext(),
+    ),
+    { tenantId: activeTenant, ownerUserId: owner },
+  );
+  try {
+    const result = await service.save({
+      actorId: owner,
+      requestId: 'decision_context_integration_v1',
+      expectedRevision: 1,
+      value: {
+        attentionBudget: {
+          availableMinutes: 90,
+          maximumEnergyCost: 2,
+          attentionCapacity: 2,
+          visibilityTolerance: 3,
+          emotionalBandwidth: 2,
+        },
+      },
+      occurredAt: at,
+    });
+    if (result.snapshot.revision !== 2 || result.snapshot.persistence !== 'postgres') {
+      throw new Error('Decision context persistence did not return revision 2.');
+    }
+    const current = await service.snapshot(owner);
+    if (
+      current.contextHash !== result.snapshot.contextHash ||
+      current.attentionBudget.attentionCapacity !== 2
+    ) throw new Error('Decision context state or hash did not round-trip.');
+    await runtime.transaction(async (transaction) => {
+      await transaction.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
+      const stored = await transaction.query<Readonly<{
+        revision: string | number;
+        attention_capacity: string | number;
+        audit_count: string | number;
+      }>>(
+        `SELECT s.revision, s.attention_capacity,
+                (SELECT count(*) FROM app.audit_events
+                  WHERE tenant_id = $1 AND event_type = 'decision.context_saved') AS audit_count
+           FROM app.decision_context_states s
+          WHERE s.tenant_id = $1 AND s.owner_user_id = $2`,
+        [tenantA, userA],
+      );
+      const row = stored.rows[0];
+      if (
+        Number(row?.revision) !== 2 || Number(row?.attention_capacity) !== 2 ||
+        Number(row?.audit_count) < 1
+      ) throw new Error('Stored Decision Context or audit evidence is incomplete.');
+    });
+  } finally {
+    await runtime.close();
   }
 }
 
@@ -337,7 +419,8 @@ async function verifyInitiativePersistence(): Promise<void> {
     rationale: 'یک سؤال کوتاه برای کاهش حدس در مدل شخصی.',
     benefits: ['وضوح'], risks: ['مزاحمت'], prerequisites: ['رضایت مالک'],
     evidenceIds: [], evidenceCount: 0, confidence: 0.3,
-    riskLevel: 'low', attentionCostMinutes: 10, energyCost: 1, visibilityCost: 1, emotionalCost: 1,
+    riskLevel: 'low', attentionCostMinutes: 10, energyCost: 1, attentionDemand: 1,
+    visibilityCost: 1, emotionalCost: 1,
     feasible: true, feasibilityReasons: ['within_budget'],
     utilityScore: 40, opportunityCost: 1, rank: 1, evidenceState: 'insufficient',
     evidenceSourceTypes: [], interaction: 'open_intake',
@@ -353,6 +436,7 @@ async function verifyInitiativePersistence(): Promise<void> {
       successMetrics: ['کیفیت'],
     },
     attentionBudget: integrationAttentionBudget,
+    decisionContext: integrationDecisionContext(at),
     decisionFrame: integrationDecisionFrame(at),
     evidence: {
       state: 'insufficient', strategyEvidenceCount: 0, withheldEvidenceCount: 0, sourceTypes: [],
@@ -449,7 +533,8 @@ async function verifyArbitrationPersistence(): Promise<void> {
     rationale: 'یک اقدام مستند که باید از قرارداد بین‌ماژولی عبور کند.',
     benefits: ['اعتماد'], risks: ['برداشت نادرست'], prerequisites: ['Claim Check'],
     evidenceIds: ['integration-evidence'], evidenceCount: 1, confidence: 0.79,
-    riskLevel: 'medium', attentionCostMinutes: 20, energyCost: 2, visibilityCost: 3, emotionalCost: 2,
+    riskLevel: 'medium', attentionCostMinutes: 20, energyCost: 2, attentionDemand: 2,
+    visibilityCost: 3, emotionalCost: 2,
     feasible: true, feasibilityReasons: ['within_budget'],
     utilityScore: 69, opportunityCost: 1, rank: 1, evidenceState: 'grounded',
     evidenceSourceTypes: ['text_asset'], interaction: 'approve',
@@ -465,6 +550,7 @@ async function verifyArbitrationPersistence(): Promise<void> {
       successMetrics: ['کیفیت'],
     },
     attentionBudget: integrationAttentionBudget,
+    decisionContext: integrationDecisionContext(at),
     decisionFrame: integrationDecisionFrame(at),
     evidence: {
       state: 'grounded', strategyEvidenceCount: 1, withheldEvidenceCount: 0,
@@ -591,7 +677,8 @@ async function verifyBrandRiskPersistence(): Promise<void> {
     rationale: 'یک اقدام عمومی مستند که پیامدهای اعتباری آن باید بازبینی شود.',
     benefits: ['اعتماد'], risks: ['برداشت نادرست'], prerequisites: ['Claim Check'],
     evidenceIds: ['integration-evidence'], evidenceCount: 1, confidence: 0.8,
-    riskLevel: 'medium', attentionCostMinutes: 20, energyCost: 2, visibilityCost: 3, emotionalCost: 2,
+    riskLevel: 'medium', attentionCostMinutes: 20, energyCost: 2, attentionDemand: 2,
+    visibilityCost: 3, emotionalCost: 2,
     feasible: true, feasibilityReasons: ['within_budget'],
     utilityScore: 70, opportunityCost: 0, rank: 1, evidenceState: 'grounded',
     evidenceSourceTypes: ['text_asset'], interaction: 'approve',

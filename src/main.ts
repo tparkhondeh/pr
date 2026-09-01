@@ -70,6 +70,12 @@ import {
   defaultStrategyContext,
 } from './strategy/context.js';
 import {
+  DecisionContextService,
+  InMemoryDecisionContextRepository,
+  PostgresDecisionContextRepository,
+  defaultDecisionContext,
+} from './strategy/decision-context.js';
+import {
   InMemoryWorkbenchApprovalRepository,
   PostgresWorkbenchApprovalRepository,
 } from './workbench/approval-repository.js';
@@ -131,6 +137,22 @@ const strategy = new StrategyContextService(strategyRepository, {
   tenantId: activeTenant,
   ownerUserId: owner,
 });
+const fallbackDecisionContext = defaultDecisionContext();
+const decisionContextRepository = postgres && environment.database
+  ? new PostgresDecisionContextRepository(
+      postgres,
+      {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+        workflowId: 'workbench_today',
+      },
+      fallbackDecisionContext,
+    )
+  : new InMemoryDecisionContextRepository(fallbackDecisionContext, approvalRepository);
+const decisionContext = new DecisionContextService(decisionContextRepository, {
+  tenantId: activeTenant,
+  ownerUserId: owner,
+});
 const conversation = new ConversationIntakeService(conversationRepository);
 const evidenceContext = new OwnerEvidenceContextService(
   assets,
@@ -144,6 +166,7 @@ const workbench = createDefaultWorkbenchService(
   { tenantId: activeTenantId, ownerUserId },
   strategy,
   evidenceContext,
+  decisionContext,
 );
 const draftRepository = postgres && environment.database
   ? new PostgresDraftWorkspaceRepository(postgres, {
@@ -257,6 +280,7 @@ const requestHandler = createRequestHandler(
   {
     workbench,
     strategy,
+    decisionContext,
     drafts,
     learning,
     conversation,

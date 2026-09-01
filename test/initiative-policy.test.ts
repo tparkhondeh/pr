@@ -170,6 +170,10 @@ function snapshot(
       id: 'goal-1', revision: evidenceCount ? 2 : 1, title: 'اعتماد', outcome: 'تعامل عمیق', successMetrics: ['کیفیت'],
     },
     attentionBudget: testAttentionBudget,
+    decisionContext: {
+      policyVersion: 'decision-context-v1', revision: 1, contextHash: 'a'.repeat(64),
+      updatedAt: now.toISOString(), persistence: 'memory', attentionBudget: testAttentionBudget,
+    },
     decisionFrame: testDecisionFrame(now),
     evidence: {
       state: evidenceState,
@@ -201,6 +205,7 @@ function action(input: Readonly<{
     riskLevel: 'low',
     attentionCostMinutes: 20,
     energyCost: 1,
+    attentionDemand: 1,
     visibilityCost: 1,
     emotionalCost: 1,
     feasible: true,

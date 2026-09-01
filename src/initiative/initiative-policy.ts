@@ -616,6 +616,8 @@ function initiativeContextHash(
   return sha256(JSON.stringify({
     policyVersion: initiativePolicyVersion,
     goalRevision: workbench.goal.revision,
+    decisionContextRevision: workbench.decisionContext.revision,
+    decisionContextHash: workbench.decisionContext.contextHash,
     evidence: workbench.evidence,
     actions: workbench.actions.map((action) => actionContext(action)),
     arbitration: arbitration.cases.map((item) => ({
@@ -638,12 +640,16 @@ function actionContext(action: WorkbenchAction): Record<string, unknown> {
     confidence: action.confidence,
     attentionCostMinutes: action.attentionCostMinutes,
     energyCost: action.energyCost,
+    attentionDemand: action.attentionDemand,
     visibilityCost: action.visibilityCost,
     emotionalCost: action.emotionalCost,
     feasibilityReasons: action.feasibilityReasons,
     riskLevel: action.riskLevel,
     decision: {
       policyVersion: action.decision.policyVersion,
+      strategyRevision: action.decision.strategyRevision,
+      decisionContextRevision: action.decision.decisionContextRevision,
+      decisionContextHash: action.decision.decisionContextHash,
       objective: action.decision.objective,
       stakeholder: action.decision.stakeholder,
       posture: action.decision.posture,

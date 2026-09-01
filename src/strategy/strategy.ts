@@ -55,6 +55,7 @@ export type StrategicOption = Readonly<{
   confidence: number;
   attentionCostMinutes: number;
   energyCost: 1 | 2 | 3 | 4 | 5;
+  attentionDemand: 1 | 2 | 3 | 4 | 5;
   visibilityCost: 1 | 2 | 3 | 4 | 5;
   emotionalCost: 1 | 2 | 3 | 4 | 5;
 }>;
@@ -71,6 +72,7 @@ export type RankingPolicy = Readonly<{
 export type AttentionBudget = Readonly<{
   availableMinutes: number;
   maximumEnergyCost: 1 | 2 | 3 | 4 | 5;
+  attentionCapacity: 1 | 2 | 3 | 4 | 5;
   visibilityTolerance: 1 | 2 | 3 | 4 | 5;
   emotionalBandwidth: 1 | 2 | 3 | 4 | 5;
 }>;
@@ -79,6 +81,7 @@ export type FeasibilityReason =
   | 'within_budget'
   | 'attention_time_exceeded'
   | 'energy_exceeded'
+  | 'attention_capacity_exceeded'
   | 'visibility_tolerance_exceeded'
   | 'emotional_bandwidth_exceeded';
 
@@ -138,6 +141,7 @@ export function rankStrategicOptions(
     const feasibilityReasons: FeasibilityReason[] = [];
     if (option.attentionCostMinutes > budget.availableMinutes) feasibilityReasons.push('attention_time_exceeded');
     if (option.energyCost > budget.maximumEnergyCost) feasibilityReasons.push('energy_exceeded');
+    if (option.attentionDemand > budget.attentionCapacity) feasibilityReasons.push('attention_capacity_exceeded');
     if (option.visibilityCost > budget.visibilityTolerance) feasibilityReasons.push('visibility_tolerance_exceeded');
     if (option.emotionalCost > budget.emotionalBandwidth) feasibilityReasons.push('emotional_bandwidth_exceeded');
     const feasible = feasibilityReasons.length === 0;
@@ -192,6 +196,7 @@ function validateOption(tenantId: TenantId, option: StrategicOption): void {
   }
   for (const [label, cost] of Object.entries({
     energy: option.energyCost,
+    attention: option.attentionDemand,
     visibility: option.visibilityCost,
     emotional: option.emotionalCost,
   })) {
@@ -225,6 +230,7 @@ function validateBudget(budget: AttentionBudget): void {
   }
   for (const [label, value] of Object.entries({
     maximumEnergyCost: budget.maximumEnergyCost,
+    attentionCapacity: budget.attentionCapacity,
     visibilityTolerance: budget.visibilityTolerance,
     emotionalBandwidth: budget.emotionalBandwidth,
   })) {

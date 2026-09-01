@@ -2,6 +2,7 @@ export type FeasibilityReason =
   | 'within_budget'
   | 'attention_time_exceeded'
   | 'energy_exceeded'
+  | 'attention_capacity_exceeded'
   | 'visibility_tolerance_exceeded'
   | 'emotional_bandwidth_exceeded';
 
@@ -11,6 +12,9 @@ export type DecisionFormat =
 
 export type ActionDecisionContract = Readonly<{
   policyVersion: 'strategic-decision-v1';
+  strategyRevision: number;
+  decisionContextRevision: number;
+  decisionContextHash: string;
   objective: string;
   stakeholder: string;
   posture: 'now' | 'when_ready' | 'delay';
@@ -51,6 +55,7 @@ export type WorkbenchAction = Readonly<{
   riskLevel: 'low' | 'medium' | 'high';
   attentionCostMinutes: number;
   energyCost: 1 | 2 | 3 | 4 | 5;
+  attentionDemand: 1 | 2 | 3 | 4 | 5;
   visibilityCost: 1 | 2 | 3 | 4 | 5;
   emotionalCost: 1 | 2 | 3 | 4 | 5;
   feasible: boolean;
@@ -86,9 +91,11 @@ export type WorkbenchSnapshot = Readonly<{
   attentionBudget: Readonly<{
     availableMinutes: number;
     maximumEnergyCost: 1 | 2 | 3 | 4 | 5;
+    attentionCapacity: 1 | 2 | 3 | 4 | 5;
     visibilityTolerance: 1 | 2 | 3 | 4 | 5;
     emotionalBandwidth: 1 | 2 | 3 | 4 | 5;
   }>;
+  decisionContext: DecisionContextSnapshot;
   decisionFrame: Readonly<{
     policyVersion: 'strategic-decision-v1';
     why: Readonly<{ goalId: string; objective: string }>;
@@ -96,8 +103,15 @@ export type WorkbenchSnapshot = Readonly<{
     currentContext: Readonly<{
       availableMinutes: number;
       maximumEnergyCost: 1 | 2 | 3 | 4 | 5;
+      attentionCapacity: 1 | 2 | 3 | 4 | 5;
       visibilityTolerance: 1 | 2 | 3 | 4 | 5;
       emotionalBandwidth: 1 | 2 | 3 | 4 | 5;
+    }>;
+    contextBinding: Readonly<{
+      strategyRevision: number;
+      decisionContextRevision: number;
+      decisionContextHash: string;
+      decisionContextUpdatedAt: string;
     }>;
     decisionWindow: Readonly<{ generatedAt: string; expiresAt: string; durationHours: 24 }>;
     rankingTransparency: Readonly<{
@@ -135,6 +149,19 @@ export type WorkbenchSnapshot = Readonly<{
     approvedEvidenceIds?: readonly string[];
     approvedAt?: string;
   }>;
+}>;
+
+export type EditableDecisionContext = Readonly<{
+  attentionBudget: WorkbenchSnapshot['attentionBudget'];
+}>;
+
+export type DecisionContextSnapshot = EditableDecisionContext & Readonly<{
+  policyVersion: 'decision-context-v1';
+  revision: number;
+  contextHash: string;
+  updatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  outcome?: 'saved' | 'already_saved';
 }>;
 
 export type EditableStrategyContext = Readonly<{
@@ -1533,6 +1560,29 @@ export async function saveStrategyContext(input: Readonly<{
   return payload;
 }
 
+export async function loadDecisionContext(signal?: AbortSignal): Promise<DecisionContextSnapshot> {
+  const payload = await requestJson('/api/decision-context', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isDecisionContextSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function saveDecisionContext(input: Readonly<{
+  requestId: string;
+  expectedRevision: number;
+  value: EditableDecisionContext;
+}>): Promise<DecisionContextSnapshot> {
+  const payload = await requestJson('/api/decision-context', {
+    method: 'PUT',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!isDecisionContextSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
 export async function loadDraftWorkspace(signal?: AbortSignal): Promise<DraftWorkspaceSnapshot | null> {
   const payload = await requestJson('/api/drafts/current', {
     headers: { accept: 'application/json' },
@@ -1670,14 +1720,20 @@ export async function decideLearnedPreference(input: Readonly<{
   return payload;
 }
 
-export async function approveWorkbenchAction(actionId: string): Promise<WorkbenchSnapshot> {
+export async function approveWorkbenchAction(input: Readonly<{
+  actionId: string;
+  expectedStrategyRevision: number;
+  expectedDecisionContextRevision: number;
+  expectedDecisionContextHash: string;
+  expectedDecisionWindowEndsAt: string;
+}>): Promise<WorkbenchSnapshot> {
   return requestWorkbench('/api/workbench/approval', {
     method: 'POST',
     headers: {
       accept: 'application/json',
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ actionId }),
+    body: JSON.stringify(input),
   });
 }
 
@@ -1797,6 +1853,7 @@ function isWorkbenchSnapshot(payload: unknown): payload is WorkbenchSnapshot {
   const runtime = payload['runtime'];
   const evidence = payload['evidence'];
   const attentionBudget = payload['attentionBudget'];
+  const decisionContext = payload['decisionContext'];
   return (
     payload['policyVersion'] === 'strategic-decision-v1' &&
     typeof payload['generatedAt'] === 'string' &&
@@ -1818,8 +1875,10 @@ function isWorkbenchSnapshot(payload: unknown): payload is WorkbenchSnapshot {
     isRecord(attentionBudget) &&
     typeof attentionBudget['availableMinutes'] === 'number' &&
     isDecisionScale(attentionBudget['maximumEnergyCost']) &&
+    isDecisionScale(attentionBudget['attentionCapacity']) &&
     isDecisionScale(attentionBudget['visibilityTolerance']) &&
     isDecisionScale(attentionBudget['emotionalBandwidth']) &&
+    isDecisionContextSnapshot(decisionContext) &&
     isStrategicDecisionFrame(payload['decisionFrame']) &&
     isRecord(evidence) &&
     (evidence['state'] === 'insufficient' || evidence['state'] === 'grounded') &&
@@ -1835,7 +1894,8 @@ function isWorkbenchAction(value: unknown): value is WorkbenchAction {
   return (
     typeof value['id'] === 'string' && typeof value['title'] === 'string' &&
     typeof value['rationale'] === 'string' && typeof value['evidenceCount'] === 'number' &&
-    isDecisionScale(value['energyCost']) && isDecisionScale(value['visibilityCost']) &&
+    isDecisionScale(value['energyCost']) && isDecisionScale(value['attentionDemand']) &&
+    isDecisionScale(value['visibilityCost']) &&
     isDecisionScale(value['emotionalCost']) && typeof value['feasible'] === 'boolean' &&
     Array.isArray(value['feasibilityReasons']) && value['feasibilityReasons'].every(isFeasibilityReason) &&
     Array.isArray(value['evidenceIds']) &&
@@ -1852,16 +1912,24 @@ function isWorkbenchAction(value: unknown): value is WorkbenchAction {
 function isStrategicDecisionFrame(value: unknown): value is WorkbenchSnapshot['decisionFrame'] {
   if (!isRecord(value) || value['policyVersion'] !== 'strategic-decision-v1' ||
       !isRecord(value['why']) || typeof value['forWhom'] !== 'string' ||
-      !isRecord(value['currentContext']) || !isRecord(value['decisionWindow']) ||
+      !isRecord(value['currentContext']) || !isRecord(value['contextBinding']) ||
+      !isRecord(value['decisionWindow']) ||
       !isRecord(value['rankingTransparency']) || !isRecord(value['boundaries'])) return false;
   const why = value['why'];
   const context = value['currentContext'];
+  const contextBinding = value['contextBinding'];
   const window = value['decisionWindow'];
   const ranking = value['rankingTransparency'];
   const boundaries = value['boundaries'];
   return typeof why['goalId'] === 'string' && typeof why['objective'] === 'string' &&
     typeof context['availableMinutes'] === 'number' && isDecisionScale(context['maximumEnergyCost']) &&
+    isDecisionScale(context['attentionCapacity']) &&
     isDecisionScale(context['visibilityTolerance']) && isDecisionScale(context['emotionalBandwidth']) &&
+    typeof contextBinding['strategyRevision'] === 'number' &&
+    typeof contextBinding['decisionContextRevision'] === 'number' &&
+    typeof contextBinding['decisionContextHash'] === 'string' &&
+    /^[0-9a-f]{64}$/u.test(contextBinding['decisionContextHash']) &&
+    typeof contextBinding['decisionContextUpdatedAt'] === 'string' &&
     typeof window['generatedAt'] === 'string' && typeof window['expiresAt'] === 'string' &&
     window['durationHours'] === 24 && ranking['method'] === 'declared_weighted_policy' &&
     Array.isArray(ranking['dimensions']) && ranking['dimensions'].every((item) => typeof item === 'string') &&
@@ -1872,6 +1940,10 @@ function isStrategicDecisionFrame(value: unknown): value is WorkbenchSnapshot['d
 
 function isActionDecisionContract(value: unknown): value is ActionDecisionContract {
   if (!isRecord(value) || value['policyVersion'] !== 'strategic-decision-v1' ||
+      typeof value['strategyRevision'] !== 'number' ||
+      typeof value['decisionContextRevision'] !== 'number' ||
+      typeof value['decisionContextHash'] !== 'string' ||
+      !/^[0-9a-f]{64}$/u.test(value['decisionContextHash']) ||
       typeof value['objective'] !== 'string' || typeof value['stakeholder'] !== 'string' ||
       !['now', 'when_ready', 'delay'].includes(String(value['posture'])) ||
       typeof value['timingRationale'] !== 'string' || typeof value['decisionWindowEndsAt'] !== 'string' ||
@@ -1889,7 +1961,19 @@ function isActionDecisionContract(value: unknown): value is ActionDecisionContra
 
 function isFeasibilityReason(value: unknown): value is FeasibilityReason {
   return value === 'within_budget' || value === 'attention_time_exceeded' || value === 'energy_exceeded' ||
+    value === 'attention_capacity_exceeded' ||
     value === 'visibility_tolerance_exceeded' || value === 'emotional_bandwidth_exceeded';
+}
+
+function isDecisionContextSnapshot(payload: unknown): payload is DecisionContextSnapshot {
+  if (!isRecord(payload) || !isRecord(payload['attentionBudget'])) return false;
+  const budget = payload['attentionBudget'];
+  return payload['policyVersion'] === 'decision-context-v1' &&
+    typeof payload['revision'] === 'number' && typeof payload['contextHash'] === 'string' &&
+    /^[0-9a-f]{64}$/u.test(payload['contextHash']) && typeof payload['updatedAt'] === 'string' &&
+    isPersistence(payload['persistence']) && typeof budget['availableMinutes'] === 'number' &&
+    isDecisionScale(budget['maximumEnergyCost']) && isDecisionScale(budget['attentionCapacity']) &&
+    isDecisionScale(budget['visibilityTolerance']) && isDecisionScale(budget['emotionalBandwidth']);
 }
 
 function isDecisionFormat(value: unknown): value is DecisionFormat {

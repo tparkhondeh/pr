@@ -283,7 +283,9 @@ export class PostgresStrategyContextRepository implements StrategyContextReposit
            revision = 1,
            strategy_revision = EXCLUDED.strategy_revision,
            status = 'awaiting_approval',
-           approved_action_ref = NULL, approved_by = NULL, approved_at = NULL,
+           approved_action_ref = NULL, approved_evidence_ids = '{}'::text[],
+           approved_by = NULL, approved_at = NULL,
+           approved_context_sha256 = NULL, decision_window_ends_at = NULL,
            updated_at = EXCLUDED.updated_at`,
         [this.context.tenantId, this.context.ownerUserId, this.context.workflowId, revision, command.occurredAt],
       );

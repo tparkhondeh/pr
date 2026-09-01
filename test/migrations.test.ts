@@ -98,6 +98,10 @@ const perceptionMigrationPath = fileURLToPath(
   new URL('../db/migrations/0023_perception_engine.sql', import.meta.url),
 );
 const perceptionSql = readFileSync(perceptionMigrationPath, 'utf8');
+const decisionContextMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0024_decision_context.sql', import.meta.url),
+);
+const decisionContextSql = readFileSync(decisionContextMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -181,6 +185,19 @@ describe('foundation migration', () => {
     expect(perceptionSql).toContain("perspective IN (\n    'self_perception', 'desired_positioning', 'external_perception'");
     expect(perceptionSql).toContain("result_snapshot = jsonb_build_object('signalId'");
     expect(perceptionSql).toContain('source identity, verbatim private quotes, automated collection');
+  });
+
+  it('adds an owner-controlled decision context and binds approval to its hash and window', () => {
+    defineMigration('0024_decision_context', decisionContextSql);
+    for (const table of ['decision_context_states', 'decision_context_requests']) {
+      expect(decisionContextSql).toContain(`CREATE TABLE app.${table}`);
+      expect(decisionContextSql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
+      expect(decisionContextSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
+    expect(decisionContextSql).toContain('attention_capacity smallint NOT NULL');
+    expect(decisionContextSql).toContain('ADD COLUMN approved_context_sha256 text');
+    expect(decisionContextSql).toContain('ADD COLUMN decision_window_ends_at timestamptz');
+    expect(decisionContextSql).toContain('workbench_approved_context_complete');
   });
 
   it('defines the required tenant-owned tables', () => {

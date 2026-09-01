@@ -30,6 +30,7 @@ function action(overrides: Partial<WorkbenchAction> = {}): WorkbenchAction {
     riskLevel: 'medium',
     attentionCostMinutes: 30,
     energyCost: 2,
+    attentionDemand: 2,
     visibilityCost: 3,
     emotionalCost: 2,
     feasible: true,

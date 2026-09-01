@@ -1,4 +1,5 @@
 import type { StrategyContextSnapshot } from './context.js';
+import type { DecisionContextSnapshot } from './decision-context.js';
 import type {
   AttentionBudget,
   FeasibilityReason,
@@ -28,8 +29,15 @@ export type StrategicDecisionFrame = Readonly<{
   currentContext: Readonly<{
     availableMinutes: number;
     maximumEnergyCost: 1 | 2 | 3 | 4 | 5;
+    attentionCapacity: 1 | 2 | 3 | 4 | 5;
     visibilityTolerance: 1 | 2 | 3 | 4 | 5;
     emotionalBandwidth: 1 | 2 | 3 | 4 | 5;
+  }>;
+  contextBinding: Readonly<{
+    strategyRevision: number;
+    decisionContextRevision: number;
+    decisionContextHash: string;
+    decisionContextUpdatedAt: string;
   }>;
   decisionWindow: Readonly<{
     generatedAt: string;
@@ -52,6 +60,9 @@ export type StrategicDecisionFrame = Readonly<{
 
 export type ActionDecisionContract = Readonly<{
   policyVersion: StrategicDecisionPolicyVersion;
+  strategyRevision: number;
+  decisionContextRevision: number;
+  decisionContextHash: string;
   objective: string;
   stakeholder: string;
   posture: DecisionPosture;
@@ -78,6 +89,7 @@ export function createStrategicDecisionFrame(
   strategy: StrategyContextSnapshot,
   budget: AttentionBudget,
   generatedAt: Date,
+  decisionContext: Pick<DecisionContextSnapshot, 'revision' | 'contextHash' | 'updatedAt'>,
 ): StrategicDecisionFrame {
   const expiresAt = decisionWindowEnd(generatedAt);
   return {
@@ -85,6 +97,12 @@ export function createStrategicDecisionFrame(
     why: { goalId: strategy.goalId, objective: strategy.goal.outcome },
     forWhom: strategy.desiredPositioning.audience,
     currentContext: { ...budget },
+    contextBinding: {
+      strategyRevision: strategy.revision,
+      decisionContextRevision: decisionContext.revision,
+      decisionContextHash: decisionContext.contextHash,
+      decisionContextUpdatedAt: decisionContext.updatedAt.toISOString(),
+    },
     decisionWindow: {
       generatedAt: generatedAt.toISOString(),
       expiresAt,
@@ -113,11 +131,15 @@ export function createActionDecisionContract(input: Readonly<{
   feasibilityReasons: readonly FeasibilityReason[];
   evidenceCount: number;
   coldStart?: boolean;
+  decisionContext: Pick<DecisionContextSnapshot, 'revision' | 'contextHash'>;
 }>): ActionDecisionContract {
   const expiresAt = decisionWindowEnd(input.generatedAt);
   const posture = decisionPosture(input.kind, input.feasible, input.coldStart === true);
   return {
     policyVersion: 'strategic-decision-v1',
+    strategyRevision: input.strategy.revision,
+    decisionContextRevision: input.decisionContext.revision,
+    decisionContextHash: input.decisionContext.contextHash,
     objective: input.strategy.goal.outcome,
     stakeholder: input.strategy.desiredPositioning.audience,
     posture,

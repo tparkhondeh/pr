@@ -67,10 +67,12 @@ import {
   loadResearch,
   loadClaims,
   loadRisk,
+  loadDecisionContext,
   loadStrategyContext,
   loadWorkbench,
   rejectDraftFeedback,
   saveStrategyContext,
+  saveDecisionContext,
   submitConversationTurn,
   updateInitiativeSettings,
   type AppliedMemoryRight,
@@ -109,6 +111,8 @@ import {
   type RelationshipWorkspaceSnapshot,
   type RiskReviewDecision,
   type EditableStrategyContext,
+  type EditableDecisionContext,
+  type DecisionContextSnapshot,
   type StrategyContextSnapshot,
   type StakeholderGroup,
   type StakeholderPriority,
@@ -163,6 +167,9 @@ export function App() {
   const [strategySnapshot, setStrategySnapshot] = useState<StrategyContextSnapshot | null>(null);
   const [strategyViewState, setStrategyViewState] = useState<'idle' | 'loading' | 'ready' | 'saving' | 'error'>('idle');
   const [strategyViewError, setStrategyViewError] = useState<string | null>(null);
+  const [decisionContextSnapshot, setDecisionContextSnapshot] = useState<DecisionContextSnapshot | null>(null);
+  const [decisionContextState, setDecisionContextState] = useState<'idle' | 'loading' | 'ready' | 'saving' | 'error'>('idle');
+  const [decisionContextError, setDecisionContextError] = useState<string | null>(null);
   const [researchSnapshot, setResearchSnapshot] = useState<ResearchWorkspaceSnapshot | null>(null);
   const [researchViewState, setResearchViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [researchViewError, setResearchViewError] = useState<string | null>(null);
@@ -313,15 +320,24 @@ export function App() {
 
   const refreshStrategy = useCallback(async (signal?: AbortSignal) => {
     setStrategyViewState('loading');
+    setDecisionContextState('loading');
     setStrategyViewError(null);
+    setDecisionContextError(null);
     try {
-      const next = await loadStrategyContext(signal);
+      const [next, context] = await Promise.all([
+        loadStrategyContext(signal),
+        loadDecisionContext(signal),
+      ]);
       setStrategySnapshot(next);
+      setDecisionContextSnapshot(context);
       setStrategyViewState('ready');
+      setDecisionContextState('ready');
     } catch (caught: unknown) {
       if (signal?.aborted) return;
       setStrategyViewError(errorMessage(caught));
+      setDecisionContextError(errorMessage(caught));
       setStrategyViewState('error');
+      setDecisionContextState('error');
     }
   }, []);
 
@@ -660,6 +676,24 @@ export function App() {
     }
   };
 
+  const saveDecisionBudget = async (value: EditableDecisionContext) => {
+    if (!decisionContextSnapshot || decisionContextState === 'saving') return;
+    setDecisionContextState('saving');
+    setDecisionContextError(null);
+    try {
+      setDecisionContextSnapshot(await saveDecisionContext({
+        requestId: `decision_context_${crypto.randomUUID()}`,
+        expectedRevision: decisionContextSnapshot.revision,
+        value,
+      }));
+      setDecisionContextState('ready');
+      await Promise.all([refresh(), refreshAudit()]);
+    } catch (caught: unknown) {
+      setDecisionContextError(errorMessage(caught));
+      setDecisionContextState('error');
+    }
+  };
+
   const refreshDraft = useCallback(async (signal?: AbortSignal) => {
     setDraftViewState('loading');
     setDraftViewError(null);
@@ -868,7 +902,13 @@ export function App() {
     setState('approving');
     setError(null);
     try {
-      const next = await approveWorkbenchAction(selectedAction.id);
+      const next = await approveWorkbenchAction({
+        actionId: selectedAction.id,
+        expectedStrategyRevision: selectedAction.decision.strategyRevision,
+        expectedDecisionContextRevision: selectedAction.decision.decisionContextRevision,
+        expectedDecisionContextHash: selectedAction.decision.decisionContextHash,
+        expectedDecisionWindowEndsAt: selectedAction.decision.decisionWindowEndsAt,
+      });
       setSnapshot(next);
       setState('ready');
     } catch (caught: unknown) {
@@ -1062,6 +1102,7 @@ export function App() {
         <nav aria-label="ناوبری اصلی">
           {nav.map(({ label, icon: Icon, view, badge }) => (
             <button
+              aria-label={badge ? `${label} ${badge}` : label}
               className={view === activeView ? 'nav-item active' : 'nav-item'}
               key={label}
               onClick={() => {
@@ -1253,14 +1294,24 @@ export function App() {
             state={expressionViewState}
           />
         ) : activeView === 'strategy' ? (
-          <StrategyPanel
-            error={strategyViewError}
-            key={strategySnapshot?.revision ?? 'empty'}
-            onRefresh={() => refreshStrategy()}
-            onSave={saveStrategy}
-            snapshot={strategySnapshot}
-            state={strategyViewState}
-          />
+          <>
+            <DecisionContextPanel
+              error={decisionContextError}
+              key={`decision-${String(decisionContextSnapshot?.revision ?? 'empty')}`}
+              onRefresh={() => refreshStrategy()}
+              onSave={saveDecisionBudget}
+              snapshot={decisionContextSnapshot}
+              state={decisionContextState}
+            />
+            <StrategyPanel
+              error={strategyViewError}
+              key={`strategy-${String(strategySnapshot?.revision ?? 'empty')}`}
+              onRefresh={() => refreshStrategy()}
+              onSave={saveStrategy}
+              snapshot={strategySnapshot}
+              state={strategyViewState}
+            />
+          </>
         ) : activeView === 'draft' ? (
           <DraftWorkspacePanel
             error={draftViewError}
@@ -1489,6 +1540,7 @@ export function App() {
           <div className="decision-budget">
             <span><Clock3 size={15} /><small>زمان</small><strong>{formatMinutes(snapshot.attentionBudget.availableMinutes)}</strong></span>
             <span><CircleGauge size={15} /><small>انرژی</small><strong>{snapshot.attentionBudget.maximumEnergyCost}/۵</strong></span>
+            <span><BrainCircuit size={15} /><small>تمرکز</small><strong>{snapshot.attentionBudget.attentionCapacity}/۵</strong></span>
             <span><Eye size={15} /><small>تحمل دیده‌شدن</small><strong>{snapshot.attentionBudget.visibilityTolerance}/۵</strong></span>
             <span><BrainCircuit size={15} /><small>ظرفیت احساسی</small><strong>{snapshot.attentionBudget.emotionalBandwidth}/۵</strong></span>
           </div>
@@ -1541,7 +1593,7 @@ export function App() {
                   <span><b>{action.utilityScore ?? '—'}</b> امتیاز</span>
                   <span>Opportunity Cost: <b>{action.opportunityCost ?? '—'}</b></span>
                   <span>{formatMinutes(action.attentionCostMinutes)}</span>
-                  <span>دیده‌شدن {action.visibilityCost}/۵ · احساسی {action.emotionalCost}/۵</span>
+                  <span>تمرکز {action.attentionDemand}/۵ · دیده‌شدن {action.visibilityCost}/۵ · احساسی {action.emotionalCost}/۵</span>
                   <span className={action.riskLevel === 'low' ? 'risk low' : 'risk'}>ریسک {riskLabels[action.riskLevel]}</span>
                 </span>
                 <span className="radio">{selected === action.id ? <Check size={15} /> : null}</span>
@@ -1599,6 +1651,107 @@ export function App() {
       </main>
     </div>
   );
+}
+
+function DecisionContextPanel({
+  error,
+  onRefresh,
+  onSave,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onRefresh: () => Promise<void>;
+  onSave: (value: EditableDecisionContext) => Promise<void>;
+  snapshot: DecisionContextSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'saving' | 'error';
+}>) {
+  const budget = snapshot?.attentionBudget;
+  const [availableMinutes, setAvailableMinutes] = useState(budget?.availableMinutes ?? 150);
+  const [maximumEnergyCost, setMaximumEnergyCost] = useState<1 | 2 | 3 | 4 | 5>(budget?.maximumEnergyCost ?? 3);
+  const [attentionCapacity, setAttentionCapacity] = useState<1 | 2 | 3 | 4 | 5>(budget?.attentionCapacity ?? 3);
+  const [visibilityTolerance, setVisibilityTolerance] = useState<1 | 2 | 3 | 4 | 5>(budget?.visibilityTolerance ?? 4);
+  const [emotionalBandwidth, setEmotionalBandwidth] = useState<1 | 2 | 3 | 4 | 5>(budget?.emotionalBandwidth ?? 3);
+
+  if ((state === 'loading' || state === 'idle') && !snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <LoaderCircle className="spin" size={24} />
+        <h2>در حال بازیابی Context تصمیم…</h2>
+        <p>بودجهٔ زمان، انرژی، تمرکز، دیده‌شدن و ظرفیت احساسی از Snapshot نسخه‌دار خوانده می‌شود.</p>
+      </section>
+    );
+  }
+  if (!snapshot) {
+    return (
+      <section className="memory-view-state" aria-live="polite">
+        <TriangleAlert size={25} />
+        <h2>Context تصمیم در دسترس نیست</h2>
+        <p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p>
+        <button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button>
+      </section>
+    );
+  }
+
+  const scale = (value: string): 1 | 2 | 3 | 4 | 5 => Number(value) as 1 | 2 | 3 | 4 | 5;
+  const submit = (event: SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void onSave({
+      attentionBudget: {
+        availableMinutes,
+        maximumEnergyCost,
+        attentionCapacity,
+        visibilityTolerance,
+        emotionalBandwidth,
+      },
+    });
+  };
+
+  return (
+    <section className="strategy-view decision-context-view" aria-label="Context تصمیم و بودجه توجه">
+      <header className="strategy-head">
+        <div>
+          <p className="overline">Decision Context · نسخه {snapshot.revision}</p>
+          <h2>مختصات اجرایی امروز</h2>
+          <p>این پنج ظرفیت مستقل‌اند؛ تغییر هرکدام رتبه‌بندی را دوباره محاسبه و تأیید قبلی را باطل می‌کند.</p>
+        </div>
+        <span className="strategy-persistence"><History size={15} /> {persistenceLabel(snapshot.persistence)}</span>
+      </header>
+      <form className="strategy-form" onSubmit={submit}>
+        <fieldset>
+          <legend>بودجهٔ تصمیم</legend>
+          <label>زمان در دسترس · دقیقه
+            <input min={0} max={10080} onChange={(event) => { setAvailableMinutes(Number(event.target.value)); }} type="number" value={availableMinutes} />
+          </label>
+          <label>حداکثر انرژی
+            <select onChange={(event) => { setMaximumEnergyCost(scale(event.target.value)); }} value={maximumEnergyCost}>{decisionScaleOptions()}</select>
+          </label>
+          <label>ظرفیت توجه / تمرکز
+            <select onChange={(event) => { setAttentionCapacity(scale(event.target.value)); }} value={attentionCapacity}>{decisionScaleOptions()}</select>
+          </label>
+          <label>تحمل دیده‌شدن
+            <select onChange={(event) => { setVisibilityTolerance(scale(event.target.value)); }} value={visibilityTolerance}>{decisionScaleOptions()}</select>
+          </label>
+          <label>ظرفیت احساسی
+            <select onChange={(event) => { setEmotionalBandwidth(scale(event.target.value)); }} value={emotionalBandwidth}>{decisionScaleOptions()}</select>
+          </label>
+        </fieldset>
+        <div className="strategy-savebar">
+          <div><ShieldCheck size={17} /><span>ذخیره فقط Context و رتبه‌بندی را تغییر می‌دهد؛ هیچ اقدام بیرونی اجرا نمی‌شود.</span></div>
+          <button disabled={state === 'saving'} type="submit">
+            {state === 'saving' ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}
+            {state === 'saving' ? 'در حال ثبت نسخه…' : 'ثبت Context جدید'}
+          </button>
+        </div>
+        {error && state === 'error' ? <div className="strategy-error" role="alert"><TriangleAlert size={15} /> {error}</div> : null}
+      </form>
+      <small className="memory-footnote">Hash: {snapshot.contextHash.slice(0, 12)}… · آخرین تغییر: {formatDate(snapshot.updatedAt)}</small>
+    </section>
+  );
+}
+
+function decisionScaleOptions() {
+  return <>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}/۵</option>)}</>;
 }
 
 function StrategyPanel({
@@ -3493,6 +3646,7 @@ function auditEventLabel(eventType: string): string {
     'account.data_exported': 'خروجی داده‌های شخصی دریافت شد',
     'workbench.action_approved': 'اقدام پیشنهادی تأیید شد',
     'strategy.context_saved': 'هدف و جایگاه مطلوب تغییر کرد',
+    'decision.context_saved': 'مختصات اجرایی تصمیم تغییر کرد',
     'memory.proposal_created': 'پیشنهاد حافظه ساخته شد',
     'research.source_recorded': 'منبع تحقیق بیرونی ثبت شد',
     'claim.reviewed': 'ادعا با Trace بازبینی شد',
@@ -3524,6 +3678,7 @@ function auditResourceLabel(resourceType: string): string {
     memory_proposal: 'حافظه',
     preference_proposal: 'مدل ترجیح',
     strategy_context: 'استراتژی',
+    decision_context: 'مختصات تصمیم',
     workbench: 'تصمیم امروز',
   };
   return labels[resourceType] ?? resourceType;
@@ -4084,6 +4239,7 @@ function feasibilityReasonLabel(value: WorkbenchAction['feasibilityReasons'][num
     within_budget: 'در بودجه فعلی',
     attention_time_exceeded: 'زمان کافی نیست',
     energy_exceeded: 'انرژی کافی نیست',
+    attention_capacity_exceeded: 'تمرکز کافی نیست',
     visibility_tolerance_exceeded: 'تحمل دیده‌شدن کافی نیست',
     emotional_bandwidth_exceeded: 'ظرفیت احساسی کافی نیست',
   }[value];
@@ -4153,10 +4309,16 @@ function errorMessage(error: unknown): string {
     memory_proposal_not_found: 'پیشنهاد حافظه دیگر در دسترس نیست.',
     invalid_memory_right: 'نوع درخواست، دلیل یا متن اصلاح حافظه معتبر نیست.',
     invalid_strategy_context: 'هدف یا جایگاه مطلوب ناقص است؛ فیلدها و موارد هر خط را بررسی کنید.',
-    revision_changed: 'این استراتژی در جای دیگری تغییر کرده است؛ نسخه تازه را دریافت و دوباره ویرایش کنید.',
+    invalid_decision_context: 'بودجهٔ تصمیم معتبر نیست؛ زمان باید عدد و هر ظرفیت بین ۱ تا ۵ باشد.',
+    invalid_approval_context: 'این تأیید به نسخهٔ معتبر Strategy و Decision Context متصل نیست.',
+    revision_changed: 'این Context در جای دیگری تغییر کرده است؛ نسخه تازه را دریافت و دوباره ویرایش کنید.',
     idempotency_mismatch: 'شناسه این ذخیره قبلاً برای محتوای دیگری استفاده شده است.',
     status_changed: 'وضعیت Claim هم‌زمان تغییر کرده است؛ فهرست را به‌روزرسانی کنید.',
     strategy_permission_denied: 'فقط مالک می‌تواند هدف و جایگاه مطلوب را تغییر دهد.',
+    decision_context_permission_denied: 'فقط مالک می‌تواند مختصات اجرایی تصمیم را تغییر دهد.',
+    decision_context_unavailable: 'سرویس Context تصمیم در دسترس نیست.',
+    decision_context_changed: 'مختصات اجرایی تغییر کرده است؛ پیشنهاد تازه را مرور و دوباره تأیید کنید.',
+    decision_expired: 'پنجرهٔ این تصمیم منقضی شده است؛ Snapshot تازه را دریافت کنید.',
     strategy_unavailable: 'سرویس استراتژی در دسترس نیست.',
     research_unavailable: 'Research Workspace در دسترس نیست.',
     invalid_research_input: 'مشخصات منبع، URL امن، تاریخ یا پنجره تازگی معتبر نیست.',

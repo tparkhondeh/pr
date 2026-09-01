@@ -51,12 +51,27 @@ import {
   StrategyContextService,
   defaultStrategyContext,
 } from '../src/strategy/context.js';
+import {
+  DecisionContextService,
+  InMemoryDecisionContextRepository,
+  defaultDecisionContext,
+} from '../src/strategy/decision-context.js';
 import { InMemoryWorkbenchApprovalRepository } from '../src/workbench/approval-repository.js';
 import { OwnerEvidenceContextService } from '../src/workbench/evidence-context.js';
 import { createDefaultWorkbenchService } from '../src/workbench/workbench.js';
 import { groundedEvidence } from './support/grounded-evidence.js';
 
 const servers: ReturnType<typeof createServer>[] = [];
+
+function approvalRequestBody(actionId: string, at: Date): Record<string, unknown> {
+  return {
+    actionId,
+    expectedStrategyRevision: 1,
+    expectedDecisionContextRevision: 1,
+    expectedDecisionContextHash: '3202024badf63007236919b1d36dbc5ca2f7e733307ca0832e7f969b84a62910',
+    expectedDecisionWindowEndsAt: new Date(at.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -607,7 +622,7 @@ describe('operational endpoints', () => {
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ actionId: 'conversation' }),
+        body: JSON.stringify(approvalRequestBody('conversation', fixedTime)),
       },
       {
         workbench,
@@ -650,7 +665,7 @@ describe('operational endpoints', () => {
     const blocked = await request('/api/workbench/approval', () => ({ ready: true }), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ actionId: 'conversation' }),
+      body: JSON.stringify(approvalRequestBody('conversation', fixedTime)),
     }, dependencies);
     expect(blocked.status).toBe(409);
     await expect(blocked.json()).resolves.toEqual({ error: 'risk_review_required' });
@@ -681,7 +696,7 @@ describe('operational endpoints', () => {
     const approved = await request('/api/workbench/approval', () => ({ ready: true }), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ actionId: 'conversation' }),
+      body: JSON.stringify(approvalRequestBody('conversation', fixedTime)),
     }, dependencies);
     expect(approved.status).toBe(200);
     await expect(approved.json()).resolves.toMatchObject({
@@ -1229,6 +1244,78 @@ describe('operational endpoints', () => {
     expect(workbenchAfter.workflow).not.toHaveProperty('approvedActionId');
   });
 
+  it('saves owner decision context, reranks actions, and rejects a stale approval binding', async () => {
+    const fixedTime = new Date('2026-08-31T17:30:00.000Z');
+    const activeTenant = tenantId('tenant_primary');
+    const owner = userId('owner_primary');
+    const approvals = new InMemoryWorkbenchApprovalRepository();
+    const decisionContext = new DecisionContextService(
+      new InMemoryDecisionContextRepository(defaultDecisionContext(fixedTime), approvals),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    const workbench = createDefaultWorkbenchService(
+      () => fixedTime,
+      approvals,
+      { tenantId: activeTenant, ownerUserId: owner },
+      undefined,
+      groundedEvidence(fixedTime),
+      decisionContext,
+    );
+    const initial = await workbench.snapshot();
+    const action = initial.actions.find((candidate) => candidate.id === 'conversation');
+    if (!action) throw new Error('Expected conversation action.');
+    const staleApproval = {
+      actionId: action.id,
+      expectedStrategyRevision: action.decision.strategyRevision,
+      expectedDecisionContextRevision: action.decision.decisionContextRevision,
+      expectedDecisionContextHash: action.decision.decisionContextHash,
+      expectedDecisionWindowEndsAt: action.decision.decisionWindowEndsAt,
+    };
+    const dependencies: ApplicationDependencies = {
+      workbench, decisionContext, resolveActor: () => owner, clock: () => fixedTime,
+    };
+
+    const saved = await request('/api/decision-context', () => ({ ready: true }), {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        requestId: 'decision_context_http',
+        expectedRevision: 1,
+        value: {
+          attentionBudget: {
+            availableMinutes: 45,
+            maximumEnergyCost: 2,
+            attentionCapacity: 2,
+            visibilityTolerance: 2,
+            emotionalBandwidth: 2,
+          },
+        },
+      }),
+    }, dependencies);
+
+    expect(saved.status).toBe(200);
+    await expect(saved.json()).resolves.toMatchObject({
+      outcome: 'saved', revision: 2,
+      attentionBudget: { availableMinutes: 45, attentionCapacity: 2 },
+    });
+    const current = await request('/api/decision-context', () => ({ ready: true }), undefined, dependencies);
+    await expect(current.json()).resolves.toMatchObject({ revision: 2, policyVersion: 'decision-context-v1' });
+    const reranked = await workbench.snapshot();
+    expect(reranked.decisionContext.revision).toBe(2);
+    const rerankedEssay = reranked.actions.find((candidate) => candidate.id === 'essay');
+    expect(rerankedEssay?.feasible).toBe(false);
+    expect(rerankedEssay?.feasibilityReasons).toEqual(
+      expect.arrayContaining(['attention_time_exceeded', 'energy_exceeded']),
+    );
+
+    const stale = await request('/api/workbench/approval', () => ({ ready: true }), {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(staleApproval),
+    }, dependencies);
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toEqual({ error: 'decision_context_changed' });
+  });
+
   it('routes the evidence-bound draft through approval and export without publishing', async () => {
     const fixedTime = new Date('2026-08-31T19:00:00.000Z');
     const activeTenant = tenantId('tenant_primary');
@@ -1679,7 +1766,7 @@ describe('operational endpoints', () => {
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ actionId: 'conversation' }),
+        body: JSON.stringify(approvalRequestBody('conversation', fixedTime)),
       },
       dependencies,
     );
