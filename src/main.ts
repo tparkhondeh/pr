@@ -29,6 +29,7 @@ import { ConversationIntakeService } from './conversation/intake.js';
 import { PostgresConversationMemoryRepository } from './conversation/repository.js';
 import { PostgresRuntime } from './database/postgres.js';
 import { PostgresStrategicQualityRepository } from './database/postgres-strategic-quality.js';
+import { PostgresWorkflowCostRepository } from './database/postgres-workflow-cost.js';
 import {
   InMemoryStrategicQualityRepository,
   StrategicQualityService,
@@ -47,6 +48,10 @@ import {
 import { createRequestHandler } from './http/application.js';
 import { createStaticRequestHandler } from './http/static-application.js';
 import { tenantId, userId } from './kernel/identity.js';
+import {
+  InMemoryWorkflowCostRepository,
+  WorkflowCostControlService,
+} from './observability/workflow-cost-control.js';
 import {
   InMemoryPerceptionWorkspaceRepository,
   PerceptionWorkspaceService,
@@ -199,6 +204,15 @@ const strategicQuality = new StrategicQualityService(
   { tenantId: activeTenant, ownerUserId: owner },
   workbench,
 );
+const workflowCosts = new WorkflowCostControlService(
+  postgres && environment.database
+    ? new PostgresWorkflowCostRepository(postgres, {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+      })
+    : new InMemoryWorkflowCostRepository(),
+  { tenantId: activeTenant, ownerUserId: owner },
+);
 const expression = new AuthenticExpressionService(
   { tenantId: activeTenant, ownerUserId: owner },
   assets,
@@ -299,6 +313,7 @@ const requestHandler = createRequestHandler(
     drafts,
     learning,
     strategicQuality,
+    workflowCosts,
     conversation,
     auditTrail,
     assets,

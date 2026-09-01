@@ -897,6 +897,85 @@ export type StrategicOutcomeExecutionStatus = 'completed' | 'partial' | 'not_exe
 export type StrategicOutcomeChange = 'positive' | 'none' | 'negative' | 'unknown';
 export type StrategicBusinessOutcome = 'none' | 'early_signal' | 'material' | 'unknown';
 
+export type WorkflowCostKind = 'strategy_recommendation' | 'draft_generation' | 'research' |
+  'platform_adaptation' | 'evaluation' | 'other';
+export type WorkflowCostCircuitReason = 'invocation_budget_exceeded' | 'workflow_budget_exceeded' |
+  'daily_budget_exceeded' | 'workflow_invocation_limit_exceeded' |
+  'workflow_step_limit_exceeded' | 'workflow_circuit_open' |
+  'actual_cost_exceeded_reservation' | 'actual_steps_exceeded_reservation';
+
+export type WorkflowCostSnapshot = Readonly<{
+  policyVersion: 'workflow-cost-budget-v1';
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  policy: Readonly<{
+    version: 'workflow-cost-budget-v1';
+    currency: 'USD';
+    perInvocationBudgetMinorUnits: number;
+    perWorkflowBudgetMinorUnits: number;
+    dailyBudgetMinorUnits: number;
+    maxInvocationsPerWorkflow: number;
+    maxStepsPerWorkflow: number;
+    warningRatio: number;
+  }>;
+  truthStatus: 'no_usage' | 'measured' | 'estimated' | 'unmetered' | 'mixed';
+  day: Readonly<{
+    date: string;
+    chargedCostMinorUnits: number;
+    activeReservedCostMinorUnits: number;
+    remainingCostMinorUnits: number;
+    status: 'within_budget' | 'warning' | 'circuit_open';
+  }>;
+  usage: Readonly<{
+    chargeCount: number;
+    measuredChargeCount: number;
+    estimatedChargeCount: number;
+    unmeteredChargeCount: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    modelMinorUnits: number;
+    embeddingMinorUnits: number;
+    storageMinorUnits: number;
+    searchMinorUnits: number;
+    toolApiMinorUnits: number;
+    computeMinorUnits: number;
+    humanReviewSeconds: number;
+  }>;
+  workflows: readonly Readonly<{
+    workflowId: string;
+    kind: WorkflowCostKind;
+    invocationCount: number;
+    chargedCostMinorUnits: number;
+    activeReservedCostMinorUnits: number;
+    actualSteps: number;
+    status: 'within_budget' | 'warning' | 'circuit_open';
+    circuitReason?: WorkflowCostCircuitReason;
+  }>[];
+  recentReservations: readonly Readonly<{
+    id: string;
+    workflowId: string;
+    invocationId: string;
+    kind: WorkflowCostKind;
+    estimatedCostMinorUnits: number;
+    plannedSteps: number;
+    decision: 'allowed' | 'blocked';
+    reason?: WorkflowCostCircuitReason;
+    reservedAt: string;
+  }>[];
+  recentCharges: readonly Readonly<{
+    id: string;
+    reservationId: string;
+    provider: string;
+    model: string;
+    actualCostMinorUnits: number;
+    costEvidence: 'provider_reported' | 'estimated' | 'none';
+    circuitOpened: boolean;
+    circuitReason?: WorkflowCostCircuitReason;
+    chargedAt: string;
+  }>[];
+}>;
+
 export type StrategicQualitySnapshot = Readonly<{
   policyVersion: 'strategic-quality-v1';
   generatedAt: string;
@@ -1251,6 +1330,7 @@ export type AccountDataExport = Readonly<{
     draft: DraftWorkspaceSnapshot | null;
     feedback: FeedbackLearningSnapshot;
     strategicQuality: StrategicQualitySnapshot | null;
+    workflowCosts: WorkflowCostSnapshot | null;
     activity: AuditTrailSnapshot;
   }>;
 }>;
@@ -1801,6 +1881,15 @@ export async function loadStrategicQuality(signal?: AbortSignal): Promise<Strate
     ...(signal ? { signal } : {}),
   });
   if (!isStrategicQualitySnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function loadWorkflowCosts(signal?: AbortSignal): Promise<WorkflowCostSnapshot> {
+  const payload = await requestJson('/api/workflow-cost', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isWorkflowCostSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
   return payload;
 }
 
@@ -2892,6 +2981,60 @@ function isStrategicOutcomeMetrics(value: unknown): value is StrategicOutcomeMet
     typeof value['materialBusinessOutcomes'] === 'number';
 }
 
+function isWorkflowCostSnapshot(payload: unknown): payload is WorkflowCostSnapshot {
+  if (
+    !isRecord(payload) || payload['policyVersion'] !== 'workflow-cost-budget-v1' ||
+    typeof payload['generatedAt'] !== 'string' || !isPersistence(payload['persistence']) ||
+    !isRecord(payload['policy']) || !isRecord(payload['day']) || !isRecord(payload['usage']) ||
+    !Array.isArray(payload['workflows']) || !Array.isArray(payload['recentReservations']) ||
+    !Array.isArray(payload['recentCharges'])
+  ) return false;
+  const policy = payload['policy'];
+  const day = payload['day'];
+  const usage = payload['usage'];
+  const numericPolicy = [
+    'perInvocationBudgetMinorUnits', 'perWorkflowBudgetMinorUnits', 'dailyBudgetMinorUnits',
+    'maxInvocationsPerWorkflow', 'maxStepsPerWorkflow', 'warningRatio',
+  ];
+  const numericUsage = [
+    'chargeCount', 'measuredChargeCount', 'estimatedChargeCount', 'unmeteredChargeCount',
+    'inputTokens', 'outputTokens', 'cachedInputTokens', 'modelMinorUnits',
+    'embeddingMinorUnits', 'storageMinorUnits', 'searchMinorUnits', 'toolApiMinorUnits',
+    'computeMinorUnits', 'humanReviewSeconds',
+  ];
+  return (
+    policy['version'] === 'workflow-cost-budget-v1' && policy['currency'] === 'USD' &&
+    numericPolicy.every((key) => typeof policy[key] === 'number') &&
+    ['no_usage', 'measured', 'estimated', 'unmetered', 'mixed'].includes(String(payload['truthStatus'])) &&
+    typeof day['date'] === 'string' && typeof day['chargedCostMinorUnits'] === 'number' &&
+    typeof day['activeReservedCostMinorUnits'] === 'number' &&
+    typeof day['remainingCostMinorUnits'] === 'number' &&
+    ['within_budget', 'warning', 'circuit_open'].includes(String(day['status'])) &&
+    numericUsage.every((key) => typeof usage[key] === 'number') &&
+    payload['workflows'].every((workflow) => isRecord(workflow) &&
+      typeof workflow['workflowId'] === 'string' && isWorkflowCostKind(workflow['kind']) &&
+      typeof workflow['invocationCount'] === 'number' &&
+      typeof workflow['chargedCostMinorUnits'] === 'number' &&
+      typeof workflow['activeReservedCostMinorUnits'] === 'number' &&
+      typeof workflow['actualSteps'] === 'number' &&
+      ['within_budget', 'warning', 'circuit_open'].includes(String(workflow['status']))) &&
+    payload['recentReservations'].every((entry) => isRecord(entry) &&
+      typeof entry['id'] === 'string' && typeof entry['workflowId'] === 'string' &&
+      isWorkflowCostKind(entry['kind']) && typeof entry['estimatedCostMinorUnits'] === 'number' &&
+      (entry['decision'] === 'allowed' || entry['decision'] === 'blocked') &&
+      typeof entry['reservedAt'] === 'string') &&
+    payload['recentCharges'].every((entry) => isRecord(entry) &&
+      typeof entry['id'] === 'string' && typeof entry['reservationId'] === 'string' &&
+      typeof entry['actualCostMinorUnits'] === 'number' && typeof entry['chargedAt'] === 'string')
+  );
+}
+
+function isWorkflowCostKind(value: unknown): value is WorkflowCostKind {
+  return value === 'strategy_recommendation' || value === 'draft_generation' ||
+    value === 'research' || value === 'platform_adaptation' ||
+    value === 'evaluation' || value === 'other';
+}
+
 function isStrategicOutcomeExecutionStatus(value: unknown): value is StrategicOutcomeExecutionStatus {
   return value === 'completed' || value === 'partial' || value === 'not_executed';
 }
@@ -2943,6 +3086,7 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     (data['draft'] === null || isDraftWorkspaceSnapshot(data['draft'])) &&
     isFeedbackLearningSnapshot(data['feedback']) &&
     (data['strategicQuality'] === null || isStrategicQualitySnapshot(data['strategicQuality'])) &&
+    (data['workflowCosts'] === null || isWorkflowCostSnapshot(data['workflowCosts'])) &&
     isAuditTrailSnapshot(data['activity'])
   );
 }

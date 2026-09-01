@@ -256,6 +256,11 @@ Gate: expert rubric و user acceptance به baseline برسند؛ unsupported cl
 `strategic-outcome-followup-v1` نیز پیامد Action پذیرفته‌شده را با رضایت، پشیمانی،
 انرژی، کیفیت تعامل و Outcomeهای رابطه/فرصت ثبت می‌کند؛ این baseline هم تا پنج Follow-up
 واقعی `null` می‌ماند و هیچ تغییر خودکار Identity یا Strategy ایجاد نمی‌کند.
+`workflow-cost-budget-v1` بخش Operational این Gate را می‌بندد: Reservation پیش از
+Spend، Ledger تفکیک‌شده، Daily/Workflow/Step Budget و Circuit Breaker در Memory،
+PostgreSQL و Preview فعال‌اند. چون Runtime فعلی Provider بیرونی ندارد، وضعیت واقعی
+`no_usage` است؛ اثبات «داخل بودجه بودن Workflowهای مدل واقعی» تا اتصال Provider و
+نمونه‌های اجرای Metered باز می‌ماند.
 
 ### Phase 3 — Authentic Execution
 

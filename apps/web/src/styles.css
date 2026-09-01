@@ -311,6 +311,20 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
 .feedback-events time { color: #748f81; white-space: nowrap; }
 .feedback-events > small { display: flex; align-items: flex-start; gap: 6px; color: #80a391; font-size: 8px; line-height: 1.7; }
 .strategic-quality { display: grid; gap: 0; overflow: hidden; color: #dcebe3; border: 1px solid #254f3e; border-radius: 6px; background: var(--deep); }
+.workflow-cost { display: grid; gap: 16px; padding: 22px; color: #dcebe3; border: 1px solid #315749; border-radius: 6px; background: linear-gradient(145deg, #102d24, #0c241d); }
+.workflow-cost-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, 240px); gap: 18px; align-items: start; }
+.workflow-cost-head h3 { margin: 4px 0 7px; color: #f3f6eb; font-size: 1.22rem; }
+.workflow-cost-head p { margin: 0; color: #a9bfb5; line-height: 1.8; }
+.workflow-cost-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid #2a4c40; }
+.workflow-cost-grid > div { display: grid; gap: 5px; padding: 14px; border-inline-end: 1px solid #2a4c40; }
+.workflow-cost-grid > div:last-child { border-inline-end: 0; }
+.workflow-cost-grid span { color: #92aca1; font-size: .76rem; }
+.workflow-cost-grid strong { color: #f1f0dd; font-size: .95rem; overflow-wrap: anywhere; }
+.workflow-cost-truth { display: grid; grid-template-columns: auto 1fr; gap: 4px 9px; align-items: start; padding: 13px 15px; border: 1px solid #38584d; background: #153228; }
+.workflow-cost-truth svg { color: #9ddbb8; }
+.workflow-cost-truth p { margin: 0; color: #d8e7df; line-height: 1.65; }
+.workflow-cost-truth small { grid-column: 2; color: #91a99f; line-height: 1.65; }
+.workflow-cost-circuit { display: flex; gap: 8px; align-items: center; padding: 11px 13px; color: #ffd7bf; border: 1px solid #9a5434; background: #44271c; }
 .quality-gate-head { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, auto); align-items: center; gap: 15px; padding: 20px; border-bottom: 1px solid #315447; }
 .quality-gate-head h3 { margin: 3px 0 7px; color: #f0f7f3; font-size: 16px; font-weight: 500; }
 .quality-gate-head p:not(.overline) { max-width: 680px; margin: 0; color: #9fb8ac; font-size: 9px; line-height: 1.8; }
@@ -791,6 +805,10 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
   .decision-context-view .strategy-form fieldset { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .draft-workspace { grid-template-columns: 1fr; }
   .learning-grid { grid-template-columns: 1fr; }
+  .workflow-cost-head { grid-template-columns: 1fr; }
+  .workflow-cost-grid { grid-template-columns: 1fr 1fr; }
+  .workflow-cost-grid > div:nth-child(2) { border-inline-end: 0; }
+  .workflow-cost-grid > div:nth-child(-n+2) { border-bottom: 1px solid #2a4c40; }
   .quality-gate-head { grid-template-columns: minmax(0, 1fr) repeat(3, auto); }
   .quality-body { grid-template-columns: 1fr; }
   .quality-evidence { border-top: 1px solid #315447; border-right: 0; }
@@ -831,6 +849,10 @@ main { padding: 28px clamp(24px, 4vw, 62px) 60px; direction: rtl; overflow: hidd
   .decision-head { align-items: flex-start; gap: 16px; }
   .memory-view-head { display: grid; padding: 18px; }
   .memory-summary { grid-template-columns: 1fr 1fr; }
+  .workflow-cost { padding: 18px; }
+  .workflow-cost-grid { grid-template-columns: 1fr; }
+  .workflow-cost-grid > div { border-inline-end: 0; border-bottom: 1px solid #2a4c40; }
+  .workflow-cost-grid > div:last-child { border-bottom: 0; }
   .maturity-board { grid-template-columns: 1fr; padding: 20px; }
   .maturity-board ul { grid-template-columns: 1fr; }
   .asset-form { grid-template-columns: 1fr; padding: 18px; }

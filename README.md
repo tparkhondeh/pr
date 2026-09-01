@@ -9,7 +9,8 @@ Asset/Evidence، مرکز حقوق داده، داوری قطعی اختلاف �
 Authentic Expression Gate نیز Narrative Seedهای evidence-bound، Voice Preferenceهای
 قابل بازگشت و Anti-Generic Review توضیح‌پذیر را بدون مجوز انتشار ترکیب می‌کند. رادار
 فرصت نیز Sourceهای Research را بدون Score پنهان، مانیتورینگ یا اقدام خودکار در برابر
-Goal، Audience، Timing، Quality و Conflict می‌سنجد.
+Goal، Audience، Timing، Quality و Conflict می‌سنجد. Workflow Cost Gate نیز پیش از
+اجرای Metered بودجه رزرو می‌کند و مصرف واقعی/اندازه‌گیری‌نشده را بدون عددسازی ثبت می‌کند.
 
 ## اسناد فعلی
 
@@ -23,6 +24,7 @@ Goal، Audience، Timing، Quality و Conflict می‌سنجد.
 - [Decision Context و Attention Budget نسخه‌دار](docs/architecture/decision-context-v1.0.md)
 - [Strategic Quality Baseline](docs/architecture/strategic-quality-baseline-v1.0.md)
 - [Strategic Outcome Follow-up](docs/architecture/strategic-outcome-followup-v1.0.md)
+- [Workflow Cost & Budget Gate](docs/architecture/workflow-cost-budget-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
@@ -293,9 +295,16 @@ Review ردشده یا superseded پذیرفته نمی‌شود، هر اصلا
 واقعی `outcomeBaseline.baselineMetrics` خالی می‌ماند. Like و View به‌تنهایی Metric موفقیت
 نیستند و این داده هیچ تغییر خودکار Identity، Strategy یا اقدام بیرونی ایجاد نمی‌کند.
 
+همین نما وضعیت `workflow-cost-budget-v1` را نیز نشان می‌دهد. هر اجرای Metered باید
+پیش از شروع از `POST /api/workflow-cost/reservations` ظرفیت بگیرد و پس از پایان در
+`POST /api/workflow-cost/charges` هزینهٔ Model، Embedding، Storage، Search، Tool/API،
+Compute و زمان Human Review را تسویه کند. عبور از سقف Invocation، Workflow، روز یا
+تعداد گام Circuit را باز می‌کند. `GET /api/workflow-cost` فقط Usage دارای Evidence را
+گزارش می‌کند؛ مبلغ نامعلوم صفرِ `unmetered` است و «رایگان» تفسیر نمی‌شود.
+
 نمای «داده و شفافیت» ردپای owner-scoped تصمیم‌ها، تأییدها، حقوق حافظه و Exportها را
 از `GET /api/account/activity` نمایش می‌دهد. کاربر از `GET /api/account/export` یک
 فایل JSON قابل‌حمل از Snapshot فعلی Workbench، Strategy، Memory، Assets، Draft،
-Feedback، Strategic Quality، Arbitration، Initiative، Relationships و Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
+Feedback، Strategic Quality، Workflow Cost، Arbitration، Initiative، Relationships و Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
 زیرساختی وارد فایل نمی‌شوند. در PostgreSQL این Timeline با RLS به Tenant و مالک فعال
 محدود است؛ نسخه‌های حافظه‌ای و Sites تا Restart موقت‌اند.

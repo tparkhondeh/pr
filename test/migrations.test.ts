@@ -110,6 +110,10 @@ const strategicOutcomeMigrationPath = fileURLToPath(
   new URL('../db/migrations/0026_strategic_action_outcomes.sql', import.meta.url),
 );
 const strategicOutcomeSql = readFileSync(strategicOutcomeMigrationPath, 'utf8');
+const workflowCostMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0027_workflow_cost_budget.sql', import.meta.url),
+);
+const workflowCostSql = readFileSync(workflowCostMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -235,6 +239,24 @@ describe('foundation migration', () => {
     expect(strategicOutcomeSql).toContain('energy BETWEEN 1 AND 5');
     expect(strategicOutcomeSql).toContain('private_messages BETWEEN 0 AND 10000');
     expect(strategicOutcomeSql).toContain('Meaningful outcomes remain separate from identity');
+  });
+
+  it('adds a tenant-isolated preflight budget and truthful append-only cost ledger', () => {
+    defineMigration('0027_workflow_cost_budget', workflowCostSql);
+    for (const table of [
+      'workflow_cost_budget_locks',
+      'workflow_cost_reservations',
+      'workflow_cost_charges',
+    ]) {
+      expect(workflowCostSql).toContain(`CREATE TABLE app.${table}`);
+      expect(workflowCostSql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
+      expect(workflowCostSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
+    expect(workflowCostSql).toContain("decision IN ('allowed', 'blocked')");
+    expect(workflowCostSql).toContain("cost_evidence IN ('provider_reported', 'estimated', 'none')");
+    expect(workflowCostSql).toContain("cost_evidence <> 'none' OR actual_cost_minor_units = 0");
+    expect(workflowCostSql).toContain('actual_cost_minor_units =');
+    expect(workflowCostSql).toContain('Unknown cost is stored as unmetered zero, never invented');
   });
 
   it('defines the required tenant-owned tables', () => {

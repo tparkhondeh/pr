@@ -90,6 +90,16 @@ import {
 } from '../initiative/initiative-policy.js';
 import type { TenantId, UserId } from '../kernel/identity.js';
 import {
+  WorkflowCostConflictError,
+  WorkflowCostPermissionError,
+  WorkflowCostValidationError,
+  workflowCostKinds,
+  type CostEvidence,
+  type WorkflowCostControlService,
+  type WorkflowCostKind,
+  type WorkflowCostSnapshot,
+} from '../observability/workflow-cost-control.js';
+import {
   PerceptionConflictError,
   PerceptionNotFoundError,
   PerceptionPermissionError,
@@ -207,6 +217,7 @@ export type ApplicationDependencies = Readonly<{
   perception?: Pick<PerceptionWorkspaceService, 'snapshot' | 'create' | 'delete'>;
   expression?: Pick<AuthenticExpressionService, 'snapshot' | 'review'>;
   opportunities?: Pick<OpportunityRadarService, 'snapshot'>;
+  workflowCosts?: Pick<WorkflowCostControlService, 'snapshot' | 'reserve' | 'charge'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -298,6 +309,21 @@ export function createRequestHandler(
 
     if (request.method === 'GET' && path === '/api/strategic-quality') {
       await handleStrategicQualitySnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/workflow-cost') {
+      await handleWorkflowCostSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/workflow-cost/reservations') {
+      await handleWorkflowCostReservation(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/workflow-cost/charges') {
+      await handleWorkflowCostCharge(request, response, dependencies);
       return;
     }
 
@@ -749,6 +775,168 @@ function serializeStrategicQuality(snapshot: StrategicQualitySnapshot): Record<s
       recordedAt: outcome.recordedAt.toISOString(),
     })),
   };
+}
+
+async function handleWorkflowCostSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = workflowCostActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.workflowCosts?.snapshot(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Workflow cost service disappeared.');
+    sendJson(response, 200, serializeWorkflowCost(snapshot));
+  } catch (error: unknown) {
+    sendWorkflowCostError(response, error);
+  }
+}
+
+async function handleWorkflowCostReservation(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = workflowCostActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const workflowId = body['workflowId'];
+    const invocationId = body['invocationId'];
+    const kind = body['kind'];
+    const estimatedCostMinorUnits = body['estimatedCostMinorUnits'];
+    const plannedSteps = body['plannedSteps'];
+    if (
+      typeof requestId !== 'string' || typeof workflowId !== 'string' ||
+      typeof invocationId !== 'string' || !isWorkflowCostKind(kind) ||
+      typeof estimatedCostMinorUnits !== 'number' || typeof plannedSteps !== 'number'
+    ) {
+      sendJson(response, 400, { error: 'invalid_workflow_cost_reservation' });
+      return;
+    }
+    const reservation = await dependencies.workflowCosts?.reserve(actorId, {
+      requestId,
+      workflowId,
+      invocationId,
+      kind,
+      estimatedCostMinorUnits,
+      plannedSteps,
+      reservedAt: now(dependencies),
+    });
+    if (!reservation) throw new Error('Workflow cost service disappeared.');
+    sendJson(response, reservation.decision === 'allowed' ? 201 : 409, {
+      ...reservation,
+      reservedAt: reservation.reservedAt.toISOString(),
+    });
+  } catch (error: unknown) {
+    sendWorkflowCostError(response, error);
+  }
+}
+
+async function handleWorkflowCostCharge(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = workflowCostActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const components = body['components'];
+    const requestId = body['requestId'];
+    const reservationId = body['reservationId'];
+    const provider = body['provider'];
+    const model = body['model'];
+    const inputTokens = body['inputTokens'];
+    const outputTokens = body['outputTokens'];
+    const cachedInputTokens = body['cachedInputTokens'];
+    const actualSteps = body['actualSteps'];
+    const humanReviewSeconds = body['humanReviewSeconds'];
+    const costEvidence = body['costEvidence'];
+    if (
+      typeof requestId !== 'string' || typeof reservationId !== 'string' ||
+      typeof provider !== 'string' || typeof model !== 'string' ||
+      typeof inputTokens !== 'number' || typeof outputTokens !== 'number' ||
+      typeof cachedInputTokens !== 'number' || typeof actualSteps !== 'number' ||
+      typeof humanReviewSeconds !== 'number' || !isCostEvidence(costEvidence) ||
+      !isRecord(components) ||
+      !['modelMinorUnits', 'embeddingMinorUnits', 'storageMinorUnits', 'searchMinorUnits', 'toolApiMinorUnits', 'computeMinorUnits']
+        .every((key) => typeof components[key] === 'number')
+    ) {
+      sendJson(response, 400, { error: 'invalid_workflow_cost_charge' });
+      return;
+    }
+    const charge = await dependencies.workflowCosts?.charge(actorId, {
+      requestId,
+      reservationId,
+      provider,
+      model,
+      inputTokens,
+      outputTokens,
+      cachedInputTokens,
+      components: {
+        modelMinorUnits: components['modelMinorUnits'] as number,
+        embeddingMinorUnits: components['embeddingMinorUnits'] as number,
+        storageMinorUnits: components['storageMinorUnits'] as number,
+        searchMinorUnits: components['searchMinorUnits'] as number,
+        toolApiMinorUnits: components['toolApiMinorUnits'] as number,
+        computeMinorUnits: components['computeMinorUnits'] as number,
+      },
+      actualSteps,
+      humanReviewSeconds,
+      costEvidence,
+      chargedAt: now(dependencies),
+    });
+    if (!charge) throw new Error('Workflow cost service disappeared.');
+    sendJson(response, 201, {
+      ...charge,
+      chargedAt: charge.chargedAt.toISOString(),
+    });
+  } catch (error: unknown) {
+    sendWorkflowCostError(response, error);
+  }
+}
+
+function workflowCostActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.workflowCosts) {
+    sendJson(response, 503, { error: 'workflow_cost_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function serializeWorkflowCost(snapshot: WorkflowCostSnapshot): Record<string, unknown> {
+  return {
+    ...snapshot,
+    generatedAt: snapshot.generatedAt.toISOString(),
+    recentReservations: snapshot.recentReservations.map((entry) => ({
+      ...entry,
+      reservedAt: entry.reservedAt.toISOString(),
+    })),
+    recentCharges: snapshot.recentCharges.map((entry) => ({
+      ...entry,
+      chargedAt: entry.chargedAt.toISOString(),
+    })),
+  };
+}
+
+function isWorkflowCostKind(value: unknown): value is WorkflowCostKind {
+  return typeof value === 'string' && workflowCostKinds.some((kind) => kind === value);
+}
+
+function isCostEvidence(value: unknown): value is CostEvidence {
+  return value === 'provider_reported' || value === 'estimated' || value === 'none';
 }
 
 async function handleDraftRejection(
@@ -2222,12 +2410,13 @@ async function handleAccountExport(
   }
   const exportedAt = now(dependencies);
   try {
-    const [workbench, strategy, draft, feedback, strategicQuality, memory, assets, research, claims, arbitration, initiative, relationships, perception, activity] = await Promise.all([
+    const [workbench, strategy, draft, feedback, strategicQuality, workflowCosts, memory, assets, research, claims, arbitration, initiative, relationships, perception, activity] = await Promise.all([
       dependencies.workbench.snapshot(),
       dependencies.strategy.snapshot(actorId),
       dependencies.drafts.snapshot(actorId, exportedAt),
       dependencies.learning.snapshot(actorId, exportedAt),
       dependencies.strategicQuality?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
+      dependencies.workflowCosts?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.conversation.memorySnapshot({
         tenantId: dependencies.tenantId,
         actorId,
@@ -2280,6 +2469,7 @@ async function handleAccountExport(
           draft: draft ? serializeDraft(draft) : null,
           feedback: serializeFeedback(feedback),
           strategicQuality: strategicQuality ? serializeStrategicQuality(strategicQuality) : null,
+          workflowCosts: workflowCosts ? serializeWorkflowCost(workflowCosts) : null,
           activity: serializeAuditTrail(activity),
         },
       },
@@ -2601,6 +2791,24 @@ function sendStrategicQualityError(response: ServerResponse, error: unknown): vo
     return;
   }
   sendJson(response, 500, { error: 'strategic_quality_failed' });
+}
+
+function sendWorkflowCostError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof WorkflowCostValidationError) {
+    sendJson(response, 400, {
+      error: error instanceof InvalidJsonBodyError ? error.code : 'invalid_workflow_cost_input',
+    });
+    return;
+  }
+  if (error instanceof WorkflowCostPermissionError) {
+    sendJson(response, 403, { error: 'workflow_cost_permission_denied' });
+    return;
+  }
+  if (error instanceof WorkflowCostConflictError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  sendJson(response, 500, { error: 'workflow_cost_failed' });
 }
 
 function isStrategicRecommendationDecision(
@@ -3626,6 +3834,10 @@ async function readJsonObject(request: IncomingMessage): Promise<Record<string, 
     if (error instanceof InvalidJsonBodyError) throw error;
     throw new InvalidJsonBodyError('invalid_json');
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function sendJson(

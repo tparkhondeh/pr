@@ -16,12 +16,14 @@ import {
 import type { SqlQueryResult } from '../src/database/sql.js';
 import { PostgresRuntime } from '../src/database/postgres.js';
 import { PostgresStrategicQualityRepository } from '../src/database/postgres-strategic-quality.js';
+import { PostgresWorkflowCostRepository } from '../src/database/postgres-workflow-cost.js';
 import {
   StrategicQualityConflictError,
   StrategicQualityService,
 } from '../src/evaluation/strategic-quality.js';
 import { defineMigration } from '../src/kernel/migrations.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
+import { WorkflowCostControlService } from '../src/observability/workflow-cost-control.js';
 import {
   DecisionContextService,
   PostgresDecisionContextRepository,
@@ -138,6 +140,7 @@ async function main(): Promise<void> {
     await verifyRuntimeIsolation(client);
     await verifyDecisionContextPersistence();
     await verifyStrategicQualityPersistence();
+    await verifyWorkflowCostPersistence();
     await verifyBrandRiskPersistence();
     await verifyConversationOrchestrationPersistence();
     await verifyArbitrationPersistence();
@@ -150,6 +153,79 @@ async function main(): Promise<void> {
     );
   } finally {
     await client.end();
+  }
+}
+
+async function verifyWorkflowCostPersistence(): Promise<void> {
+  const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
+  const owner = userId(userA);
+  const at = new Date('2026-09-01T12:30:00.000Z');
+  const service = new WorkflowCostControlService(
+    new PostgresWorkflowCostRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
+    { tenantId: tenantId(tenantA), ownerUserId: owner },
+  );
+  try {
+    const reservationInput = {
+      requestId: 'cost_reservation_integration',
+      workflowId: 'workflow:cost:integration',
+      invocationId: 'invocation:cost:integration',
+      kind: 'evaluation' as const,
+      estimatedCostMinorUnits: 20,
+      plannedSteps: 2,
+      reservedAt: at,
+    };
+    const reservation = await service.reserve(owner, reservationInput);
+    const replay = await service.reserve(owner, reservationInput);
+    if (reservation.decision !== 'allowed' || replay.id !== reservation.id) {
+      throw new Error('Workflow cost reservation persistence or idempotency failed.');
+    }
+    const chargeInput = {
+      requestId: 'cost_charge_integration',
+      reservationId: reservation.id,
+      provider: 'integration-provider',
+      model: 'integration-model',
+      inputTokens: 100,
+      outputTokens: 20,
+      cachedInputTokens: 50,
+      components: {
+        modelMinorUnits: 21,
+        embeddingMinorUnits: 0,
+        storageMinorUnits: 0,
+        searchMinorUnits: 0,
+        toolApiMinorUnits: 0,
+        computeMinorUnits: 0,
+      },
+      actualSteps: 2,
+      humanReviewSeconds: 30,
+      costEvidence: 'provider_reported' as const,
+      chargedAt: at,
+    };
+    const charge = await service.charge(owner, chargeInput);
+    const replayedCharge = await service.charge(owner, chargeInput);
+    if (
+      !charge.circuitOpened || charge.circuitReason !== 'actual_cost_exceeded_reservation' ||
+      replayedCharge.id !== charge.id
+    ) {
+      throw new Error('Workflow cost settlement truth or circuit contract failed.');
+    }
+    const blocked = await service.reserve(owner, {
+      requestId: 'cost_reservation_after_circuit',
+      workflowId: 'workflow:cost:integration',
+      invocationId: 'invocation:cost:integration:2',
+      kind: 'evaluation',
+      estimatedCostMinorUnits: 1,
+      plannedSteps: 1,
+      reservedAt: at,
+    });
+    const snapshot = await service.snapshot(owner, at);
+    if (
+      blocked.reason !== 'workflow_circuit_open' || snapshot.persistence !== 'postgres' ||
+      snapshot.truthStatus !== 'measured' || snapshot.day.chargedCostMinorUnits < 21
+    ) {
+      throw new Error('Workflow cost PostgreSQL snapshot or circuit persistence failed.');
+    }
+  } finally {
+    await runtime.close();
   }
 }
 

@@ -771,6 +771,46 @@ describe('private preview worker draft runtime', () => {
       assets: { summary: { assets: 2, evidenceItems: 2, assertions: 2, dataRights: 2 } },
     });
 
+    const emptyCosts = await worker.fetch(
+      new Request('https://preview.example/api/workflow-cost'),
+      env,
+    );
+    await expect(emptyCosts.json()).resolves.toMatchObject({
+      policyVersion: 'workflow-cost-budget-v1', truthStatus: 'no_usage',
+      persistence: 'ephemeral', day: { chargedCostMinorUnits: 0 },
+    });
+    const costReservationResponse = await post('/api/workflow-cost/reservations', {
+      requestId: 'cost_preview_reservation', workflowId: 'workflow:preview:draft',
+      invocationId: 'invocation:preview:draft', kind: 'draft_generation',
+      estimatedCostMinorUnits: 20, plannedSteps: 2,
+    });
+    expect(costReservationResponse.status).toBe(201);
+    const costReservation = await costReservationResponse.json() as { id: string };
+    const costChargeResponse = await post('/api/workflow-cost/charges', {
+      requestId: 'cost_preview_charge', reservationId: costReservation.id,
+      provider: 'preview-provider', model: 'preview-model',
+      inputTokens: 100, outputTokens: 20, cachedInputTokens: 50,
+      components: {
+        modelMinorUnits: 21, embeddingMinorUnits: 0, storageMinorUnits: 0,
+        searchMinorUnits: 0, toolApiMinorUnits: 0, computeMinorUnits: 0,
+      },
+      actualSteps: 2, humanReviewSeconds: 30, costEvidence: 'provider_reported',
+    });
+    expect(costChargeResponse.status).toBe(201);
+    await expect(costChargeResponse.json()).resolves.toMatchObject({
+      actualCostMinorUnits: 21, circuitOpened: true,
+      circuitReason: 'actual_cost_exceeded_reservation',
+    });
+    const blockedCostResponse = await post('/api/workflow-cost/reservations', {
+      requestId: 'cost_preview_after_circuit', workflowId: 'workflow:preview:draft',
+      invocationId: 'invocation:preview:draft:2', kind: 'draft_generation',
+      estimatedCostMinorUnits: 1, plannedSteps: 1,
+    });
+    expect(blockedCostResponse.status).toBe(409);
+    await expect(blockedCostResponse.json()).resolves.toMatchObject({
+      decision: 'blocked', reason: 'workflow_circuit_open',
+    });
+
     const accountExportResponse = await worker.fetch(
       new Request('https://preview.example/api/account/export'),
       env,
@@ -794,6 +834,12 @@ describe('private preview worker draft runtime', () => {
           outcomeBaseline: { sampleSize: number };
           recentReviews: unknown[];
           recentOutcomes: unknown[];
+        };
+        workflowCosts: {
+          policyVersion: string;
+          truthStatus: string;
+          day: { status: string; chargedCostMinorUnits: number };
+          recentCharges: unknown[];
         };
       };
     };
@@ -829,6 +875,11 @@ describe('private preview worker draft runtime', () => {
     });
     expect(accountExport.data.strategicQuality.recentReviews).toHaveLength(1);
     expect(accountExport.data.strategicQuality.recentOutcomes).toHaveLength(1);
+    expect(accountExport.data.workflowCosts).toMatchObject({
+      policyVersion: 'workflow-cost-budget-v1', truthStatus: 'measured',
+      day: { status: 'circuit_open', chargedCostMinorUnits: 21 },
+    });
+    expect(accountExport.data.workflowCosts.recentCharges).toHaveLength(1);
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

@@ -57,6 +57,7 @@ import {
   loadDraftSources,
   loadFeedbackLearning,
   loadStrategicQuality,
+  loadWorkflowCosts,
   loadAuditTrail,
   loadArbitration,
   loadInitiative,
@@ -91,6 +92,7 @@ import {
   type DraftWorkspaceSnapshot,
   type FeedbackLearningSnapshot,
   type StrategicQualitySnapshot,
+  type WorkflowCostSnapshot,
   type StrategicBusinessOutcome,
   type StrategicOutcomeChange,
   type StrategicOutcomeExecutionStatus,
@@ -213,6 +215,7 @@ export function App() {
   const [draftViewError, setDraftViewError] = useState<string | null>(null);
   const [feedbackSnapshot, setFeedbackSnapshot] = useState<FeedbackLearningSnapshot | null>(null);
   const [strategicQualitySnapshot, setStrategicQualitySnapshot] = useState<StrategicQualitySnapshot | null>(null);
+  const [workflowCostSnapshot, setWorkflowCostSnapshot] = useState<WorkflowCostSnapshot | null>(null);
   const [feedbackViewState, setFeedbackViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [feedbackViewError, setFeedbackViewError] = useState<string | null>(null);
   const [auditSnapshot, setAuditSnapshot] = useState<AuditTrailSnapshot | null>(null);
@@ -725,12 +728,14 @@ export function App() {
     setFeedbackViewState('loading');
     setFeedbackViewError(null);
     try {
-      const [feedback, quality] = await Promise.all([
+      const [feedback, quality, costs] = await Promise.all([
         loadFeedbackLearning(signal),
         loadStrategicQuality(signal),
+        loadWorkflowCosts(signal),
       ]);
       setFeedbackSnapshot(feedback);
       setStrategicQualitySnapshot(quality);
+      setWorkflowCostSnapshot(costs);
       setFeedbackViewState('ready');
     } catch (caught: unknown) {
       if (signal?.aborted) return;
@@ -1418,6 +1423,7 @@ export function App() {
             onRefresh={() => refreshFeedback()}
             onReview={reviewStrategicRecommendation}
             quality={strategicQualitySnapshot}
+            workflowCosts={workflowCostSnapshot}
             snapshot={feedbackSnapshot}
             state={feedbackViewState}
             workbench={snapshot}
@@ -2244,6 +2250,7 @@ function FeedbackLearningPanel({
   onRefresh,
   onReview,
   quality,
+  workflowCosts,
   snapshot,
   state,
   workbench,
@@ -2277,6 +2284,7 @@ function FeedbackLearningPanel({
     note?: string;
   }>) => Promise<void>;
   quality: StrategicQualitySnapshot | null;
+  workflowCosts: WorkflowCostSnapshot | null;
   snapshot: FeedbackLearningSnapshot | null;
   state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
   workbench: WorkbenchSnapshot;
@@ -2347,6 +2355,54 @@ function FeedbackLearningPanel({
           <RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی
         </button>
       </header>
+      {workflowCosts ? (
+        <section className="workflow-cost" aria-label="کنترل هزینه و بودجه Workflow">
+          <div className="workflow-cost-head">
+            <div>
+              <p className="overline">Cost Gate · {workflowCosts.policyVersion}</p>
+              <h3>بودجه قبل از اجرا رزرو می‌شود</h3>
+              <p>هزینهٔ مدل، Embedding، Storage، Search، Tool/API و Compute جدا ثبت می‌شود؛ زمان بازبینی انسانی نیز مستقل می‌ماند.</p>
+            </div>
+            <div className={`quality-status ${workflowCosts.day.status}`}>
+              <span>وضعیت امروز</span>
+              <strong>{formatMinorUnits(workflowCosts.day.remainingCostMinorUnits, workflowCosts.policy.currency)}</strong>
+              <small>بودجهٔ باقی‌مانده پس از Charge و Reservation</small>
+            </div>
+          </div>
+          <div className="workflow-cost-grid">
+            <div>
+              <span>مصرف ثبت‌شده</span>
+              <strong>{formatMinorUnits(workflowCosts.day.chargedCostMinorUnits, workflowCosts.policy.currency)}</strong>
+            </div>
+            <div>
+              <span>رزرو فعال</span>
+              <strong>{formatMinorUnits(workflowCosts.day.activeReservedCostMinorUnits, workflowCosts.policy.currency)}</strong>
+            </div>
+            <div>
+              <span>توکن ورودی / خروجی</span>
+              <strong>{workflowCosts.usage.inputTokens.toLocaleString('fa-IR')} / {workflowCosts.usage.outputTokens.toLocaleString('fa-IR')}</strong>
+            </div>
+            <div>
+              <span>زمان بازبینی انسانی</span>
+              <strong>{formatDuration(workflowCosts.usage.humanReviewSeconds)}</strong>
+            </div>
+          </div>
+          <div className="workflow-cost-truth">
+            <ShieldCheck size={17} />
+            <p>{workflowCostTruthLabel(workflowCosts.truthStatus)}</p>
+            <small>
+              سقف هر Invocation: {formatMinorUnits(workflowCosts.policy.perInvocationBudgetMinorUnits, workflowCosts.policy.currency)} ·
+              سقف هر Workflow: {formatMinorUnits(workflowCosts.policy.perWorkflowBudgetMinorUnits, workflowCosts.policy.currency)} ·
+              حداکثر {workflowCosts.policy.maxStepsPerWorkflow.toLocaleString('fa-IR')} گام
+            </small>
+          </div>
+          {workflowCosts.workflows.some((workflow) => workflow.status === 'circuit_open') ? (
+            <div className="workflow-cost-circuit" role="alert">
+              <TriangleAlert size={17} /> Circuit باز است؛ اجرای بعدی این Workflow تا پنجرهٔ بودجهٔ بعدی متوقف می‌شود.
+            </div>
+          ) : null}
+        </section>
+      ) : null}
       {quality ? (
         <section className="strategic-quality" aria-label="خط مبنای کیفیت توصیه استراتژیک">
           <div className="quality-gate-head">
@@ -2685,6 +2741,32 @@ function strategicOutcomeExecutionLabel(status: StrategicOutcomeExecutionStatus)
 
 function formatRating(value: number): string {
   return `${new Intl.NumberFormat('fa-IR', { maximumFractionDigits: 1 }).format(value)} از ۵`;
+}
+
+function formatMinorUnits(value: number, currency: 'USD'): string {
+  return new Intl.NumberFormat('fa-IR', {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value / 100);
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds === 0) return 'ثبت نشده';
+  if (seconds < 60) return `${seconds.toLocaleString('fa-IR')} ثانیه`;
+  return `${Math.round(seconds / 60).toLocaleString('fa-IR')} دقیقه`;
+}
+
+function workflowCostTruthLabel(status: WorkflowCostSnapshot['truthStatus']): string {
+  const labels: Readonly<Record<WorkflowCostSnapshot['truthStatus'], string>> = {
+    no_usage: 'هنوز Workflow دارای مصرف Metered اجرا نشده است؛ صفر به معنی «رایگان بودن» نیست.',
+    measured: 'همهٔ هزینه‌های ثبت‌شده از گزارش Provider آمده‌اند.',
+    estimated: 'همهٔ هزینه‌ها برآوردی‌اند و با هزینهٔ قطعی Provider یکی فرض نمی‌شوند.',
+    unmetered: 'مصرف ثبت شده اما قیمت قابل اتکا در دسترس نبوده؛ سیستم مبلغی نساخته است.',
+    mixed: 'Ledger ترکیبی از هزینهٔ قطعی، برآوردی یا اندازه‌گیری‌نشده دارد.',
+  };
+  return labels[status];
 }
 
 function ResearchWorkspacePanel({
@@ -4834,6 +4916,10 @@ function errorMessage(error: unknown): string {
     review_superseded: 'این بازبینی با تصمیم جدیدتری جایگزین شده است؛ نسخه تازه را انتخاب کنید.',
     outcome_before_review: 'زمان پیامد نمی‌تواند قبل از زمان پذیرفتن توصیه باشد.',
     strategic_quality_failed: 'ثبت یا محاسبه کیفیت توصیه کامل نشد؛ دوباره تلاش کنید.',
+    workflow_cost_unavailable: 'کنترل هزینه در دسترس نیست؛ اجرای Metered باید Fail-closed متوقف بماند.',
+    workflow_cost_permission_denied: 'فقط مالک می‌تواند Ledger و Budget Workflow را ببیند.',
+    invalid_workflow_cost_input: 'Reservation یا Charge با قرارداد هزینه هم‌خوان نیست.',
+    workflow_cost_failed: 'محاسبه یا ثبت هزینه کامل نشد؛ اجرای Metered جدید متوقف بماند.',
     audit_trail_unavailable: 'ردپای حساب در دسترس نیست.',
     account_export_unavailable: 'خروجی کامل داده‌های حساب هنوز آماده نیست.',
     account_permission_denied: 'این ردپا فقط برای مالک حساب قابل مشاهده است.',

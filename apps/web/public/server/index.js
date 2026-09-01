@@ -31,6 +31,14 @@ const strategicRecommendationReviews = new Map();
 const strategicReviewRequests = new Map();
 const strategicActionOutcomes = new Map();
 const strategicOutcomeRequests = new Map();
+const workflowCostReservations = new Map();
+const workflowCostCharges = new Map();
+const workflowCostPolicy = {
+  version: 'workflow-cost-budget-v1', currency: 'USD',
+  perInvocationBudgetMinorUnits: 100, perWorkflowBudgetMinorUnits: 500,
+  dailyBudgetMinorUnits: 2000, maxInvocationsPerWorkflow: 12,
+  maxStepsPerWorkflow: 16, warningRatio: 0.8,
+};
 const conversationTurns = new Map();
 const memoryProposals = new Map();
 const memoryRightRequests = new Map();
@@ -176,6 +184,111 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/api/strategic-quality') {
       return json(strategicQualitySnapshot());
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/workflow-cost') {
+      return json(workflowCostSnapshot());
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/workflow-cost/reservations') {
+      const body = await readJson(request);
+      if (!validWorkflowCostReservation(body)) {
+        return json({ error: 'invalid_workflow_cost_reservation' }, 400);
+      }
+      const fingerprint = JSON.stringify({
+        workflowId: body.workflowId, invocationId: body.invocationId, kind: body.kind,
+        estimatedCostMinorUnits: body.estimatedCostMinorUnits, plannedSteps: body.plannedSteps,
+      });
+      const repeated = workflowCostReservations.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json(repeated.reservation, repeated.reservation.decision === 'allowed' ? 201 : 409)
+          : json({ error: 'idempotency_mismatch' }, 409);
+      }
+      if ([...workflowCostReservations.values()].some((entry) =>
+        entry.reservation.workflowId === body.workflowId &&
+        entry.reservation.invocationId === body.invocationId)) {
+        return json({ error: 'invocation_already_reserved' }, 409);
+      }
+      const reservedAt = new Date().toISOString();
+      const reason = workflowCostReservationReason(body, reservedAt);
+      const reservation = {
+        id: crypto.randomUUID(), requestId: body.requestId,
+        workflowId: body.workflowId, invocationId: body.invocationId, kind: body.kind,
+        estimatedCostMinorUnits: body.estimatedCostMinorUnits, plannedSteps: body.plannedSteps,
+        decision: reason ? 'blocked' : 'allowed', ...(reason ? { reason } : {}), reservedAt,
+      };
+      workflowCostReservations.set(body.requestId, { fingerprint, reservation });
+      recordAudit(`workflow-cost.reserve:${body.requestId}`, {
+        eventType: `workflow_cost.reservation_${reservation.decision}`,
+        resourceType: 'workflow_cost', resourceId: reservation.id,
+        purpose: 'strategy_reasoning', decision: reservation.decision,
+        metadata: {
+          requestId: body.requestId, workflowId: body.workflowId, kind: body.kind,
+          estimatedCostMinorUnits: body.estimatedCostMinorUnits,
+          plannedSteps: body.plannedSteps, reason: reason ?? null,
+          policyVersion: workflowCostPolicy.version,
+        },
+        occurredAt: reservedAt,
+      });
+      return json(reservation, reservation.decision === 'allowed' ? 201 : 409);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/workflow-cost/charges') {
+      const body = await readJson(request);
+      if (!validWorkflowCostCharge(body)) return json({ error: 'invalid_workflow_cost_charge' }, 400);
+      const fingerprint = JSON.stringify({
+        reservationId: body.reservationId, provider: body.provider, model: body.model,
+        inputTokens: body.inputTokens, outputTokens: body.outputTokens,
+        cachedInputTokens: body.cachedInputTokens, components: body.components,
+        actualSteps: body.actualSteps, humanReviewSeconds: body.humanReviewSeconds,
+        costEvidence: body.costEvidence,
+      });
+      const repeated = workflowCostCharges.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json(repeated.charge, 201)
+          : json({ error: 'idempotency_mismatch' }, 409);
+      }
+      if ([...workflowCostCharges.values()].some(
+        (entry) => entry.charge.reservationId === body.reservationId,
+      )) return json({ error: 'reservation_already_charged' }, 409);
+      const reservationEntry = [...workflowCostReservations.values()]
+        .find((entry) => entry.reservation.id === body.reservationId);
+      if (!reservationEntry) return json({ error: 'reservation_not_found' }, 409);
+      if (reservationEntry.reservation.decision !== 'allowed') {
+        return json({ error: 'reservation_blocked' }, 409);
+      }
+      const actualCostMinorUnits = Object.values(body.components)
+        .reduce((total, value) => total + value, 0);
+      const circuitReason = workflowCostSettlementReason(
+        reservationEntry.reservation, body, actualCostMinorUnits,
+      );
+      const chargedAt = new Date().toISOString();
+      const charge = {
+        id: crypto.randomUUID(), requestId: body.requestId,
+        reservationId: body.reservationId, provider: body.provider, model: body.model,
+        inputTokens: body.inputTokens, outputTokens: body.outputTokens,
+        cachedInputTokens: body.cachedInputTokens, components: body.components,
+        actualCostMinorUnits, actualSteps: body.actualSteps,
+        humanReviewSeconds: body.humanReviewSeconds, costEvidence: body.costEvidence,
+        circuitOpened: Boolean(circuitReason),
+        ...(circuitReason ? { circuitReason } : {}), chargedAt,
+      };
+      workflowCostCharges.set(body.requestId, { fingerprint, charge });
+      recordAudit(`workflow-cost.charge:${body.requestId}`, {
+        eventType: circuitReason ? 'workflow_cost.charged_circuit_opened' : 'workflow_cost.charged',
+        resourceType: 'workflow_cost', resourceId: charge.id,
+        purpose: 'strategy_reasoning', decision: circuitReason ? 'circuit_opened' : 'recorded',
+        metadata: {
+          requestId: body.requestId, reservationId: body.reservationId,
+          actualCostMinorUnits, actualSteps: body.actualSteps,
+          costEvidence: body.costEvidence, circuitReason: circuitReason ?? null,
+          policyVersion: workflowCostPolicy.version,
+        },
+        occurredAt: chargedAt,
+      });
+      return json(charge, 201);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/strategic-quality/reviews') {
@@ -799,6 +912,7 @@ export default {
           perception: perceptionWorkspaceSnapshot(),
           feedback: feedbackSnapshot(),
           strategicQuality: strategicQualitySnapshot(),
+          workflowCosts: workflowCostSnapshot(),
           activity,
         },
       });
@@ -3213,6 +3327,165 @@ function feedbackSnapshot() {
     },
     recentEvents,
     preferences,
+  };
+}
+
+function validWorkflowCostReservation(body) {
+  return body && validRequestId(body.requestId) &&
+    typeof body.workflowId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9:_-]{2,119}$/.test(body.workflowId) &&
+    typeof body.invocationId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9:_-]{2,119}$/.test(body.invocationId) &&
+    ['strategy_recommendation', 'draft_generation', 'research', 'platform_adaptation', 'evaluation', 'other'].includes(body.kind) &&
+    Number.isSafeInteger(body.estimatedCostMinorUnits) && body.estimatedCostMinorUnits >= 0 && body.estimatedCostMinorUnits <= 1000000 &&
+    Number.isSafeInteger(body.plannedSteps) && body.plannedSteps >= 0 && body.plannedSteps <= 1000;
+}
+
+function validWorkflowCostCharge(body) {
+  const components = body?.components;
+  const componentKeys = [
+    'modelMinorUnits', 'embeddingMinorUnits', 'storageMinorUnits',
+    'searchMinorUnits', 'toolApiMinorUnits', 'computeMinorUnits',
+  ];
+  const validComponents = components && typeof components === 'object' &&
+    componentKeys.every((key) => Number.isSafeInteger(components[key]) && components[key] >= 0 && components[key] <= 1000000);
+  const total = validComponents
+    ? componentKeys.reduce((sum, key) => sum + components[key], 0)
+    : -1;
+  return body && validRequestId(body.requestId) &&
+    typeof body.reservationId === 'string' && /^[0-9a-f-]{36}$/i.test(body.reservationId) &&
+    validText(body.provider, 1, 120) && validText(body.model, 1, 120) &&
+    [body.inputTokens, body.outputTokens, body.cachedInputTokens].every(
+      (value) => Number.isSafeInteger(value) && value >= 0 && value <= 1000000000,
+    ) && body.cachedInputTokens <= body.inputTokens && validComponents &&
+    Number.isSafeInteger(body.actualSteps) && body.actualSteps >= 0 && body.actualSteps <= 1000 &&
+    Number.isSafeInteger(body.humanReviewSeconds) && body.humanReviewSeconds >= 0 && body.humanReviewSeconds <= 86400 &&
+    ['provider_reported', 'estimated', 'none'].includes(body.costEvidence) &&
+    (body.costEvidence !== 'none' || total === 0);
+}
+
+function workflowCostReservationReason(body, reservedAt) {
+  if (body.estimatedCostMinorUnits > workflowCostPolicy.perInvocationBudgetMinorUnits) {
+    return 'invocation_budget_exceeded';
+  }
+  const day = reservedAt.slice(0, 10);
+  const reservations = [...workflowCostReservations.values()]
+    .map((entry) => entry.reservation)
+    .filter((entry) => entry.reservedAt.slice(0, 10) === day);
+  const charges = [...workflowCostCharges.values()]
+    .map((entry) => entry.charge)
+    .filter((entry) => entry.chargedAt.slice(0, 10) === day);
+  const reservationById = new Map(reservations.map((entry) => [entry.id, entry]));
+  const chargedIds = new Set(charges.map((entry) => entry.reservationId));
+  const workflowReservations = reservations.filter((entry) => entry.workflowId === body.workflowId);
+  const workflowCharges = charges.filter(
+    (entry) => reservationById.get(entry.reservationId)?.workflowId === body.workflowId,
+  );
+  if (workflowCharges.some((entry) => entry.circuitOpened)) return 'workflow_circuit_open';
+  const allowed = workflowReservations.filter((entry) => entry.decision === 'allowed');
+  if (allowed.length >= workflowCostPolicy.maxInvocationsPerWorkflow) {
+    return 'workflow_invocation_limit_exceeded';
+  }
+  const actualSteps = workflowCharges.reduce((sum, entry) => sum + entry.actualSteps, 0);
+  const reservedSteps = allowed.filter((entry) => !chargedIds.has(entry.id))
+    .reduce((sum, entry) => sum + entry.plannedSteps, 0);
+  if (actualSteps + reservedSteps + body.plannedSteps > workflowCostPolicy.maxStepsPerWorkflow) {
+    return 'workflow_step_limit_exceeded';
+  }
+  const workflowCharged = workflowCharges.reduce((sum, entry) => sum + entry.actualCostMinorUnits, 0);
+  const workflowReserved = allowed.filter((entry) => !chargedIds.has(entry.id))
+    .reduce((sum, entry) => sum + entry.estimatedCostMinorUnits, 0);
+  if (workflowCharged + workflowReserved + body.estimatedCostMinorUnits > workflowCostPolicy.perWorkflowBudgetMinorUnits) {
+    return 'workflow_budget_exceeded';
+  }
+  const dayCharged = charges.reduce((sum, entry) => sum + entry.actualCostMinorUnits, 0);
+  const dayReserved = reservations.filter((entry) => entry.decision === 'allowed' && !chargedIds.has(entry.id))
+    .reduce((sum, entry) => sum + entry.estimatedCostMinorUnits, 0);
+  return dayCharged + dayReserved + body.estimatedCostMinorUnits > workflowCostPolicy.dailyBudgetMinorUnits
+    ? 'daily_budget_exceeded'
+    : undefined;
+}
+
+function workflowCostSettlementReason(reservation, body, actualCostMinorUnits) {
+  if (actualCostMinorUnits > reservation.estimatedCostMinorUnits) return 'actual_cost_exceeded_reservation';
+  if (body.actualSteps > reservation.plannedSteps) return 'actual_steps_exceeded_reservation';
+  const day = new Date().toISOString().slice(0, 10);
+  const reservations = [...workflowCostReservations.values()].map((entry) => entry.reservation);
+  const workflowReservationIds = new Set(
+    reservations.filter((entry) => entry.workflowId === reservation.workflowId).map((entry) => entry.id),
+  );
+  const charges = [...workflowCostCharges.values()].map((entry) => entry.charge)
+    .filter((entry) => entry.chargedAt.slice(0, 10) === day);
+  const workflowCost = charges.filter((entry) => workflowReservationIds.has(entry.reservationId))
+    .reduce((sum, entry) => sum + entry.actualCostMinorUnits, 0);
+  if (workflowCost + actualCostMinorUnits > workflowCostPolicy.perWorkflowBudgetMinorUnits) {
+    return 'workflow_budget_exceeded';
+  }
+  return charges.reduce((sum, entry) => sum + entry.actualCostMinorUnits, 0) + actualCostMinorUnits > workflowCostPolicy.dailyBudgetMinorUnits
+    ? 'daily_budget_exceeded'
+    : undefined;
+}
+
+function workflowCostSnapshot(generatedAt = new Date()) {
+  const day = generatedAt.toISOString().slice(0, 10);
+  const reservations = [...workflowCostReservations.values()].map((entry) => entry.reservation)
+    .filter((entry) => entry.reservedAt.slice(0, 10) === day);
+  const charges = [...workflowCostCharges.values()].map((entry) => entry.charge)
+    .filter((entry) => entry.chargedAt.slice(0, 10) === day);
+  const chargedIds = new Set(charges.map((entry) => entry.reservationId));
+  const active = reservations.filter((entry) => entry.decision === 'allowed' && !chargedIds.has(entry.id));
+  const chargedCost = charges.reduce((sum, entry) => sum + entry.actualCostMinorUnits, 0);
+  const reservedCost = active.reduce((sum, entry) => sum + entry.estimatedCostMinorUnits, 0);
+  const evidence = new Set(charges.map((entry) => entry.costEvidence));
+  const truthStatus = charges.length === 0 ? 'no_usage' : evidence.size > 1 ? 'mixed' :
+    evidence.has('provider_reported') ? 'measured' : evidence.has('estimated') ? 'estimated' : 'unmetered';
+  const sum = (select) => charges.reduce((total, entry) => total + select(entry), 0);
+  const workflowIds = [...new Set(reservations.map((entry) => entry.workflowId))];
+  const workflows = workflowIds.map((workflowId) => {
+    const entries = reservations.filter((entry) => entry.workflowId === workflowId);
+    const ids = new Set(entries.map((entry) => entry.id));
+    const workflowCharges = charges.filter((entry) => ids.has(entry.reservationId));
+    const current = entries.filter((entry) => entry.decision === 'allowed' && !chargedIds.has(entry.id));
+    const workflowCharged = workflowCharges.reduce((total, entry) => total + entry.actualCostMinorUnits, 0);
+    const workflowReserved = current.reduce((total, entry) => total + entry.estimatedCostMinorUnits, 0);
+    const opened = workflowCharges.find((entry) => entry.circuitOpened);
+    const ratio = (workflowCharged + workflowReserved) / workflowCostPolicy.perWorkflowBudgetMinorUnits;
+    return {
+      workflowId, kind: entries[0]?.kind ?? 'other',
+      invocationCount: entries.filter((entry) => entry.decision === 'allowed').length,
+      chargedCostMinorUnits: workflowCharged, activeReservedCostMinorUnits: workflowReserved,
+      actualSteps: workflowCharges.reduce((total, entry) => total + entry.actualSteps, 0),
+      status: opened ? 'circuit_open' : ratio >= workflowCostPolicy.warningRatio ? 'warning' : 'within_budget',
+      ...(opened?.circuitReason ? { circuitReason: opened.circuitReason } : {}),
+    };
+  });
+  const dayRatio = (chargedCost + reservedCost) / workflowCostPolicy.dailyBudgetMinorUnits;
+  return {
+    policyVersion: workflowCostPolicy.version, generatedAt: generatedAt.toISOString(),
+    persistence: 'ephemeral', policy: workflowCostPolicy, truthStatus,
+    day: {
+      date: day, chargedCostMinorUnits: chargedCost,
+      activeReservedCostMinorUnits: reservedCost,
+      remainingCostMinorUnits: Math.max(0, workflowCostPolicy.dailyBudgetMinorUnits - chargedCost - reservedCost),
+      status: charges.some((entry) => entry.circuitOpened)
+        ? 'circuit_open' : dayRatio >= workflowCostPolicy.warningRatio ? 'warning' : 'within_budget',
+    },
+    usage: {
+      chargeCount: charges.length,
+      measuredChargeCount: charges.filter((entry) => entry.costEvidence === 'provider_reported').length,
+      estimatedChargeCount: charges.filter((entry) => entry.costEvidence === 'estimated').length,
+      unmeteredChargeCount: charges.filter((entry) => entry.costEvidence === 'none').length,
+      inputTokens: sum((entry) => entry.inputTokens), outputTokens: sum((entry) => entry.outputTokens),
+      cachedInputTokens: sum((entry) => entry.cachedInputTokens),
+      modelMinorUnits: sum((entry) => entry.components.modelMinorUnits),
+      embeddingMinorUnits: sum((entry) => entry.components.embeddingMinorUnits),
+      storageMinorUnits: sum((entry) => entry.components.storageMinorUnits),
+      searchMinorUnits: sum((entry) => entry.components.searchMinorUnits),
+      toolApiMinorUnits: sum((entry) => entry.components.toolApiMinorUnits),
+      computeMinorUnits: sum((entry) => entry.components.computeMinorUnits),
+      humanReviewSeconds: sum((entry) => entry.humanReviewSeconds),
+    },
+    workflows,
+    recentReservations: reservations.sort((a, b) => b.reservedAt.localeCompare(a.reservedAt)).slice(0, 50),
+    recentCharges: charges.sort((a, b) => b.chargedAt.localeCompare(a.chargedAt)).slice(0, 50),
   };
 }
 

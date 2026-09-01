@@ -35,6 +35,10 @@ import {
 import { tenantId, userId } from '../src/kernel/identity.js';
 import { OpportunityRadarService } from '../src/opportunities/radar.js';
 import {
+  InMemoryWorkflowCostRepository,
+  WorkflowCostControlService,
+} from '../src/observability/workflow-cost-control.js';
+import {
   InMemoryPerceptionWorkspaceRepository,
   PerceptionWorkspaceService,
 } from '../src/perception/workspace.js';
@@ -1605,6 +1609,108 @@ describe('operational endpoints', () => {
         },
       },
       recentOutcomes: [{ reviewId, actionId: 'essay', executionStatus: 'completed' }],
+    });
+  });
+
+  it('preflights workflow spend, records truthful component usage, and opens the circuit on overrun', async () => {
+    const activeTenant = tenantId('tenant_primary');
+    const owner = userId('owner_primary');
+    const fixedTime = new Date('2026-09-01T12:00:00.000Z');
+    const workflowCosts = new WorkflowCostControlService(
+      new InMemoryWorkflowCostRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    const dependencies: ApplicationDependencies = {
+      workflowCosts,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+    const emptyResponse = await request('/api/workflow-cost', () => ({ ready: true }), undefined, dependencies);
+    expect(emptyResponse.status).toBe(200);
+    await expect(emptyResponse.json()).resolves.toMatchObject({
+      policyVersion: 'workflow-cost-budget-v1',
+      truthStatus: 'no_usage',
+      persistence: 'memory',
+      day: { chargedCostMinorUnits: 0, activeReservedCostMinorUnits: 0 },
+    });
+
+    const reservationResponse = await request(
+      '/api/workflow-cost/reservations',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'cost_reserve_http',
+          workflowId: 'workflow:draft:http',
+          invocationId: 'invocation:draft:http',
+          kind: 'draft_generation',
+          estimatedCostMinorUnits: 20,
+          plannedSteps: 2,
+        }),
+      },
+      dependencies,
+    );
+    expect(reservationResponse.status).toBe(201);
+    const reservation = await reservationResponse.json() as { id: string };
+
+    const chargeResponse = await request(
+      '/api/workflow-cost/charges',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'cost_charge_http',
+          reservationId: reservation.id,
+          provider: 'provider-a',
+          model: 'model-a',
+          inputTokens: 100,
+          outputTokens: 20,
+          cachedInputTokens: 50,
+          components: {
+            modelMinorUnits: 21,
+            embeddingMinorUnits: 0,
+            storageMinorUnits: 0,
+            searchMinorUnits: 0,
+            toolApiMinorUnits: 0,
+            computeMinorUnits: 0,
+          },
+          actualSteps: 2,
+          humanReviewSeconds: 30,
+          costEvidence: 'provider_reported',
+        }),
+      },
+      dependencies,
+    );
+    expect(chargeResponse.status).toBe(201);
+    await expect(chargeResponse.json()).resolves.toMatchObject({
+      actualCostMinorUnits: 21,
+      circuitOpened: true,
+      circuitReason: 'actual_cost_exceeded_reservation',
+    });
+
+    const blockedResponse = await request(
+      '/api/workflow-cost/reservations',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'cost_reserve_after_open',
+          workflowId: 'workflow:draft:http',
+          invocationId: 'invocation:draft:http:2',
+          kind: 'draft_generation',
+          estimatedCostMinorUnits: 1,
+          plannedSteps: 1,
+        }),
+      },
+      dependencies,
+    );
+    expect(blockedResponse.status).toBe(409);
+    await expect(blockedResponse.json()).resolves.toMatchObject({
+      decision: 'blocked',
+      reason: 'workflow_circuit_open',
     });
   });
 
