@@ -5,7 +5,7 @@
 وضعیت فعلی: **Foundation و MVP Workbench در حال توسعه**. Data/Policy Kernel، API،
 Workbench وب، Approval انسانی، ورودی مکالمه‌ای Consent-first، ورود متن به‌عنوان
 Asset/Evidence، مرکز حقوق داده، داوری قطعی اختلاف میان ماژول‌ها و Proactive Mode
-کنترل‌شده پیاده‌سازی شده‌اند.
+کنترل‌شده و نقشه خصوصی Stakeholder/Relationship پیاده‌سازی شده‌اند.
 
 ## اسناد فعلی
 
@@ -156,6 +156,19 @@ Confidence و Source Ref در Ledger ثبت می‌شود. تغییر Context ر
 `POST /api/initiative/evaluations` هستند. این ماژول فقط Cue اختیاری در Interface
 نمایش می‌دهد و هیچ Push Notification، Publish یا Action بیرونی اجرا نمی‌کند.
 
+نمای «روابط» قرارداد `relationship-intelligence-v1` را برای نقشه‌ی خصوصی Stakeholder
+اجرا می‌کند. مالک فقط یک نام یا برچسب خصوصی، گروه، Outcome، Priority، Strength،
+Boundary، Context و تاریخ اختیاری آخرین تعامل را با رضایت صریح ثبت می‌کند. سیستم هیچ
+شماره تماس یا ایمیل ذخیره نمی‌کند، Score پنهان نمی‌سازد و تماس، پیام یا Introduction
+خودکار ندارد. Recency فقط به دسته‌های توضیح‌پذیر تبدیل می‌شود و برای رابطه پر‌اولویت
+حداکثر مرور Context پیشنهاد می‌شود؛ `ask_before_prompt` نیاز به تأیید را حفظ و
+`do_not_prompt` هر Cue را خاموش می‌کند. ایجاد و Hard Delete در PostgreSQL idempotent،
+RLS-protected و همراه Audit/Outbox هستند. APIهای این Slice شامل
+`GET /api/relationships`، `POST /api/relationships/stakeholders` و
+`POST /api/relationships/stakeholders/:id/delete` است. جزئیات در
+[`docs/architecture/relationship-intelligence-v1.0.md`](docs/architecture/relationship-intelligence-v1.0.md)
+ثبت شده است.
+
 نمای «پیش‌نویس» تنها پس از تأیید Action محتوایی Workbench فعال می‌شود. کاربر یک
 منبع را از کاتالوگ owner-scoped حافظه‌های تأییدشده و Text Assetهای دارای مجوز
 `brandUsage` انتخاب می‌کند، برای Public Drafting همان Assertion و Channel رضایت صریح
@@ -214,6 +227,6 @@ Signal ثبت می‌کند. یک Edit یا Reject منفرد Voice Model را �
 نمای «داده و شفافیت» ردپای owner-scoped تصمیم‌ها، تأییدها، حقوق حافظه و Exportها را
 از `GET /api/account/activity` نمایش می‌دهد. کاربر از `GET /api/account/export` یک
 فایل JSON قابل‌حمل از Snapshot فعلی Workbench، Strategy، Memory، Assets، Draft،
-Feedback، Arbitration، Initiative و Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
+Feedback، Arbitration، Initiative، Relationships و Audit دریافت می‌کند. Export نیز Audit می‌شود؛ متن حافظه حذف‌شده، Secret و داده
 زیرساختی وارد فایل نمی‌شوند. در PostgreSQL این Timeline با RLS به Tenant و مالک فعال
 محدود است؛ نسخه‌های حافظه‌ای و Sites تا Restart موقت‌اند.

@@ -36,6 +36,8 @@ import {
   approveDraft,
   confirmMemoryProposal,
   createDraft,
+  createStakeholder,
+  deleteStakeholder,
   editDraft,
   exportAccountData,
   exportDraft,
@@ -51,6 +53,7 @@ import {
   loadAuditTrail,
   loadArbitration,
   loadInitiative,
+  loadRelationships,
   loadOnboarding,
   loadPersonalMemory,
   loadResearch,
@@ -84,9 +87,14 @@ import {
   type BrandProtectionSnapshot,
   type InitiativeMode,
   type InitiativeWorkspaceSnapshot,
+  type RelationshipBoundary,
+  type RelationshipStrength,
+  type RelationshipWorkspaceSnapshot,
   type RiskReviewDecision,
   type EditableStrategyContext,
   type StrategyContextSnapshot,
+  type StakeholderGroup,
+  type StakeholderPriority,
   type TextAssetRightOperation,
   type WorkbenchAction,
   type WorkbenchSnapshot,
@@ -110,7 +118,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'relationships' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -154,6 +162,9 @@ export function App() {
   const [initiativeViewState, setInitiativeViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [initiativeViewError, setInitiativeViewError] = useState<string | null>(null);
   const initiativeAutoKey = useRef('');
+  const [relationshipSnapshot, setRelationshipSnapshot] = useState<RelationshipWorkspaceSnapshot | null>(null);
+  const [relationshipViewState, setRelationshipViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
+  const [relationshipViewError, setRelationshipViewError] = useState<string | null>(null);
   const [draftSnapshot, setDraftSnapshot] = useState<DraftWorkspaceSnapshot | null>(null);
   const [draftSources, setDraftSources] = useState<DraftSourceSnapshot | null>(null);
   const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
@@ -465,6 +476,55 @@ export function App() {
       setInitiativeViewState('error');
     }
   }, [refreshInitiative]);
+
+  const refreshRelationships = useCallback(async (signal?: AbortSignal) => {
+    setRelationshipViewState('loading');
+    setRelationshipViewError(null);
+    try {
+      setRelationshipSnapshot(await loadRelationships(signal));
+      setRelationshipViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setRelationshipViewError(errorMessage(caught));
+      setRelationshipViewState('error');
+    }
+  }, []);
+
+  const addStakeholder = async (input: Readonly<{
+    label: string;
+    group: StakeholderGroup;
+    outcome: string;
+    priority: StakeholderPriority;
+    strength: RelationshipStrength;
+    boundary: RelationshipBoundary;
+    contextNote: string;
+    lastInteractionAt: string | null;
+    consentConfirmed: boolean;
+  }>) => {
+    if (relationshipViewState === 'mutating') return;
+    setRelationshipViewState('mutating');
+    setRelationshipViewError(null);
+    try {
+      await createStakeholder({ requestId: `relationship_${crypto.randomUUID()}`, ...input });
+      await Promise.all([refreshRelationships(), refreshAudit()]);
+    } catch (caught: unknown) {
+      setRelationshipViewError(errorMessage(caught));
+      setRelationshipViewState('error');
+    }
+  };
+
+  const removeStakeholder = async (stakeholderId: string) => {
+    if (relationshipViewState === 'mutating') return;
+    setRelationshipViewState('mutating');
+    setRelationshipViewError(null);
+    try {
+      await deleteStakeholder({ requestId: `relationship_delete_${crypto.randomUUID()}`, stakeholderId });
+      await Promise.all([refreshRelationships(), refreshAudit()]);
+    } catch (caught: unknown) {
+      setRelationshipViewError(errorMessage(caught));
+      setRelationshipViewState('error');
+    }
+  };
 
   const saveStrategy = async (value: EditableStrategyContext) => {
     if (!strategySnapshot || strategyViewState === 'saving') return;
@@ -834,6 +894,14 @@ export function App() {
       view: 'initiative' as const,
       badge: activeInitiativeCue ? '۱' : undefined,
     },
+    {
+      label: 'روابط',
+      icon: Network,
+      view: 'relationships' as const,
+      badge: relationshipSnapshot?.summary.reviewSuggested
+        ? String(relationshipSnapshot.summary.reviewSuggested)
+        : undefined,
+    },
     { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
     { label: 'پیش‌نویس', icon: PencilLine, view: 'draft' as const },
     {
@@ -843,7 +911,6 @@ export function App() {
       badge: feedbackSnapshot?.summary.proposed ? String(feedbackSnapshot.summary.proposed) : undefined,
     },
     { label: 'داده و شفافیت', icon: History, view: 'data' as const },
-    { label: 'روابط', icon: Network },
     {
       label: 'تأییدها',
       icon: FileCheck2,
@@ -870,6 +937,7 @@ export function App() {
                 if (view === 'risk') void refreshRisk();
                 if (view === 'arbitration') void refreshArbitration();
                 if (view === 'initiative') void refreshInitiative();
+                if (view === 'relationships') void refreshRelationships();
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
                 if (view === 'learning') void refreshFeedback();
@@ -906,6 +974,8 @@ export function App() {
                 ? 'اختلاف ماژول‌ها باید دیده شود، نه حذف.'
               : activeView === 'initiative'
                 ? 'سیستم فقط با اجازه و دلیل مزاحم می‌شود.'
+              : activeView === 'relationships'
+                ? 'رابطه سرمایه است؛ اما انسان امتیاز CRM نیست.'
               : activeView === 'intake'
                 ? 'اولین شاهد واقعی را وارد کنید.'
               : activeView === 'strategy'
@@ -1000,6 +1070,15 @@ export function App() {
             onSave={saveInitiativeSettings}
             snapshot={initiativeSnapshot}
             state={initiativeViewState}
+          />
+        ) : activeView === 'relationships' ? (
+          <RelationshipWorkspacePanel
+            error={relationshipViewError}
+            onCreate={addStakeholder}
+            onDelete={removeStakeholder}
+            onRefresh={() => refreshRelationships()}
+            snapshot={relationshipSnapshot}
+            state={relationshipViewState}
           />
         ) : activeView === 'strategy' ? (
           <StrategyPanel
@@ -2285,7 +2364,7 @@ function InitiativePolicyPanel({
         <label>حالت ارتباط
           <select onChange={(event) => { setMode(event.target.value as InitiativeMode); }} value={mode}>
             <option value="reactive">Reactive — فقط در پاسخ به من</option>
-            <option value="balanced">Balanced — حداکثر یک Cue مهم</option>
+            <option value="balanced">Balanced — فقط Signalهای مهم</option>
             <option value="proactive">Proactive — طبق سقف انتخابی</option>
           </select>
         </label>
@@ -2352,6 +2431,199 @@ function initiativeReasonLabel(reason: InitiativeWorkspaceSnapshot['preview']['r
     below_relevance: 'ارتباط Signal از حداقل انتخاب‌شده کمتر است.',
     no_material_signal: 'Signal مادی و قابل‌ردیابی وجود ندارد.',
   }[reason];
+}
+
+function RelationshipWorkspacePanel({
+  error,
+  onCreate,
+  onDelete,
+  onRefresh,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onCreate: (input: Readonly<{
+    label: string;
+    group: StakeholderGroup;
+    outcome: string;
+    priority: StakeholderPriority;
+    strength: RelationshipStrength;
+    boundary: RelationshipBoundary;
+    contextNote: string;
+    lastInteractionAt: string | null;
+    consentConfirmed: boolean;
+  }>) => Promise<void>;
+  onDelete: (stakeholderId: string) => Promise<void>;
+  onRefresh: () => Promise<void>;
+  snapshot: RelationshipWorkspaceSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
+}>) {
+  const [label, setLabel] = useState('');
+  const [group, setGroup] = useState<StakeholderGroup>('client');
+  const [outcome, setOutcome] = useState('');
+  const [priority, setPriority] = useState<StakeholderPriority>('medium');
+  const [strength, setStrength] = useState<RelationshipStrength>('unknown');
+  const [boundary, setBoundary] = useState<RelationshipBoundary>('normal');
+  const [contextNote, setContextNote] = useState('');
+  const [lastInteractionAt, setLastInteractionAt] = useState('');
+  const [consentConfirmed, setConsentConfirmed] = useState(false);
+  if ((state === 'idle' || state === 'loading') && !snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><LoaderCircle className="spin" size={24} /><h2>در حال ساخت نقشه ذی‌نفعان…</h2><p>فقط Context خصوصی مالک خوانده می‌شود؛ هیچ Contact یا پیام بیرونی وجود ندارد.</p></section>;
+  }
+  if (!snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><TriangleAlert size={25} /><h2>فضای روابط در دسترس نیست</h2><p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p><button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button></section>;
+  }
+  return (
+    <section className="relationship-center" aria-label="نقشه خصوصی ذی‌نفعان و روابط">
+      <header className="draft-head">
+        <div>
+          <p className="overline">RELATIONSHIP INTELLIGENCE · PRIVATE CONTEXT · MANUAL ONLY</p>
+          <h2>نقشه رابطه، بدون تبدیل انسان به CRM</h2>
+          <p>نام یا برچسب خصوصی، Outcome و Boundary را ثبت کن. شماره تماس، ایمیل، پیام خودکار یا Public Use در این نسخه وجود ندارد.</p>
+        </div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button"><RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> تازه‌سازی نقشه</button>
+      </header>
+
+      {error ? <div className="inline-error" role="alert"><TriangleAlert size={16} />{error}</div> : null}
+
+      <div className="relationship-summary">
+        <article><span>کل ذی‌نفعان</span><strong>{snapshot.summary.totalStakeholders}</strong></article>
+        <article><span>اولویت بالا</span><strong>{snapshot.summary.highPriority}</strong></article>
+        <article><span>Context ناقص</span><strong>{snapshot.summary.contextNeeded}</strong></article>
+        <article><span>مرور پیشنهادی</span><strong>{snapshot.summary.reviewSuggested}</strong></article>
+        <article><span>Boundary محافظت‌شده</span><strong>{snapshot.summary.boundaryProtected}</strong></article>
+      </div>
+
+      <form
+        className="relationship-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onCreate({
+            label,
+            group,
+            outcome,
+            priority,
+            strength,
+            boundary,
+            contextNote,
+            lastInteractionAt: lastInteractionAt
+              ? new Date(`${lastInteractionAt}T12:00:00.000Z`).toISOString()
+              : null,
+            consentConfirmed,
+          });
+        }}
+      >
+        <div className="relationship-form-head">
+          <div><p className="overline">ثبت دستی و حداقلی</p><h3>یک Stakeholder با Context انسانی اضافه کن</h3></div>
+          <span><LockKeyhole size={15} /> confidential · relationship_planning</span>
+        </div>
+        <label>نام یا برچسب خصوصی
+          <input maxLength={120} minLength={2} onChange={(event) => { setLabel(event.target.value); }} placeholder="مثلاً همکار قدیمی" required value={label} />
+        </label>
+        <label>گروه
+          <select onChange={(event) => { setGroup(event.target.value as StakeholderGroup); }} value={group}>
+            {relationshipGroupOptions.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+          </select>
+        </label>
+        <label className="wide">Outcome مرتبط
+          <input maxLength={240} minLength={3} onChange={(event) => { setOutcome(event.target.value); }} placeholder="این رابطه برای کدام نتیجه مهم است؟" required value={outcome} />
+        </label>
+        <label>اولویت استراتژیک
+          <select onChange={(event) => { setPriority(event.target.value as StakeholderPriority); }} value={priority}>
+            <option value="low">کم</option><option value="medium">متوسط</option><option value="high">بالا</option>
+          </select>
+        </label>
+        <label>Strength رابطه
+          <select onChange={(event) => { setStrength(event.target.value as RelationshipStrength); }} value={strength}>
+            <option value="unknown">نامشخص</option><option value="emerging">در حال شکل‌گیری</option><option value="active">فعال</option><option value="trusted">مورد اعتماد</option>
+          </select>
+        </label>
+        <label>Boundary
+          <select onChange={(event) => { setBoundary(event.target.value as RelationshipBoundary); }} value={boundary}>
+            <option value="normal">عادی؛ فقط مرور Context</option>
+            <option value="ask_before_prompt">قبل از هر Prompt از من بپرس</option>
+            <option value="do_not_prompt">هیچ Promptی نده</option>
+          </select>
+        </label>
+        <label>آخرین تعامل، اختیاری
+          <input max={new Date().toISOString().slice(0, 10)} onChange={(event) => { setLastInteractionAt(event.target.value); }} type="date" value={lastInteractionAt} />
+        </label>
+        <label className="wide">Context خصوصی رابطه
+          <textarea maxLength={1000} minLength={10} onChange={(event) => { setContextNote(event.target.value); }} placeholder="زمینه رابطه، حساسیت‌ها و چیزی که نباید فراموش شود…" required rows={3} value={contextNote} />
+        </label>
+        <label className="relationship-consent wide">
+          <input checked={consentConfirmed} onChange={(event) => { setConsentConfirmed(event.target.checked); }} required type="checkbox" />
+          <span>تأیید می‌کنم این اطلاعات را آگاهانه و فقط برای برنامه‌ریزی خصوصی رابطه ثبت می‌کنم؛ شامل Contact Detail یا مجوز تماس خودکار نیست.</span>
+        </label>
+        <button className="wide" disabled={state === 'mutating' || !consentConfirmed} type="submit">{state === 'mutating' ? <LoaderCircle className="spin" size={16} /> : <Network size={16} />} ثبت در نقشه خصوصی</button>
+      </form>
+
+      {snapshot.groups.length > 0 ? (
+        <div className="relationship-groups">
+          {snapshot.groups.map((item) => <span key={item.group}>{relationshipGroupLabel(item.group)} <b>{item.count}</b>{item.highPriority ? <small>{item.highPriority} مهم</small> : null}</span>)}
+        </div>
+      ) : null}
+
+      {snapshot.stakeholders.length === 0 ? (
+        <div className="arbitration-empty"><Network size={25} /><h3>هنوز رابطه‌ای ثبت نشده است</h3><p>با یک Stakeholder مهم شروع کن؛ داده‌ی حداقلی و Boundary روشن کافی است.</p></div>
+      ) : (
+        <div className="relationship-list">
+          {snapshot.stakeholders.map((record) => (
+            <article className={`relationship-card ${record.attention}`} key={record.stakeholderId}>
+              <header>
+                <div><span className="overline">{relationshipGroupLabel(record.group)} · {relationshipPriorityLabel(record.priority)}</span><h3>{record.label}</h3></div>
+                <button
+                  aria-label={`حذف ${record.label}`}
+                  disabled={state === 'mutating'}
+                  onClick={() => {
+                    if (window.confirm('این Context رابطه به‌صورت کامل حذف شود؟')) void onDelete(record.stakeholderId);
+                  }}
+                  type="button"
+                ><Trash2 size={16} /> حذف</button>
+              </header>
+              <p className="relationship-outcome"><b>Outcome:</b> {record.outcome}</p>
+              <p>{record.contextNote}</p>
+              <div className="relationship-meta">
+                <span>Strength: {relationshipStrengthLabel(record.strength)}</span>
+                <span>Recency: {relationshipRecencyLabel(record.recency)}</span>
+                <span>Boundary: {relationshipBoundaryLabel(record.boundary)}</span>
+                <span>آخرین تعامل: {record.lastInteractionAt ? formatDate(record.lastInteractionAt) : 'ثبت نشده'}</span>
+              </div>
+              <small className="relationship-rationale">{record.rationale}</small>
+              <footer><LockKeyhole size={13} /> Contact ذخیره نشده · تماس و Automation مجاز نیست</footer>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+const relationshipGroupOptions: readonly (readonly [StakeholderGroup, string])[] = [
+  ['client', 'مشتری'], ['investor', 'سرمایه‌گذار'], ['peer', 'همکار'], ['manager', 'مدیر'],
+  ['team', 'عضو تیم'], ['media', 'رسانه'], ['journalist', 'خبرنگار'], ['industry_leader', 'رهبر صنعت'],
+  ['community', 'جامعه / Community'], ['potential_partner', 'همکار بالقوه'], ['critic', 'منتقد'],
+  ['friend', 'دوست'], ['public', 'جامعه عمومی'], ['policymaker', 'سیاست‌گذار'], ['other', 'سایر'],
+];
+
+function relationshipGroupLabel(value: StakeholderGroup): string {
+  return relationshipGroupOptions.find(([key]) => key === value)?.[1] ?? value;
+}
+
+function relationshipPriorityLabel(value: StakeholderPriority): string {
+  return { low: 'اولویت کم', medium: 'اولویت متوسط', high: 'اولویت بالا' }[value];
+}
+
+function relationshipStrengthLabel(value: RelationshipStrength): string {
+  return { unknown: 'نامشخص', emerging: 'در حال شکل‌گیری', active: 'فعال', trusted: 'مورد اعتماد' }[value];
+}
+
+function relationshipBoundaryLabel(value: RelationshipBoundary): string {
+  return { normal: 'عادی', ask_before_prompt: 'تأیید قبل از Prompt', do_not_prompt: 'بدون Prompt' }[value];
+}
+
+function relationshipRecencyLabel(value: RelationshipWorkspaceSnapshot['stakeholders'][number]['recency']): string {
+  return { unknown: 'نامشخص', recent: 'تازه', quiet: 'کم‌تعامل', dormant: 'طولانی بدون تعامل', protected: 'محافظت‌شده' }[value];
 }
 
 function arbitrationOutcomeLabel(outcome: ArbitrationWorkspaceSnapshot['cases'][number]['decision']['outcome']): string {
@@ -3284,6 +3556,14 @@ function errorMessage(error: unknown): string {
     invalid_initiative_request: 'درخواست Initiative معتبر نیست و هیچ Cue ثبت نشد.',
     initiative_permission_denied: 'فقط مالک می‌تواند Proactive Mode را تنظیم کند.',
     initiative_failed: 'ارزیابی Signal کامل نشد و سیستم سکوت کرد.',
+    relationships_unavailable: 'نقشه روابط در دسترس نیست و هیچ Contextی ثبت نشد.',
+    invalid_relationship_input: 'فیلدهای Stakeholder، تاریخ یا رضایت ثبت Context معتبر نیست.',
+    invalid_relationship_request: 'درخواست رابطه معتبر نیست؛ تاریخ آینده و Context ناقص پذیرفته نمی‌شود.',
+    invalid_relationship_delete: 'شناسه درخواست حذف رابطه معتبر نیست.',
+    relationship_permission_denied: 'فقط مالک می‌تواند Context خصوصی روابط را مدیریت کند.',
+    relationship_conflict: 'این Stakeholder یا شناسه درخواست قبلاً با Context دیگری ثبت شده است.',
+    stakeholder_not_found: 'این Stakeholder دیگر در نقشه فعال وجود ندارد.',
+    relationship_failed: 'ثبت یا حذف Context رابطه کامل نشد.',
     drafts_unavailable: 'Draft Studio در دسترس نیست.',
     invalid_draft_input: 'اطلاعات Draft ناقص یا خارج از محدودیت‌های پلتفرم است.',
     draft_permission_denied: 'مجوز صریح مالک برای استفاده از این حافظه در Draft وجود ندارد.',

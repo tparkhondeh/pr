@@ -71,6 +71,23 @@ import {
 } from '../initiative/initiative-policy.js';
 import type { TenantId, UserId } from '../kernel/identity.js';
 import {
+  RelationshipConflictError,
+  RelationshipNotFoundError,
+  RelationshipPermissionError,
+  RelationshipValidationError,
+  relationshipBoundaries,
+  relationshipStrengths,
+  stakeholderGroups,
+  stakeholderPriorities,
+  type RelationshipBoundary,
+  type RelationshipStrength,
+  type RelationshipWorkspaceService,
+  type RelationshipWorkspaceSnapshot,
+  type StakeholderGroup,
+  type StakeholderPriority,
+  type StakeholderRecord,
+} from '../relationships/workspace.js';
+import {
   BrandProtectionBlockedError,
   BrandProtectionConflictError,
   BrandProtectionNotFoundError,
@@ -132,6 +149,7 @@ export type ApplicationDependencies = Readonly<{
   risk?: Pick<BrandProtectionService, 'snapshot' | 'review' | 'authorizeAction'>;
   arbitration?: Pick<DecisionArbitrationService, 'snapshot' | 'assess'>;
   initiative?: Pick<InitiativePolicyService, 'snapshot' | 'updateSettings' | 'evaluate'>;
+  relationships?: Pick<RelationshipWorkspaceService, 'snapshot' | 'create' | 'delete'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -259,6 +277,22 @@ export function createRequestHandler(
 
     if (request.method === 'POST' && path === '/api/initiative/evaluations') {
       await handleInitiativeEvaluation(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/relationships') {
+      await handleRelationshipSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/relationships/stakeholders') {
+      await handleStakeholderCreate(request, response, dependencies);
+      return;
+    }
+
+    const stakeholderDelete = path.match(/^\/api\/relationships\/stakeholders\/([0-9a-f-]{36})\/delete$/iu);
+    if (request.method === 'POST' && stakeholderDelete?.[1]) {
+      await handleStakeholderDelete(request, response, dependencies, stakeholderDelete[1]);
       return;
     }
 
@@ -1127,6 +1161,214 @@ function isInitiativeMode(value: unknown): value is InitiativeMode {
   return value === 'reactive' || value === 'balanced' || value === 'proactive';
 }
 
+async function handleRelationshipSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = relationshipActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.relationships?.snapshot(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Relationship workspace disappeared.');
+    sendJson(response, 200, serializeRelationshipSnapshot(snapshot));
+  } catch (error: unknown) {
+    sendRelationshipError(response, error);
+  }
+}
+
+async function handleStakeholderCreate(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = relationshipActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const label = body['label'];
+    const group = body['group'];
+    const outcome = body['outcome'];
+    const priority = body['priority'];
+    const strength = body['strength'];
+    const boundary = body['boundary'];
+    const contextNote = body['contextNote'];
+    const lastInteractionAt = body['lastInteractionAt'];
+    const consentConfirmed = body['consentConfirmed'];
+    if (
+      typeof requestId !== 'string' || typeof label !== 'string' ||
+      !isStakeholderGroup(group) || typeof outcome !== 'string' ||
+      !isStakeholderPriority(priority) || !isRelationshipStrength(strength) ||
+      !isRelationshipBoundary(boundary) || typeof contextNote !== 'string' ||
+      (lastInteractionAt !== null && typeof lastInteractionAt !== 'string') ||
+      typeof consentConfirmed !== 'boolean'
+    ) {
+      sendJson(response, 400, { error: 'invalid_relationship_input' });
+      return;
+    }
+    const result = await dependencies.relationships?.create({
+      actorId,
+      requestId,
+      label,
+      group,
+      outcome,
+      priority,
+      strength,
+      boundary,
+      contextNote,
+      lastInteractionAt: lastInteractionAt === null ? null : new Date(lastInteractionAt),
+      consentConfirmed,
+      occurredAt: now(dependencies),
+    });
+    if (!result) throw new Error('Relationship workspace disappeared.');
+    if (result.outcome === 'applied') {
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `relationship.record:${requestId}`,
+        eventType: 'relationship.stakeholder_recorded',
+        resourceType: 'stakeholder',
+        resourceId: result.record.stakeholderId,
+        purpose: 'relationship_planning',
+        decision: 'recorded',
+        metadata: { policyVersion: 'relationship-intelligence-v1', contactDetailsStored: false },
+        occurredAt: result.record.createdAt,
+      });
+    }
+    sendJson(response, result.outcome === 'applied' ? 201 : 200, {
+      outcome: result.outcome,
+      persistence: result.persistence,
+      record: serializeStakeholderRecord(result.record),
+    });
+  } catch (error: unknown) {
+    sendRelationshipError(response, error);
+  }
+}
+
+async function handleStakeholderDelete(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+  stakeholderId: string,
+): Promise<void> {
+  const actorId = relationshipActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    if (typeof requestId !== 'string') {
+      sendJson(response, 400, { error: 'invalid_relationship_delete' });
+      return;
+    }
+    const occurredAt = now(dependencies);
+    const result = await dependencies.relationships?.delete({ actorId, requestId, stakeholderId, occurredAt });
+    if (!result) throw new Error('Relationship workspace disappeared.');
+    if (result.outcome === 'deleted') {
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `relationship.delete:${requestId}`,
+        eventType: 'relationship.stakeholder_deleted',
+        resourceType: 'stakeholder',
+        resourceId: stakeholderId,
+        purpose: 'relationship_planning',
+        decision: 'deleted',
+        metadata: { hardDelete: true },
+        occurredAt,
+      });
+    }
+    sendJson(response, 200, result);
+  } catch (error: unknown) {
+    sendRelationshipError(response, error);
+  }
+}
+
+function relationshipActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.relationships) {
+    sendJson(response, 503, { error: 'relationships_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function serializeRelationshipSnapshot(snapshot: RelationshipWorkspaceSnapshot): Record<string, unknown> {
+  return {
+    generatedAt: snapshot.generatedAt.toISOString(),
+    persistence: snapshot.persistence,
+    policyVersion: snapshot.policyVersion,
+    summary: snapshot.summary,
+    groups: snapshot.groups,
+    stakeholders: snapshot.stakeholders.map((record) => ({
+      ...serializeStakeholderRecord(record),
+      recency: record.recency,
+      attention: record.attention,
+      rationale: record.rationale,
+      privacy: record.privacy,
+    })),
+  };
+}
+
+function serializeStakeholderRecord(record: StakeholderRecord): Record<string, unknown> {
+  return {
+    stakeholderId: record.stakeholderId,
+    requestId: record.requestId,
+    label: record.label,
+    group: record.group,
+    outcome: record.outcome,
+    priority: record.priority,
+    strength: record.strength,
+    boundary: record.boundary,
+    contextNote: record.contextNote,
+    lastInteractionAt: record.lastInteractionAt?.toISOString() ?? null,
+    consentConfirmedAt: record.consentConfirmedAt.toISOString(),
+    createdAt: record.createdAt.toISOString(),
+  };
+}
+
+function sendRelationshipError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof RelationshipValidationError) {
+    sendJson(response, 400, { error: 'invalid_relationship_request' });
+    return;
+  }
+  if (error instanceof RelationshipPermissionError) {
+    sendJson(response, 403, { error: 'relationship_permission_denied' });
+    return;
+  }
+  if (error instanceof RelationshipNotFoundError) {
+    sendJson(response, 404, { error: 'stakeholder_not_found' });
+    return;
+  }
+  if (error instanceof RelationshipConflictError) {
+    sendJson(response, 409, { error: 'relationship_conflict' });
+    return;
+  }
+  sendJson(response, 500, { error: 'relationship_failed' });
+}
+
+function isStakeholderGroup(value: unknown): value is StakeholderGroup {
+  return stakeholderGroups.includes(value as StakeholderGroup);
+}
+
+function isStakeholderPriority(value: unknown): value is StakeholderPriority {
+  return stakeholderPriorities.includes(value as StakeholderPriority);
+}
+
+function isRelationshipStrength(value: unknown): value is RelationshipStrength {
+  return relationshipStrengths.includes(value as RelationshipStrength);
+}
+
+function isRelationshipBoundary(value: unknown): value is RelationshipBoundary {
+  return relationshipBoundaries.includes(value as RelationshipBoundary);
+}
+
 async function handleRiskSnapshot(
   request: IncomingMessage,
   response: ServerResponse,
@@ -1326,7 +1568,7 @@ async function handleAccountExport(
   }
   const exportedAt = now(dependencies);
   try {
-    const [workbench, strategy, draft, feedback, memory, assets, research, claims, arbitration, initiative, activity] = await Promise.all([
+    const [workbench, strategy, draft, feedback, memory, assets, research, claims, arbitration, initiative, relationships, activity] = await Promise.all([
       dependencies.workbench.snapshot(),
       dependencies.strategy.snapshot(actorId),
       dependencies.drafts.snapshot(actorId, exportedAt),
@@ -1341,6 +1583,7 @@ async function handleAccountExport(
       dependencies.claims?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.arbitration?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.initiative?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
+      dependencies.relationships?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.auditTrail?.snapshot(actorId, exportedAt),
     ]);
     if (!activity) throw new Error('Audit trail disappeared.');
@@ -1376,6 +1619,7 @@ async function handleAccountExport(
           risk: risk ? serializeRiskSnapshot(risk) : null,
           arbitration,
           initiative,
+          relationships: relationships ? serializeRelationshipSnapshot(relationships) : null,
           draft: draft ? serializeDraft(draft) : null,
           feedback: serializeFeedback(feedback),
           activity: serializeAuditTrail(activity),

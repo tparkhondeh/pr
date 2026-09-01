@@ -199,7 +199,8 @@ function toSnapshot(
       approvals: events.filter((event) => event.decision === 'approved').length,
       dataRights: events.filter((event) => (
         event.eventType.startsWith('memory.') ||
-        event.eventType === 'asset.revoke_brand_usage' || event.eventType === 'asset.delete'
+        event.eventType === 'asset.revoke_brand_usage' || event.eventType === 'asset.delete' ||
+        event.eventType === 'relationship.stakeholder_deleted'
       )).length,
       exports: events.filter((event) => event.eventType.endsWith('exported')).length,
     },

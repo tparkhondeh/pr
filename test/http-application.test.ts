@@ -33,6 +33,10 @@ import {
   ResearchWorkspaceService,
 } from '../src/research/workspace.js';
 import {
+  InMemoryRelationshipWorkspaceRepository,
+  RelationshipWorkspaceService,
+} from '../src/relationships/workspace.js';
+import {
   BrandProtectionService,
   InMemoryRiskReviewRepository,
 } from '../src/risk/brand-protection.js';
@@ -352,6 +356,89 @@ describe('operational endpoints', () => {
     const activity = await auditTrail.snapshot(owner, clock);
     expect(activity.events.filter((event) => event.eventType === 'initiative.settings_updated')).toHaveLength(1);
     expect(activity.events.filter((event) => event.eventType === 'initiative.evaluated')).toHaveLength(2);
+  });
+
+  it('records and hard-deletes consented stakeholder context without contact authority', async () => {
+    const fixedTime = new Date('2026-08-31T12:00:00.000Z');
+    const owner = userId('owner_primary');
+    const activeTenant = tenantId('tenant_primary');
+    const relationships = new RelationshipWorkspaceService(
+      new InMemoryRelationshipWorkspaceRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    const auditTrail = new AuditTrailService(new InMemoryAuditTrailRepository(), {
+      tenantId: activeTenant,
+      ownerUserId: owner,
+    });
+    const dependencies: ApplicationDependencies = {
+      relationships,
+      mutationAuditTrail: auditTrail,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    };
+    const body = {
+      requestId: 'relationship_http_create',
+      label: 'همکار قابل‌اعتماد',
+      group: 'peer',
+      outcome: 'تقویت همکاری عمیق و بلندمدت',
+      priority: 'high',
+      strength: 'trusted',
+      boundary: 'normal',
+      contextNote: 'این یادداشت فقط برای مرور زمینه‌ی خصوصی رابطه ثبت می‌شود.',
+      lastInteractionAt: '2026-04-01T12:00:00.000Z',
+      consentConfirmed: true,
+    };
+    const created = await request(
+      '/api/relationships/stakeholders',
+      () => ({ ready: true }),
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+      dependencies,
+    );
+    expect(created.status).toBe(201);
+    const createdPayload = await created.json() as { record: { stakeholderId: string } };
+    expect(createdPayload).toMatchObject({
+      outcome: 'applied',
+      persistence: 'memory',
+      record: { label: 'همکار قابل‌اعتماد', group: 'peer' },
+    });
+
+    const snapshot = await request('/api/relationships', () => ({ ready: true }), undefined, dependencies);
+    await expect(snapshot.json()).resolves.toMatchObject({
+      policyVersion: 'relationship-intelligence-v1',
+      summary: { totalStakeholders: 1, reviewSuggested: 1 },
+      stakeholders: [{
+        attention: 'review_context',
+        privacy: { contactDetailsStored: false, automationPermitted: false, outboundContactPermitted: false },
+      }],
+    });
+
+    const deleted = await request(
+      `/api/relationships/stakeholders/${createdPayload.record.stakeholderId}/delete`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: 'relationship_http_delete' }),
+      },
+      dependencies,
+    );
+    await expect(deleted.json()).resolves.toMatchObject({ outcome: 'deleted' });
+    const replay = await request(
+      `/api/relationships/stakeholders/${createdPayload.record.stakeholderId}/delete`,
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: 'relationship_http_delete' }),
+      },
+      dependencies,
+    );
+    await expect(replay.json()).resolves.toMatchObject({ outcome: 'already_applied' });
+    const relationshipActivity = (await auditTrail.snapshot(owner, fixedTime)).events;
+    expect(relationshipActivity).toHaveLength(2);
+    expect((await auditTrail.snapshot(owner, fixedTime)).summary.dataRights).toBe(1);
+    expect(JSON.stringify(relationshipActivity)).not.toContain('همکار قابل‌اعتماد');
+    expect(JSON.stringify(relationshipActivity)).not.toContain('زمینه‌ی خصوصی رابطه');
   });
 
   it('accepts a human approval and returns the evolved workflow', async () => {
@@ -1333,6 +1420,24 @@ describe('operational endpoints', () => {
       new InMemoryResearchWorkspaceRepository(),
       { tenantId: activeTenant, ownerUserId: owner },
     );
+    const relationships = new RelationshipWorkspaceService(
+      new InMemoryRelationshipWorkspaceRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    await relationships.create({
+      actorId: owner,
+      requestId: 'relationship_export_record',
+      label: 'ذی‌نفع خصوصی',
+      group: 'client',
+      outcome: 'حفظ اعتماد در تعامل‌های کلیدی',
+      priority: 'high',
+      strength: 'active',
+      boundary: 'ask_before_prompt',
+      contextNote: 'این Context فقط در Export خصوصی مالک دیده می‌شود.',
+      lastInteractionAt: fixedTime,
+      consentConfirmed: true,
+      occurredAt: fixedTime,
+    });
     const dependencies: ApplicationDependencies = {
       workbench,
       strategy,
@@ -1342,6 +1447,7 @@ describe('operational endpoints', () => {
       auditTrail,
       assets,
       research,
+      relationships,
       mutationAuditTrail: auditTrail,
       tenantId: activeTenant,
       resolveActor: () => owner,
@@ -1390,6 +1496,7 @@ describe('operational endpoints', () => {
         memory: { records: unknown[] };
         assets: { records: unknown[] };
         research: { sources: unknown[] };
+        relationships: { stakeholders: unknown[] };
         activity: { events: unknown[] };
       };
     };
@@ -1398,8 +1505,14 @@ describe('operational endpoints', () => {
     expect(portable).toMatchObject({
       schemaVersion: 1,
       scope: 'owner_portable_data',
-      data: { memory: { records: [] }, assets: { records: [] }, research: { sources: [] } },
+      data: {
+        memory: { records: [] },
+        assets: { records: [] },
+        research: { sources: [] },
+        relationships: { summary: { totalStakeholders: 1 } },
+      },
     });
+    expect(portable.data.relationships.stakeholders).toHaveLength(1);
     expect(portable.data.activity.events).toHaveLength(1);
 
     const activityAfterExport = await request(

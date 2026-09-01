@@ -50,6 +50,9 @@ let initiativeSettings = {
 const initiativeEvaluations = new Map();
 const initiativeEvaluationRequests = new Map();
 const initiativeSettingRequests = new Map();
+const stakeholderRecords = new Map();
+const stakeholderCreateRequests = new Map();
+const stakeholderDeleteRequests = new Map();
 
 const groundedActions = [
   {
@@ -349,6 +352,79 @@ export default {
       return json({ outcome: 'evaluated', persistence: 'ephemeral', evaluation }, 201);
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/relationships') {
+      return json(relationshipWorkspaceSnapshot());
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/relationships/stakeholders') {
+      const body = await readJson(request);
+      if (!validStakeholderRequest(body)) return json({ error: 'invalid_relationship_input' }, 400);
+      const occurredAt = new Date();
+      const lastInteractionAt = body.lastInteractionAt === null ? null : new Date(body.lastInteractionAt);
+      if (lastInteractionAt && (Number.isNaN(lastInteractionAt.getTime()) || lastInteractionAt > occurredAt)) {
+        return json({ error: 'invalid_relationship_request' }, 400);
+      }
+      const normalized = {
+        label: body.label.trim(), group: body.group, outcome: body.outcome.trim(),
+        priority: body.priority, strength: body.strength, boundary: body.boundary,
+        contextNote: body.contextNote.trim(),
+        lastInteractionAt: lastInteractionAt?.toISOString() ?? null,
+      };
+      const fingerprint = await sha256Hex(JSON.stringify({ operation: 'create', ...normalized }));
+      const repeated = stakeholderCreateRequests.get(body.requestId);
+      if (repeated) {
+        if (repeated.fingerprint !== fingerprint) return json({ error: 'relationship_conflict' }, 409);
+        const activeRecord = stakeholderRecords.get(repeated.stakeholderId);
+        return activeRecord
+          ? json({ outcome: 'already_applied', persistence: 'ephemeral', record: activeRecord })
+          : json({ error: 'relationship_conflict' }, 409);
+      }
+      const duplicate = [...stakeholderRecords.values()].find((record) => (
+        normalizeRelationshipText(record.label) === normalizeRelationshipText(normalized.label) &&
+        record.group === normalized.group
+      ));
+      if (duplicate) return json({ error: 'relationship_conflict' }, 409);
+      const stakeholderId = uuidFromHash(await sha256Hex(`stakeholder:ephemeral:${body.requestId}`));
+      const record = {
+        stakeholderId, requestId: body.requestId, ...normalized,
+        consentConfirmedAt: occurredAt.toISOString(), createdAt: occurredAt.toISOString(),
+      };
+      stakeholderRecords.set(stakeholderId, record);
+      stakeholderCreateRequests.set(body.requestId, { fingerprint, stakeholderId });
+      recordAudit(`relationship.record:${body.requestId}`, {
+        eventType: 'relationship.stakeholder_recorded', resourceType: 'stakeholder',
+        resourceId: stakeholderId, purpose: 'relationship_planning', decision: 'recorded',
+        metadata: {
+          policyVersion: 'relationship-intelligence-v1', contactDetailsStored: false,
+        },
+        occurredAt: record.createdAt,
+      });
+      return json({ outcome: 'applied', persistence: 'ephemeral', record }, 201);
+    }
+
+    const stakeholderDelete = url.pathname.match(/^\/api\/relationships\/stakeholders\/([0-9a-f-]{36})\/delete$/);
+    if (request.method === 'POST' && stakeholderDelete?.[1]) {
+      const body = await readJson(request);
+      if (!validRequestId(body?.requestId)) return json({ error: 'invalid_relationship_delete' }, 400);
+      const stakeholderId = stakeholderDelete[1];
+      const fingerprint = await sha256Hex(JSON.stringify({ operation: 'delete', stakeholderId }));
+      const repeated = stakeholderDeleteRequests.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json({ outcome: 'already_applied', persistence: 'ephemeral', stakeholderId: repeated.stakeholderId })
+          : json({ error: 'relationship_conflict' }, 409);
+      }
+      if (!stakeholderRecords.has(stakeholderId)) return json({ error: 'stakeholder_not_found' }, 404);
+      stakeholderRecords.delete(stakeholderId);
+      stakeholderDeleteRequests.set(body.requestId, { fingerprint, stakeholderId });
+      recordAudit(`relationship.delete:${body.requestId}`, {
+        eventType: 'relationship.stakeholder_deleted', resourceType: 'stakeholder',
+        resourceId: stakeholderId, purpose: 'relationship_planning', decision: 'deleted',
+        metadata: { hardDelete: true }, occurredAt: new Date().toISOString(),
+      });
+      return json({ outcome: 'deleted', persistence: 'ephemeral', stakeholderId });
+    }
+
     const riskReview = url.pathname.match(/^\/api\/risk\/actions\/([^/]+)\/reviews$/);
     if (request.method === 'POST' && riskReview?.[1]) {
       const body = await readJson(request);
@@ -422,6 +498,7 @@ export default {
           risk: await riskSnapshot(),
           arbitration: await arbitrationWorkspaceSnapshot(),
           initiative: await initiativeWorkspaceSnapshot(),
+          relationships: relationshipWorkspaceSnapshot(),
           feedback: feedbackSnapshot(),
           activity,
         },
@@ -1671,6 +1748,96 @@ function validInitiativeEvaluationRequest(body) {
   return typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId);
 }
 
+const relationshipGroups = [
+  'client', 'investor', 'peer', 'manager', 'team', 'media', 'journalist',
+  'industry_leader', 'community', 'potential_partner', 'critic', 'friend',
+  'public', 'policymaker', 'other',
+];
+
+function validStakeholderRequest(body) {
+  return validRequestId(body?.requestId) && validText(body?.label, 2, 120) &&
+    relationshipGroups.includes(body?.group) && validText(body?.outcome, 3, 240) &&
+    ['low', 'medium', 'high'].includes(body?.priority) &&
+    ['unknown', 'emerging', 'active', 'trusted'].includes(body?.strength) &&
+    ['normal', 'ask_before_prompt', 'do_not_prompt'].includes(body?.boundary) &&
+    validText(body?.contextNote, 10, 1000) &&
+    (body?.lastInteractionAt === null || typeof body?.lastInteractionAt === 'string') &&
+    body?.consentConfirmed === true;
+}
+
+function validRequestId(value) {
+  return typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(value);
+}
+
+function relationshipWorkspaceSnapshot() {
+  const generatedAt = new Date();
+  const stakeholders = [...stakeholderRecords.values()]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .map((record) => relationshipStakeholderSnapshot(record, generatedAt));
+  const groups = relationshipGroups.flatMap((group) => {
+    const records = stakeholders.filter((record) => record.group === group);
+    return records.length === 0 ? [] : [{
+      group, count: records.length,
+      highPriority: records.filter((record) => record.priority === 'high').length,
+    }];
+  });
+  return {
+    generatedAt: generatedAt.toISOString(), persistence: 'ephemeral',
+    policyVersion: 'relationship-intelligence-v1',
+    summary: {
+      totalStakeholders: stakeholders.length,
+      highPriority: stakeholders.filter((record) => record.priority === 'high').length,
+      contextNeeded: stakeholders.filter((record) => record.attention === 'context_needed').length,
+      reviewSuggested: stakeholders.filter((record) => record.attention === 'review_context').length,
+      boundaryProtected: stakeholders.filter((record) => record.recency === 'protected').length,
+      outcomeCount: new Set(stakeholders.map((record) => normalizeRelationshipText(record.outcome))).size,
+    },
+    groups,
+    stakeholders,
+  };
+}
+
+function relationshipStakeholderSnapshot(record, at) {
+  const recency = relationshipRecency(record, at);
+  const attention = relationshipAttention(record, recency);
+  return {
+    ...record, recency, attention, rationale: relationshipRationale(attention),
+    privacy: {
+      dataClass: 'confidential', allowedPurpose: 'relationship_planning',
+      contactDetailsStored: false, automationPermitted: false,
+      outboundContactPermitted: false,
+    },
+  };
+}
+
+function relationshipRecency(record, at) {
+  if (record.boundary === 'do_not_prompt') return 'protected';
+  if (!record.lastInteractionAt) return 'unknown';
+  const ageDays = Math.max(0, Math.floor((at.getTime() - new Date(record.lastInteractionAt).getTime()) / 86400000));
+  if (ageDays <= 30) return 'recent';
+  if (ageDays <= 90) return 'quiet';
+  return 'dormant';
+}
+
+function relationshipAttention(record, recency) {
+  if (recency === 'protected' || record.priority !== 'high') return 'none';
+  if (record.boundary === 'ask_before_prompt' && ['unknown', 'dormant'].includes(recency)) return 'approval_required';
+  if (recency === 'unknown') return 'context_needed';
+  if (recency === 'dormant') return 'review_context';
+  return 'none';
+}
+
+function relationshipRationale(attention) {
+  if (attention === 'context_needed') return 'برای این رابطه مهم، تاریخ آخرین تعامل ثبت نشده است؛ فقط Context را کامل کن.';
+  if (attention === 'review_context') return 'رابطه مهم مدتی بدون تعامل ثبت‌شده بوده است؛ Context را مرور کن، بدون توصیه خودکار به تماس.';
+  if (attention === 'approval_required') return 'Boundary این رابطه ایجاب می‌کند پیش از هر Prompt یا پیشنهاد، تأیید صریح گرفته شود.';
+  return 'هیچ اقدام خودکاری پیشنهاد نمی‌شود.';
+}
+
+function normalizeRelationshipText(value) {
+  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('fa-IR');
+}
+
 function uuidFromHash(hash) {
   const value = `${hash.slice(0, 12)}4${hash.slice(13, 16)}8${hash.slice(17, 32)}`;
   return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
@@ -2139,7 +2306,8 @@ function auditSnapshot() {
       approvals: events.filter((event) => event.decision === 'approved').length,
       dataRights: events.filter((event) => (
         event.eventType.startsWith('memory.') ||
-        event.eventType === 'asset.revoke_brand_usage' || event.eventType === 'asset.delete'
+        event.eventType === 'asset.revoke_brand_usage' || event.eventType === 'asset.delete' ||
+        event.eventType === 'relationship.stakeholder_deleted'
       )).length,
       exports: events.filter((event) => event.eventType.endsWith('exported')).length,
     },

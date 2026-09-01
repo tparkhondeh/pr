@@ -47,6 +47,11 @@ import {
   ResearchWorkspaceService,
 } from './research/workspace.js';
 import {
+  InMemoryRelationshipWorkspaceRepository,
+  PostgresRelationshipWorkspaceRepository,
+  RelationshipWorkspaceService,
+} from './relationships/workspace.js';
+import {
   BrandProtectionService,
   InMemoryRiskReviewRepository,
   PostgresRiskReviewRepository,
@@ -208,6 +213,15 @@ const initiative = new InitiativePolicyService(
   { tenantId: activeTenant, ownerUserId: owner },
   { workbench, arbitration },
 );
+const relationships = new RelationshipWorkspaceService(
+  postgres && environment.database
+    ? new PostgresRelationshipWorkspaceRepository(postgres, {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+      })
+    : new InMemoryRelationshipWorkspaceRepository(),
+  { tenantId: activeTenant, ownerUserId: owner },
+);
 const requestHandler = createRequestHandler(
   async () => ({
     ...(postgres ? await postgres.readiness() : { ready: true }),
@@ -227,6 +241,7 @@ const requestHandler = createRequestHandler(
     risk,
     arbitration,
     initiative,
+    relationships,
     ...(!postgres ? { mutationAuditTrail: auditTrail } : {}),
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity

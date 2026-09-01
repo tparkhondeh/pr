@@ -77,6 +77,54 @@ describe('private preview worker draft runtime', () => {
     })).json()).resolves.toMatchObject({
       evaluation: { decision: 'suppressed', reason: 'rate_limited' },
     });
+    const relationshipRequest = {
+      requestId: 'relationship_runtime_create',
+      label: 'همکار کلیدی',
+      group: 'peer',
+      outcome: 'تقویت اعتماد برای همکاری بلندمدت',
+      priority: 'high',
+      strength: 'trusted',
+      boundary: 'normal',
+      contextNote: 'این Context فقط برای برنامه‌ریزی خصوصی رابطه ثبت می‌شود.',
+      lastInteractionAt: '2026-04-01T00:00:00.000Z',
+      consentConfirmed: true,
+    };
+    const relationshipCreated = await post('/api/relationships/stakeholders', relationshipRequest);
+    expect(relationshipCreated.status).toBe(201);
+    const relationshipRecord = await relationshipCreated.json() as { record: { stakeholderId: string } };
+    await expect((await post('/api/relationships/stakeholders', relationshipRequest)).json()).resolves.toMatchObject({
+      outcome: 'already_applied',
+    });
+    const relationshipSnapshot = await worker.fetch(
+      new Request('https://preview.example/api/relationships'),
+      env,
+    );
+    await expect(relationshipSnapshot.json()).resolves.toMatchObject({
+      policyVersion: 'relationship-intelligence-v1',
+      persistence: 'ephemeral',
+      summary: { totalStakeholders: 1, highPriority: 1, reviewSuggested: 1 },
+      stakeholders: [{
+        stakeholderId: relationshipRecord.record.stakeholderId,
+        recency: 'dormant',
+        attention: 'review_context',
+        privacy: { contactDetailsStored: false, automationPermitted: false, outboundContactPermitted: false },
+      }],
+    });
+    const temporaryRelationship = await post('/api/relationships/stakeholders', {
+      ...relationshipRequest,
+      requestId: 'relationship_runtime_temporary',
+      label: 'رابطه موقت',
+      group: 'client',
+      boundary: 'do_not_prompt',
+    });
+    const temporaryRecord = await temporaryRelationship.json() as { record: { stakeholderId: string } };
+    const deletePath = `/api/relationships/stakeholders/${temporaryRecord.record.stakeholderId}/delete`;
+    await expect((await post(deletePath, { requestId: 'relationship_runtime_delete' })).json()).resolves.toMatchObject({
+      outcome: 'deleted',
+    });
+    await expect((await post(deletePath, { requestId: 'relationship_runtime_delete' })).json()).resolves.toMatchObject({
+      outcome: 'already_applied',
+    });
     const routedApproval = await post('/api/workbench/approval', { actionId: 'collect_evidence' });
     expect(routedApproval.status).toBe(409);
     await expect(routedApproval.json()).resolves.toEqual({ error: 'action_not_approvable' });
@@ -492,6 +540,7 @@ describe('private preview worker draft runtime', () => {
         risk: { policyVersion: string; assessments: unknown[] };
         arbitration: { policyVersion: string; cases: unknown[] };
         initiative: { policyVersion: string; settings: { mode: string }; evaluations: unknown[] };
+        relationships: { policyVersion: string; summary: { totalStakeholders: number }; stakeholders: unknown[] };
       };
     };
     expect(accountExportResponse.status).toBe(200);
@@ -510,6 +559,11 @@ describe('private preview worker draft runtime', () => {
       policyVersion: 'initiative-policy-v1', settings: { mode: 'balanced' },
     });
     expect(accountExport.data.initiative.evaluations).toHaveLength(2);
+    expect(accountExport.data.relationships).toMatchObject({
+      policyVersion: 'relationship-intelligence-v1',
+      summary: { totalStakeholders: 1 },
+    });
+    expect(accountExport.data.relationships.stakeholders).toHaveLength(1);
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

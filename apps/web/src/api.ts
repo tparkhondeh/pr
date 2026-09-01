@@ -429,6 +429,72 @@ export type InitiativeEvaluationResult = Readonly<{
   evaluation: InitiativeEvaluation;
 }>;
 
+export type StakeholderGroup =
+  | 'client' | 'investor' | 'peer' | 'manager' | 'team' | 'media' | 'journalist'
+  | 'industry_leader' | 'community' | 'potential_partner' | 'critic' | 'friend'
+  | 'public' | 'policymaker' | 'other';
+export type StakeholderPriority = 'low' | 'medium' | 'high';
+export type RelationshipStrength = 'unknown' | 'emerging' | 'active' | 'trusted';
+export type RelationshipBoundary = 'normal' | 'ask_before_prompt' | 'do_not_prompt';
+export type RelationshipRecency = 'unknown' | 'recent' | 'quiet' | 'dormant' | 'protected';
+export type RelationshipAttention = 'none' | 'context_needed' | 'review_context' | 'approval_required';
+
+export type StakeholderRecord = Readonly<{
+  stakeholderId: string;
+  requestId: string;
+  label: string;
+  group: StakeholderGroup;
+  outcome: string;
+  priority: StakeholderPriority;
+  strength: RelationshipStrength;
+  boundary: RelationshipBoundary;
+  contextNote: string;
+  lastInteractionAt: string | null;
+  consentConfirmedAt: string;
+  createdAt: string;
+}>;
+
+export type StakeholderSnapshot = StakeholderRecord & Readonly<{
+  recency: RelationshipRecency;
+  attention: RelationshipAttention;
+  rationale: string;
+  privacy: Readonly<{
+    dataClass: 'confidential';
+    allowedPurpose: 'relationship_planning';
+    contactDetailsStored: false;
+    automationPermitted: false;
+    outboundContactPermitted: false;
+  }>;
+}>;
+
+export type RelationshipWorkspaceSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  policyVersion: 'relationship-intelligence-v1';
+  summary: Readonly<{
+    totalStakeholders: number;
+    highPriority: number;
+    contextNeeded: number;
+    reviewSuggested: number;
+    boundaryProtected: number;
+    outcomeCount: number;
+  }>;
+  groups: readonly Readonly<{ group: StakeholderGroup; count: number; highPriority: number }>[];
+  stakeholders: readonly StakeholderSnapshot[];
+}>;
+
+export type CreateStakeholderResult = Readonly<{
+  outcome: 'applied' | 'already_applied';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  record: StakeholderRecord;
+}>;
+
+export type DeleteStakeholderResult = Readonly<{
+  outcome: 'deleted' | 'already_applied';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  stakeholderId: string;
+}>;
+
 export type DraftChannel = 'linkedin' | 'instagram' | 'x' | 'youtube' | 'podcast' | 'newsletter' | 'blog';
 export type DraftSourceKind = 'memory' | 'text_asset';
 
@@ -763,6 +829,7 @@ export type AccountDataExport = Readonly<{
     risk: BrandProtectionSnapshot | null;
     arbitration: ArbitrationWorkspaceSnapshot | null;
     initiative: InitiativeWorkspaceSnapshot | null;
+    relationships: RelationshipWorkspaceSnapshot | null;
     draft: DraftWorkspaceSnapshot | null;
     feedback: FeedbackLearningSnapshot;
     activity: AuditTrailSnapshot;
@@ -960,6 +1027,58 @@ export async function evaluateInitiative(input: Readonly<{
     !isPersistence(payload['persistence']) || !isInitiativeEvaluation(payload['evaluation'])
   ) throw new WorkbenchApiError(200, 'invalid_response');
   return payload as InitiativeEvaluationResult;
+}
+
+export async function loadRelationships(signal?: AbortSignal): Promise<RelationshipWorkspaceSnapshot> {
+  const payload = await requestJson('/api/relationships', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isRelationshipWorkspaceSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function createStakeholder(input: Readonly<{
+  requestId: string;
+  label: string;
+  group: StakeholderGroup;
+  outcome: string;
+  priority: StakeholderPriority;
+  strength: RelationshipStrength;
+  boundary: RelationshipBoundary;
+  contextNote: string;
+  lastInteractionAt: string | null;
+  consentConfirmed: boolean;
+}>): Promise<CreateStakeholderResult> {
+  const payload = await requestJson('/api/relationships/stakeholders', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (
+    !isRecord(payload) || (payload['outcome'] !== 'applied' && payload['outcome'] !== 'already_applied') ||
+    !isPersistence(payload['persistence']) || !isStakeholderRecord(payload['record'])
+  ) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload as CreateStakeholderResult;
+}
+
+export async function deleteStakeholder(input: Readonly<{
+  requestId: string;
+  stakeholderId: string;
+}>): Promise<DeleteStakeholderResult> {
+  const payload = await requestJson(
+    `/api/relationships/stakeholders/${encodeURIComponent(input.stakeholderId)}/delete`,
+    {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: input.requestId }),
+    },
+  );
+  if (
+    !isRecord(payload) || (payload['outcome'] !== 'deleted' && payload['outcome'] !== 'already_applied') ||
+    !isPersistence(payload['persistence']) || typeof payload['stakeholderId'] !== 'string'
+  ) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload as DeleteStakeholderResult;
 }
 
 export async function reviewRisk(input: Readonly<{
@@ -1680,6 +1799,73 @@ function isInitiativeReason(value: unknown): value is InitiativeDecisionReason {
     value === 'rate_limited' || value === 'below_relevance' || value === 'no_material_signal';
 }
 
+function isRelationshipWorkspaceSnapshot(value: unknown): value is RelationshipWorkspaceSnapshot {
+  if (
+    !isRecord(value) || value['policyVersion'] !== 'relationship-intelligence-v1' ||
+    typeof value['generatedAt'] !== 'string' || !isPersistence(value['persistence']) ||
+    !isRecord(value['summary']) || !Array.isArray(value['groups']) || !Array.isArray(value['stakeholders'])
+  ) return false;
+  const summary = value['summary'];
+  return (
+    typeof summary['totalStakeholders'] === 'number' && typeof summary['highPriority'] === 'number' &&
+    typeof summary['contextNeeded'] === 'number' && typeof summary['reviewSuggested'] === 'number' &&
+    typeof summary['boundaryProtected'] === 'number' && typeof summary['outcomeCount'] === 'number' &&
+    value['groups'].every((group) => isRecord(group) && isStakeholderGroup(group['group']) &&
+      typeof group['count'] === 'number' && typeof group['highPriority'] === 'number') &&
+    value['stakeholders'].every(isStakeholderSnapshot)
+  );
+}
+
+function isStakeholderSnapshot(value: unknown): value is StakeholderSnapshot {
+  if (!isStakeholderRecord(value)) return false;
+  const candidate = value as unknown as Record<string, unknown>;
+  if (!isRecord(candidate['privacy'])) return false;
+  const privacy = candidate['privacy'];
+  return isRelationshipRecency(candidate['recency']) && isRelationshipAttention(candidate['attention']) &&
+    typeof candidate['rationale'] === 'string' && privacy['dataClass'] === 'confidential' &&
+    privacy['allowedPurpose'] === 'relationship_planning' && privacy['contactDetailsStored'] === false &&
+    privacy['automationPermitted'] === false && privacy['outboundContactPermitted'] === false;
+}
+
+function isStakeholderRecord(value: unknown): value is StakeholderRecord {
+  return isRecord(value) && typeof value['stakeholderId'] === 'string' &&
+    typeof value['requestId'] === 'string' && typeof value['label'] === 'string' &&
+    isStakeholderGroup(value['group']) && typeof value['outcome'] === 'string' &&
+    isStakeholderPriority(value['priority']) && isRelationshipStrength(value['strength']) &&
+    isRelationshipBoundary(value['boundary']) && typeof value['contextNote'] === 'string' &&
+    (value['lastInteractionAt'] === null || typeof value['lastInteractionAt'] === 'string') &&
+    typeof value['consentConfirmedAt'] === 'string' && typeof value['createdAt'] === 'string';
+}
+
+function isStakeholderGroup(value: unknown): value is StakeholderGroup {
+  return value === 'client' || value === 'investor' || value === 'peer' || value === 'manager' ||
+    value === 'team' || value === 'media' || value === 'journalist' || value === 'industry_leader' ||
+    value === 'community' || value === 'potential_partner' || value === 'critic' || value === 'friend' ||
+    value === 'public' || value === 'policymaker' || value === 'other';
+}
+
+function isStakeholderPriority(value: unknown): value is StakeholderPriority {
+  return value === 'low' || value === 'medium' || value === 'high';
+}
+
+function isRelationshipStrength(value: unknown): value is RelationshipStrength {
+  return value === 'unknown' || value === 'emerging' || value === 'active' || value === 'trusted';
+}
+
+function isRelationshipBoundary(value: unknown): value is RelationshipBoundary {
+  return value === 'normal' || value === 'ask_before_prompt' || value === 'do_not_prompt';
+}
+
+function isRelationshipRecency(value: unknown): value is RelationshipRecency {
+  return value === 'unknown' || value === 'recent' || value === 'quiet' ||
+    value === 'dormant' || value === 'protected';
+}
+
+function isRelationshipAttention(value: unknown): value is RelationshipAttention {
+  return value === 'none' || value === 'context_needed' || value === 'review_context' ||
+    value === 'approval_required';
+}
+
 function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
@@ -1779,6 +1965,7 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     (data['risk'] === null || isBrandProtectionSnapshot(data['risk'])) &&
     (data['arbitration'] === null || isArbitrationWorkspaceSnapshot(data['arbitration'])) &&
     (data['initiative'] === null || isInitiativeWorkspaceSnapshot(data['initiative'])) &&
+    (data['relationships'] === null || isRelationshipWorkspaceSnapshot(data['relationships'])) &&
     (data['draft'] === null || isDraftWorkspaceSnapshot(data['draft'])) &&
     isFeedbackLearningSnapshot(data['feedback']) && isAuditTrailSnapshot(data['activity'])
   );

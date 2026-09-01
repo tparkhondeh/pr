@@ -30,7 +30,7 @@ Trust Boundaryها:
 
 ## دارایی‌های حساس
 
-- متن‌ها، خاطرات، Evidence، Assertion و Desired Positioning مالک؛
+- متن‌ها، خاطرات، Evidence، Assertion، Desired Positioning و Context رابطه/Stakeholder مالک؛
 - Consent، Data-right request، Draft و Approval؛
 - Tenant/User identity، Audit trail و Outbox؛
 - credentialهای cPanel، Basic Auth، GitHub/Sites و دیتابیس.
@@ -57,6 +57,7 @@ Trust Boundaryها:
 | T-16 | Prompt Injection یا Intent اشتباه در Channel گفت‌وگو که Permission را گسترش دهد یا داده حساس را ذخیره کند | P0 | ورودی untrusted، authority صریح، abstention در Confidence پایین، public-action hold، جداسازی Research/Memory و `not_persisted` برای credential | پیش از Model/Tool و Attachment integration، red-team چندزبانه، DLP و eval مستقل لازم است |
 | T-17 | Override شدن Gate یک ماژول توسط Utility/Agent دیگر، استفاده از تصمیم stale یا ارتقای پنهان Autonomy | P0 | رأی‌های typed و بدون write authority، اولویت قطعی `hold/revise`، حفظ dissent/abstention، Context/Snapshot hash، پنجره ۲۴ساعته، سقف Level 5، `executionPermitted=false` و RLS/Audit | پیش از Level 6/7، Session و Delegation Scope واقعی، Tool allowlist، approval token کوتاه‌عمر، rate limit، compensation و red-team مستقل الزامی است |
 | T-18 | Proactive spam، مزاحمت دست‌کاری‌گر، Cue کم‌ارتباط یا تکرار Signal stale | P0 | پیش‌فرض Reactive، opt-in مالک، Relevance threshold، Pause، سقف تراکنشی ۲۴ساعته، Context hash/staleness، Ledger توضیح‌پذیر و نبود outbound side effect | پیش از هر Notification/Connector بیرونی، Consent کانال، timezone/quiet hours، unsubscribe، delivery receipt، abuse monitoring و incident drill الزامی است |
+| T-19 | تبدیل Relationship Context به CRM نظارتی، افشای داده شخص ثالث یا باقی‌ماندن متن پس از حذف | P0 | ورود دستی و رضایت مالک، بدون Contact Detail، داده confidential و purpose-bound، Boundary صریح، نبود Score/Outbound Automation، Hard Delete، Journal فقط دارای ID و Audit بدون Label/Group/Context | پیش از Contact/CRM/Calendar/360 connector، scope مستقل، third-party privacy review، field allowlist، retention، connector revocation و deletion propagation drill الزامی است |
 
 ## P0 Gate
 

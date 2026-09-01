@@ -90,6 +90,10 @@ const initiativeMigrationPath = fileURLToPath(
   new URL('../db/migrations/0021_proactive_initiative.sql', import.meta.url),
 );
 const initiativeSql = readFileSync(initiativeMigrationPath, 'utf8');
+const relationshipMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0022_relationship_intelligence.sql', import.meta.url),
+);
+const relationshipSql = readFileSync(relationshipMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -142,6 +146,19 @@ describe('foundation migration', () => {
     expect(initiativeSql).toContain("policy_version = 'initiative-policy-v1'");
     expect(initiativeSql).toContain("decision IN ('delivered', 'suppressed')");
     expect(initiativeSql).toContain('no outbound notification or action side effect');
+  });
+
+  it('adds private, tenant-isolated stakeholder context without contact automation', () => {
+    defineMigration('0022_relationship_intelligence', relationshipSql);
+    for (const table of ['stakeholder_records', 'stakeholder_requests']) {
+      expect(relationshipSql).toContain(`CREATE TABLE app.${table}`);
+      expect(relationshipSql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
+      expect(relationshipSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
+    expect(relationshipSql).toContain("operation IN ('create', 'delete')");
+    expect(relationshipSql).toContain("relationship_boundary IN ('normal', 'ask_before_prompt', 'do_not_prompt')");
+    expect(relationshipSql).toContain('jsonb_object_length(result_snapshot) = 1');
+    expect(relationshipSql).toContain('no contact details, outbound contact, or automation authority');
   });
 
   it('defines the required tenant-owned tables', () => {
