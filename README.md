@@ -72,12 +72,20 @@ pnpm check
 pnpm dev
 ```
 
-`pnpm check` علاوه بر lint، typecheck و test، ارزیابی نسخه‌دار
-`model-input-safety-eval-v1` را نیز اجرا می‌کند. اجرای مستقل آن:
+`pnpm check` علاوه بر lint، typecheck و test، دو ارزیابی نسخه‌دار
+`model-input-safety-eval-v1` و `memory-retrieval-eval-v1` را نیز اجرا می‌کند. اجرای
+مستقل آنها:
 
 ```bash
 pnpm eval:model-input-safety
+pnpm eval:memory-retrieval
 ```
+
+Gate حافظه با ۱۶ Case فارسی/انگلیسی، `precision@k` و `recall@k` کامل، نشت Permission
+صفر و Abstention صحیح برای داده حذف‌شده، مورد اعتراض، Superseded، منقضی یا هنوز
+نامعتبر را الزام می‌کند. جزئیات در
+[`docs/architecture/memory-retrieval-evaluation-v1.0.md`](docs/architecture/memory-retrieval-evaluation-v1.0.md)
+ثبت شده است.
 
 Health endpoint پس از اجرا: `GET /health`
 

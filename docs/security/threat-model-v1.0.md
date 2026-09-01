@@ -42,7 +42,7 @@ Trust Boundaryها:
 | T-01 | دورزدن Basic Auth از پورت عمومی Node | P0 | bind فقط روی loopback، config fail-closed، fitness test و smoke listener | بسته در `2458681`؛ هر deploy باید public port را دوباره رد کند |
 | T-02 | جعل مالک به‌دلیل bootstrap identity ثابت | P0 | Basic Auth + loopback + private scope | برای Preview خصوصی پذیرفته؛ قبل از shared/public release، Session واقعی و actor binding الزامی |
 | T-03 | cross-tenant read/write یا دورزدن RLS با DB role پرقدرت | P0 | tenant ID اجباری، FORCE RLS، app role بدون superuser/BYPASSRLS، readiness fail-closed و integration منفی | PostgreSQL 16 CI اثبات شده؛ Production role باید جداگانه audit شود |
-| T-04 | استفاده خارج از Consent/Purpose | P0 | deny-by-default، purpose/channel، revoke/delete propagation و approval | تست‌شده؛ هر connector جدید نیازمند scope مستقل است |
+| T-04 | استفاده خارج از Consent/Purpose | P0 | deny-by-default، purpose/channel، revoke/delete propagation و approval؛ `memory-retrieval-eval-v1` با نشت صفر، Grant آینده، تمدید Consent و lifecycle assertion | Golden Set قطعی سبز است؛ هر Semantic/Connector Adapter جدید نیازمند scope و eval مستقل است |
 | T-05 | ادعای عمومی ساختگی یا unsupported | P0 | evidence-bound Claim Registry، Draft Guard و Human approval | release fixture سبز؛ provider واقعی نیازمند eval/red-team مستقل است |
 | T-11 | مخلوط‌شدن Research بیرونی با Personal Memory یا Citation کهنه/متعارض | P0 | Research store جدا، Claim پیشنهادی، freshness/conflict gate و HTTPS-only source | Fetch خودکار وب هنوز فعال نیست؛ adapter آینده نیازمند SSRF controls است |
 | T-06 | Prompt injection از Asset/Research | P1 | provider واقعی غیرفعال، typed input، `model-input-safety-v1` پیش از Journal/Cost با Patternهای فارسی/انگلیسی و Fail-closed shape/limit، نتیجه metadata/hash-only و عدم side effect خودکار | Dataset adversarial چندزبانه، اندازه‌گیری false positive/negative و Tool policy مستقل پیش از Research/Tool integration لازم است |
@@ -80,5 +80,6 @@ Trust Boundaryها:
 - Config: `PR_BIND_HOST=127.0.0.1` و رد wildcard در Production.
 - Runtime smoke: listener برابر `127.0.0.1:31056`، public port مسدود، loopback `200`،
   دامنه authenticated برابر `200` و unauthenticated برابر `401`.
-- Automated: policy، cross-tenant، claim guard، revocation، deletion، readiness و
-  architecture fitness tests.
+- Automated: policy، cross-tenant، claim guard، revocation، deletion، readiness،
+  architecture fitness و `memory-retrieval-eval-v1` با precision/recall کامل، نشت صفر
+  و Abstention نسخه‌دار.

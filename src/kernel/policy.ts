@@ -42,7 +42,7 @@ export function decidePolicy(
   grants: readonly PermissionGrant[],
   now: Date,
 ): PolicyDecision {
-  const matching = grants.find(
+  const matching = grants.filter(
     (grant) =>
       grant.tenantId === request.tenantId &&
       grant.actorId === request.actorId &&
@@ -51,12 +51,19 @@ export function decidePolicy(
       grant.dataClass === request.dataClass,
   );
 
-  if (!matching) return { allowed: false, reason: 'no_matching_grant' };
-  if (matching.revokedAt && matching.revokedAt <= now) {
+  if (matching.length === 0) return { allowed: false, reason: 'no_matching_grant' };
+  const active = matching.find(
+    (grant) =>
+      grant.grantedAt <= now &&
+      (!grant.revokedAt || grant.revokedAt > now) &&
+      (!grant.expiresAt || grant.expiresAt > now),
+  );
+  if (active) return { allowed: true, reason: 'matching_grant' };
+  if (matching.some((grant) => grant.grantedAt <= now && grant.revokedAt && grant.revokedAt <= now)) {
     return { allowed: false, reason: 'revoked' };
   }
-  if (matching.expiresAt && matching.expiresAt <= now) {
+  if (matching.some((grant) => grant.grantedAt <= now && grant.expiresAt && grant.expiresAt <= now)) {
     return { allowed: false, reason: 'expired' };
   }
-  return { allowed: true, reason: 'matching_grant' };
+  return { allowed: false, reason: 'no_matching_grant' };
 }

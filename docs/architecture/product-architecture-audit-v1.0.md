@@ -245,6 +245,13 @@ ingest محدود، assertions، provenance، retrieval، correction/forget و p
 
 Gate: permission leakage صفر؛ retrieval targets محقق؛ deletion verified؛ abstention calibrated.
 
+وضعیت اجرا: `memory-retrieval-eval-v1` اکنون ۱۶ Case نسخه‌دار فارسی/انگلیسی را در CI
+اجرا می‌کند و برای Golden Set قطعی فعلی `precision@k=1`، `recall@k=1`، Permission
+Leakage صفر و ۶/۶ Abstention صحیح را الزام می‌کند. Grant آینده زودتر از موعد فعال
+نمی‌شود و Consent تمدیدشده پس از رکورد تاریخی منقضی معتبر باقی می‌ماند. این Gate هنوز
+ادعای Semantic Retrieval روی Corpus واقعی ندارد؛ Corpus ناشناس‌شده و pgvector Adapter
+پیش از فعال‌سازی Retrieval مدل باید جداگانه ارزیابی شوند.
+
 ### Phase 2 — Strategic MVP
 
 goal، positioning gap، action scenarios، opportunity cost و explainability.

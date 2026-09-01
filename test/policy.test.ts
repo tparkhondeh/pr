@@ -33,5 +33,19 @@ describe('decidePolicy', () => {
       decidePolicy(baseGrant, [grant], new Date('2026-01-03T00:00:00Z')),
     ).toEqual({ allowed: false, reason: 'revoked' });
   });
-});
 
+  it('uses a renewed active grant even when an older matching grant expired', () => {
+    const expired = { ...baseGrant, expiresAt: new Date('2026-01-02T00:00:00Z') };
+    const renewed = { ...baseGrant, grantedAt: new Date('2026-01-03T00:00:00Z') };
+    expect(
+      decidePolicy(baseGrant, [expired, renewed], new Date('2026-01-04T00:00:00Z')),
+    ).toEqual({ allowed: true, reason: 'matching_grant' });
+  });
+
+  it('does not activate a matching grant before its grant time', () => {
+    const future = { ...baseGrant, grantedAt: new Date('2026-01-03T00:00:00Z') };
+    expect(
+      decidePolicy(baseGrant, [future], new Date('2026-01-02T00:00:00Z')),
+    ).toEqual({ allowed: false, reason: 'no_matching_grant' });
+  });
+});
