@@ -1,5 +1,6 @@
 import {
   ArrowUpLeft,
+  BellRing,
   BrainCircuit,
   BookOpenText,
   Check,
@@ -25,7 +26,7 @@ import {
   Trash2,
   TriangleAlert,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type SyntheticEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type SyntheticEvent } from 'react';
 import {
   WorkbenchApiError,
   applyTextAssetRight,
@@ -38,6 +39,7 @@ import {
   editDraft,
   exportAccountData,
   exportDraft,
+  evaluateInitiative,
   importTextAsset,
   importResearchSource,
   reviewClaim,
@@ -48,6 +50,7 @@ import {
   loadFeedbackLearning,
   loadAuditTrail,
   loadArbitration,
+  loadInitiative,
   loadOnboarding,
   loadPersonalMemory,
   loadResearch,
@@ -58,6 +61,7 @@ import {
   rejectDraftFeedback,
   saveStrategyContext,
   submitConversationTurn,
+  updateInitiativeSettings,
   type AppliedMemoryRight,
   type ArbitrationWorkspaceSnapshot,
   type AutonomyLevel,
@@ -78,6 +82,8 @@ import {
   type ClaimGovernanceSnapshot,
   type ClaimReviewDecision,
   type BrandProtectionSnapshot,
+  type InitiativeMode,
+  type InitiativeWorkspaceSnapshot,
   type RiskReviewDecision,
   type EditableStrategyContext,
   type StrategyContextSnapshot,
@@ -104,7 +110,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'arbitration' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -144,6 +150,10 @@ export function App() {
   const [arbitrationSnapshot, setArbitrationSnapshot] = useState<ArbitrationWorkspaceSnapshot | null>(null);
   const [arbitrationViewState, setArbitrationViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [arbitrationViewError, setArbitrationViewError] = useState<string | null>(null);
+  const [initiativeSnapshot, setInitiativeSnapshot] = useState<InitiativeWorkspaceSnapshot | null>(null);
+  const [initiativeViewState, setInitiativeViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
+  const [initiativeViewError, setInitiativeViewError] = useState<string | null>(null);
+  const initiativeAutoKey = useRef('');
   const [draftSnapshot, setDraftSnapshot] = useState<DraftWorkspaceSnapshot | null>(null);
   const [draftSources, setDraftSources] = useState<DraftSourceSnapshot | null>(null);
   const [draftViewState, setDraftViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
@@ -162,13 +172,16 @@ export function App() {
     setState('loading');
     setError(null);
     try {
-      const [next, onboarding] = await Promise.all([
+      const [next, onboarding, initiative] = await Promise.all([
         loadWorkbench(signal),
         loadOnboarding(signal),
+        loadInitiative(signal),
       ]);
       setSnapshot(next);
       setOnboardingSnapshot(onboarding);
       setOnboardingState('ready');
+      setInitiativeSnapshot(initiative);
+      setInitiativeViewState('ready');
       setSelected((current) =>
         next.actions.some((action) => action.id === current)
           ? current
@@ -406,6 +419,53 @@ export function App() {
     }
   };
 
+  const refreshInitiative = useCallback(async (signal?: AbortSignal) => {
+    setInitiativeViewState('loading');
+    setInitiativeViewError(null);
+    try {
+      setInitiativeSnapshot(await loadInitiative(signal));
+      setInitiativeViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setInitiativeViewError(errorMessage(caught));
+      setInitiativeViewState('error');
+    }
+  }, []);
+
+  const saveInitiativeSettings = async (input: Readonly<{
+    mode: InitiativeMode;
+    maxPromptsPer24Hours: 1 | 2 | 3;
+    minimumRelevance: number;
+    pausedUntil: string | null;
+  }>) => {
+    if (!initiativeSnapshot || initiativeViewState === 'mutating') return;
+    setInitiativeViewState('mutating');
+    setInitiativeViewError(null);
+    try {
+      await updateInitiativeSettings({
+        requestId: `initiative_settings_${crypto.randomUUID()}`,
+        expectedRevision: initiativeSnapshot.settings.revision,
+        ...input,
+      });
+      await Promise.all([refreshInitiative(), refreshAudit()]);
+    } catch (caught: unknown) {
+      setInitiativeViewError(errorMessage(caught));
+      setInitiativeViewState('error');
+    }
+  };
+
+  const runInitiativeEvaluation = useCallback(async () => {
+    setInitiativeViewState('mutating');
+    setInitiativeViewError(null);
+    try {
+      await evaluateInitiative({ requestId: `initiative_${crypto.randomUUID()}` });
+      await refreshInitiative();
+    } catch (caught: unknown) {
+      setInitiativeViewError(errorMessage(caught));
+      setInitiativeViewState('error');
+    }
+  }, [refreshInitiative]);
+
   const saveStrategy = async (value: EditableStrategyContext) => {
     if (!strategySnapshot || strategyViewState === 'saving') return;
     setStrategyViewState('saving');
@@ -589,6 +649,18 @@ export function App() {
     };
   }, [refresh]);
 
+  useEffect(() => {
+    const candidate = initiativeSnapshot?.preview.candidate;
+    if (
+      !candidate || initiativeSnapshot.preview.decision !== 'delivered' ||
+      initiativeSnapshot.settings.mode === 'reactive' || initiativeViewState !== 'ready'
+    ) return;
+    const key = `${String(initiativeSnapshot.settings.revision)}:${candidate.candidateId}`;
+    if (initiativeAutoKey.current === key) return;
+    initiativeAutoKey.current = key;
+    void runInitiativeEvaluation();
+  }, [initiativeSnapshot, initiativeViewState, runInitiativeEvaluation]);
+
   const selectedAction = useMemo(
     () => snapshot?.actions.find((action) => action.id === selected),
     [selected, snapshot],
@@ -596,6 +668,15 @@ export function App() {
   const selectedIsApproved =
     snapshot?.workflow.status === 'approved' &&
     snapshot.workflow.approvedActionId === selected;
+  const activeInitiativeCue = initiativeSnapshot?.evaluations.find(
+    (item) => item.decision === 'delivered' && !item.stale && item.candidate,
+  )?.candidate ?? null;
+
+  const navigateFromInitiative = (target: 'intake' | 'today' | 'arbitration') => {
+    setActiveView(target);
+    if (target === 'intake') void refreshOnboarding();
+    if (target === 'arbitration') void refreshArbitration();
+  };
 
   const approve = async () => {
     if (!selectedAction || state === 'approving' || !selectedAction.feasible) return;
@@ -747,6 +828,12 @@ export function App() {
         ? String(arbitrationSnapshot.cases.filter((item) => item.decision.outcome === 'held' && !item.stale).length)
         : undefined,
     },
+    {
+      label: 'ابتکار عمل',
+      icon: BellRing,
+      view: 'initiative' as const,
+      badge: activeInitiativeCue ? '۱' : undefined,
+    },
     { label: 'استراتژی', icon: Lightbulb, view: 'strategy' as const },
     { label: 'پیش‌نویس', icon: PencilLine, view: 'draft' as const },
     {
@@ -782,6 +869,7 @@ export function App() {
                 if (view === 'claims') void refreshClaims();
                 if (view === 'risk') void refreshRisk();
                 if (view === 'arbitration') void refreshArbitration();
+                if (view === 'initiative') void refreshInitiative();
                 if (view === 'strategy') void refreshStrategy();
                 if (view === 'draft') void refreshDraft();
                 if (view === 'learning') void refreshFeedback();
@@ -816,6 +904,8 @@ export function App() {
                 ? 'ریسک باید قبل از اقدام دیده و پذیرفته شود.'
               : activeView === 'arbitration'
                 ? 'اختلاف ماژول‌ها باید دیده شود، نه حذف.'
+              : activeView === 'initiative'
+                ? 'سیستم فقط با اجازه و دلیل مزاحم می‌شود.'
               : activeView === 'intake'
                 ? 'اولین شاهد واقعی را وارد کنید.'
               : activeView === 'strategy'
@@ -837,6 +927,18 @@ export function App() {
         </header>
 
         {error ? <div className="inline-error" role="alert"><TriangleAlert size={16} />{error}</div> : null}
+
+        {activeView === 'today' && activeInitiativeCue ? (
+          <button
+            className="initiative-inline-cue"
+            onClick={() => { navigateFromInitiative(activeInitiativeCue.targetView); }}
+            type="button"
+          >
+            <BellRing size={19} />
+            <span><b>{activeInitiativeCue.title}</b><small>{activeInitiativeCue.prompt}</small></span>
+            <ChevronLeft size={18} />
+          </button>
+        ) : null}
 
         {activeView === 'intake' ? (
           <AssetIntakePanel
@@ -887,6 +989,17 @@ export function App() {
             selectedActionId={selected}
             snapshot={arbitrationSnapshot}
             state={arbitrationViewState}
+          />
+        ) : activeView === 'initiative' ? (
+          <InitiativePolicyPanel
+            error={initiativeViewError}
+            key={initiativeSnapshot?.settings.revision ?? 'empty'}
+            onEvaluate={runInitiativeEvaluation}
+            onNavigate={navigateFromInitiative}
+            onRefresh={() => refreshInitiative()}
+            onSave={saveInitiativeSettings}
+            snapshot={initiativeSnapshot}
+            state={initiativeViewState}
           />
         ) : activeView === 'strategy' ? (
           <StrategyPanel
@@ -2107,6 +2220,140 @@ function DecisionArbitrationPanel({
   );
 }
 
+function InitiativePolicyPanel({
+  error,
+  onEvaluate,
+  onNavigate,
+  onRefresh,
+  onSave,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onEvaluate: () => Promise<void>;
+  onNavigate: (target: 'intake' | 'today' | 'arbitration') => void;
+  onRefresh: () => Promise<void>;
+  onSave: (input: Readonly<{
+    mode: InitiativeMode;
+    maxPromptsPer24Hours: 1 | 2 | 3;
+    minimumRelevance: number;
+    pausedUntil: string | null;
+  }>) => Promise<void>;
+  snapshot: InitiativeWorkspaceSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'mutating' | 'error';
+}>) {
+  const [mode, setMode] = useState<InitiativeMode>(snapshot?.settings.mode ?? 'reactive');
+  const [limit, setLimit] = useState<1 | 2 | 3>(snapshot?.settings.maxPromptsPer24Hours ?? 1);
+  const [threshold, setThreshold] = useState(snapshot?.settings.minimumRelevance ?? 0.75);
+  const [paused, setPaused] = useState(
+    Boolean(snapshot?.settings.pausedUntil && new Date(snapshot.settings.pausedUntil).getTime() > Date.now()),
+  );
+  if ((state === 'idle' || state === 'loading') && !snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><LoaderCircle className="spin" size={24} /><h2>در حال بررسی سیاست مزاحمت…</h2><p>Mode، Relevance و سقف ۲۴ساعته قبل از هر Cue سنجیده می‌شوند.</p></section>;
+  }
+  if (!snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><TriangleAlert size={25} /><h2>مرکز ابتکار عمل در دسترس نیست</h2><p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p><button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button></section>;
+  }
+  const latestDelivered = snapshot.evaluations.find(
+    (item) => item.decision === 'delivered' && !item.stale && item.candidate,
+  );
+  return (
+    <section className="initiative-center" aria-label="سیاست ابتکار عمل کنترل‌شده">
+      <header className="draft-head">
+        <div>
+          <p className="overline">Proactive / Reactive · Owner Controlled · Rate Limited</p>
+          <h2>مزاحمت فقط با اجازه، ارتباط و سقف روشن</h2>
+          <p>پیش‌فرض Reactive است. حتی در حالت Proactive، خروجی فقط یک Cue اختیاری است؛ پیام بیرونی، Publish یا اجرای Action وجود ندارد.</p>
+        </div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button"><RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> تازه‌سازی Signal</button>
+      </header>
+
+      {error ? <div className="inline-error" role="alert"><TriangleAlert size={16} />{error}</div> : null}
+
+      <form
+        className="initiative-settings"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onSave({
+            mode,
+            maxPromptsPer24Hours: limit,
+            minimumRelevance: threshold,
+            pausedUntil: paused ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() : null,
+          });
+        }}
+      >
+        <label>حالت ارتباط
+          <select onChange={(event) => { setMode(event.target.value as InitiativeMode); }} value={mode}>
+            <option value="reactive">Reactive — فقط در پاسخ به من</option>
+            <option value="balanced">Balanced — حداکثر یک Cue مهم</option>
+            <option value="proactive">Proactive — طبق سقف انتخابی</option>
+          </select>
+        </label>
+        <label>سقف در ۲۴ ساعت
+          <select onChange={(event) => { setLimit(Number(event.target.value) as 1 | 2 | 3); }} value={limit}>
+            <option value={1}>۱ Cue</option><option value={2}>۲ Cue</option><option value={3}>۳ Cue</option>
+          </select>
+        </label>
+        <label>حداقل ارتباط
+          <select onChange={(event) => { setThreshold(Number(event.target.value)); }} value={threshold}>
+            <option value={0.6}>۶۰٪</option><option value={0.75}>۷۵٪</option><option value={0.9}>۹۰٪</option><option value={0.95}>۹۵٪</option>
+          </select>
+        </label>
+        <label className="initiative-pause"><input checked={paused} onChange={(event) => { setPaused(event.target.checked); }} type="checkbox" /> توقف برای ۲۴ ساعت</label>
+        <button disabled={state === 'mutating'} type="submit">{state === 'mutating' ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} ذخیره کنترل‌ها</button>
+      </form>
+
+      <div className="initiative-meter">
+        <span><Clock3 size={16} /> {snapshot.window.delivered} Cue نمایش‌داده‌شده</span>
+        <strong>{snapshot.window.remaining} ظرفیت باقی‌مانده</strong>
+        <small>پنجره شناور ۲۴ساعته · Revision {snapshot.settings.revision} · {snapshot.persistence === 'postgres' ? 'پایدار' : 'موقت'}</small>
+      </div>
+
+      {latestDelivered?.candidate ? (
+        <article className="initiative-cue delivered">
+          <header><BellRing size={21} /><div><span className="overline">CUE DELIVERED · {Math.round(latestDelivered.candidate.relevance * 100)}٪ مرتبط</span><h3>{latestDelivered.candidate.title}</h3></div></header>
+          <p>{latestDelivered.candidate.prompt}</p>
+          <small>{latestDelivered.candidate.rationale}</small>
+          <button onClick={() => { onNavigate(latestDelivered.candidate?.targetView ?? 'today'); }} type="button">رفتن به بخش مرتبط <ChevronLeft size={16} /></button>
+        </article>
+      ) : snapshot.preview.candidate ? (
+        <article className={`initiative-cue ${snapshot.preview.decision}`}>
+          <header><BellRing size={21} /><div><span className="overline">PREVIEW · {Math.round(snapshot.preview.candidate.relevance * 100)}٪ مرتبط</span><h3>{snapshot.preview.candidate.title}</h3></div></header>
+          <p>{snapshot.preview.candidate.prompt}</p>
+          <small>{initiativeReasonLabel(snapshot.preview.reason)}</small>
+          <button disabled={state === 'mutating' || snapshot.preview.decision !== 'delivered'} onClick={() => void onEvaluate()} type="button">ثبت و نمایش Cue</button>
+        </article>
+      ) : (
+        <div className="arbitration-empty"><BellRing size={24} /><h3>Signal مادی برای مزاحمت وجود ندارد</h3><p>سیستم به‌جای ساختن موضوع، سکوت می‌کند.</p></div>
+      )}
+
+      {snapshot.evaluations.length > 0 ? (
+        <div className="initiative-ledger">
+          <h3>دفتر تصمیم‌های Proactivity</h3>
+          {snapshot.evaluations.slice(0, 8).map((item) => (
+            <div key={item.evaluationId}>
+              <span className={item.decision}>{item.decision === 'delivered' ? 'نمایش داده شد' : 'متوقف شد'}</span>
+              <b>{item.candidate?.title ?? 'بدون Signal مادی'}</b>
+              <small>{initiativeReasonLabel(item.reason)}{item.stale ? ' · Context قدیمی' : ''}</small>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function initiativeReasonLabel(reason: InitiativeWorkspaceSnapshot['preview']['reason']): string {
+  return {
+    delivered: 'از Mode، Relevance Gate و سقف ۲۴ساعته عبور کرده است.',
+    reactive_mode: 'حالت Reactive فعال است؛ سیستم بدون درخواست شما Cue نشان نمی‌دهد.',
+    paused: 'ابتکار عمل تا زمان انتخاب‌شده متوقف است.',
+    rate_limited: 'سقف ۲۴ساعته پر شده و Cue جدید متوقف شد.',
+    below_relevance: 'ارتباط Signal از حداقل انتخاب‌شده کمتر است.',
+    no_material_signal: 'Signal مادی و قابل‌ردیابی وجود ندارد.',
+  }[reason];
+}
+
 function arbitrationOutcomeLabel(outcome: ArbitrationWorkspaceSnapshot['cases'][number]['decision']['outcome']): string {
   return {
     recommendation_ready: 'پیشنهاد آماده',
@@ -3031,6 +3278,12 @@ function errorMessage(error: unknown): string {
     arbitration_permission_denied: 'فقط مالک می‌تواند Snapshot داوری ثبت کند.',
     arbitration_action_not_found: 'اقدام در Context فعلی دیگر وجود ندارد؛ فهرست را تازه کنید.',
     arbitration_failed: 'جمع‌آوری رأی ماژول‌ها کامل نشد و هیچ اختیاری صادر نشد.',
+    initiative_unavailable: 'مرکز ابتکار عمل در دسترس نیست و هیچ Cue خودکاری نمایش داده نشد.',
+    invalid_initiative_settings: 'تنظیمات Mode، سقف یا حداقل ارتباط معتبر نیست.',
+    invalid_initiative_evaluation: 'شناسه ارزیابی Initiative معتبر نیست.',
+    invalid_initiative_request: 'درخواست Initiative معتبر نیست و هیچ Cue ثبت نشد.',
+    initiative_permission_denied: 'فقط مالک می‌تواند Proactive Mode را تنظیم کند.',
+    initiative_failed: 'ارزیابی Signal کامل نشد و سیستم سکوت کرد.',
     drafts_unavailable: 'Draft Studio در دسترس نیست.',
     invalid_draft_input: 'اطلاعات Draft ناقص یا خارج از محدودیت‌های پلتفرم است.',
     draft_permission_denied: 'مجوز صریح مالک برای استفاده از این حافظه در Draft وجود ندارد.',

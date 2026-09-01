@@ -6,6 +6,10 @@ import {
   PostgresArbitrationRepository,
 } from '../src/arbitration/decision-arbitration.js';
 import {
+  InitiativePolicyService,
+  PostgresInitiativeRepository,
+} from '../src/initiative/initiative-policy.js';
+import {
   applyMigrations,
   type MigrationConnection,
 } from '../src/database/migration-runner.js';
@@ -64,12 +68,121 @@ async function main(): Promise<void> {
     await verifyBrandRiskPersistence();
     await verifyConversationOrchestrationPersistence();
     await verifyArbitrationPersistence();
+    await verifyInitiativePersistence();
     await verifyRuntimeReadiness(connectionString);
     process.stdout.write(
       `PostgreSQL integration passed (${String(migrations.length)} migrations, RLS enforced).\n`,
     );
   } finally {
     await client.end();
+  }
+}
+
+async function verifyInitiativePersistence(): Promise<void> {
+  const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
+  const owner = userId(userA);
+  const activeTenant = tenantId(tenantA);
+  const at = new Date('2026-09-01T01:30:00.000Z');
+  const action: WorkbenchAction = {
+    id: 'initiative_integration_collect', kind: 'research', title: 'ثبت تجربه واقعی',
+    rationale: 'یک سؤال کوتاه برای کاهش حدس در مدل شخصی.',
+    benefits: ['وضوح'], risks: ['مزاحمت'], prerequisites: ['رضایت مالک'],
+    evidenceIds: [], evidenceCount: 0, confidence: 0.3,
+    riskLevel: 'low', attentionCostMinutes: 10, energyCost: 1, feasible: true,
+    utilityScore: 40, opportunityCost: 1, rank: 1, evidenceState: 'insufficient',
+    evidenceSourceTypes: [], interaction: 'open_intake',
+  };
+  const workbenchSnapshot: WorkbenchSnapshot = {
+    generatedAt: at.toISOString(),
+    runtime: { source: 'node_api', persistence: 'postgres' },
+    profile: { maturityPercent: 0, evidenceCount: 0, openContradictions: 0 },
+    goal: {
+      id: 'initiative-goal', revision: 1, title: 'اعتماد', outcome: 'تعامل عمیق',
+      successMetrics: ['کیفیت'],
+    },
+    attentionBudget: { availableMinutes: 150, maximumEnergyCost: 3 },
+    evidence: {
+      state: 'insufficient', strategyEvidenceCount: 0, withheldEvidenceCount: 0, sourceTypes: [],
+    },
+    actions: [action],
+    workflow: { id: 'workbench_today', status: 'awaiting_approval', revision: 1 },
+  };
+  const workbench = { snapshot: () => Promise.resolve(workbenchSnapshot) };
+  const risk = new BrandProtectionService(
+    new PostgresRiskReviewRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
+    { tenantId: activeTenant, ownerUserId: owner },
+  );
+  const arbitration = new DecisionArbitrationService(
+    new PostgresArbitrationRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
+    { tenantId: activeTenant, ownerUserId: owner },
+    { workbench, risk },
+  );
+  const service = new InitiativePolicyService(
+    new PostgresInitiativeRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
+    { tenantId: activeTenant, ownerUserId: owner },
+    { workbench, arbitration },
+  );
+  try {
+    const settings = await service.updateSettings({
+      actorId: owner,
+      requestId: 'initiative_integration_settings',
+      expectedRevision: 1,
+      value: {
+        mode: 'balanced',
+        maxPromptsPer24Hours: 1,
+        minimumRelevance: 0.75,
+        pausedUntil: null,
+      },
+      occurredAt: at,
+    });
+    const request = {
+      actorId: owner,
+      requestId: 'initiative_integration_eval',
+      occurredAt: new Date(at.getTime() + 1_000),
+    } as const;
+    const first = await service.evaluate(request);
+    const replay = await service.evaluate(request);
+    const limited = await service.evaluate({
+      actorId: owner,
+      requestId: 'initiative_integration_limited',
+      occurredAt: new Date(at.getTime() + 2_000),
+    });
+    if (
+      settings.outcome !== 'saved' || settings.settings.revision !== 2 ||
+      first.outcome !== 'evaluated' || first.evaluation.decision !== 'delivered' ||
+      replay.outcome !== 'already_evaluated' ||
+      limited.evaluation.reason !== 'rate_limited'
+    ) {
+      throw new Error('Initiative persistence, idempotency or rate-limit contract failed.');
+    }
+    await runtime.transaction(async (transaction) => {
+      await transaction.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
+      const stored = await transaction.query<Readonly<{
+        mode: string;
+        revision: string | number;
+        delivered: string | number;
+        suppressed: string | number;
+      }>>(
+        `SELECT s.mode, s.revision,
+                count(*) FILTER (WHERE e.decision = 'delivered') AS delivered,
+                count(*) FILTER (WHERE e.decision = 'suppressed') AS suppressed
+           FROM app.initiative_settings s
+           LEFT JOIN app.initiative_evaluations e
+             ON e.tenant_id = s.tenant_id AND e.owner_user_id = s.owner_user_id
+          WHERE s.tenant_id = $1 AND s.owner_user_id = $2
+          GROUP BY s.mode, s.revision`,
+        [tenantA, userA],
+      );
+      const row = stored.rows[0];
+      if (
+        row?.mode !== 'balanced' || Number(row.revision) !== 2 ||
+        Number(row.delivered) !== 1 || Number(row.suppressed) !== 1
+      ) {
+        throw new Error('Stored initiative settings or evaluation ledger is incomplete.');
+      }
+    });
+  } finally {
+    await runtime.close();
   }
 }
 

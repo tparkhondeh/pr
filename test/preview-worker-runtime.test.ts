@@ -22,6 +22,14 @@ describe('private preview worker draft runtime', () => {
       }),
       env,
     );
+    const put = async (path: string, body: unknown) => worker.fetch(
+      new Request(`https://preview.example${path}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+      env,
+    );
 
     const coldWorkbench = await worker.fetch(
       new Request('https://preview.example/api/workbench'),
@@ -34,6 +42,40 @@ describe('private preview worker draft runtime', () => {
     expect(coldSnapshot.evidence).toMatchObject({ state: 'insufficient', strategyEvidenceCount: 0 });
     expect(coldSnapshot.actions[0]).toMatchObject({
       id: 'collect_evidence', interaction: 'open_intake',
+    });
+    const initialInitiative = await worker.fetch(
+      new Request('https://preview.example/api/initiative'),
+      env,
+    );
+    await expect(initialInitiative.json()).resolves.toMatchObject({
+      policyVersion: 'initiative-policy-v1',
+      persistence: 'ephemeral',
+      settings: { mode: 'reactive', revision: 1 },
+      preview: {
+        decision: 'suppressed', reason: 'reactive_mode',
+        candidate: { kind: 'evidence_question', relevance: 0.9 },
+      },
+    });
+    expect((await put('/api/initiative/settings', {
+      requestId: 'initiative_runtime_settings',
+      expectedRevision: 1,
+      mode: 'balanced',
+      maxPromptsPer24Hours: 1,
+      minimumRelevance: 0.75,
+      pausedUntil: null,
+    })).status).toBe(200);
+    const firstInitiative = await post('/api/initiative/evaluations', {
+      requestId: 'initiative_runtime_first',
+    });
+    expect(firstInitiative.status).toBe(201);
+    await expect(firstInitiative.json()).resolves.toMatchObject({
+      outcome: 'evaluated',
+      evaluation: { decision: 'delivered', reason: 'delivered', candidate: { kind: 'evidence_question' } },
+    });
+    await expect((await post('/api/initiative/evaluations', {
+      requestId: 'initiative_runtime_limited',
+    })).json()).resolves.toMatchObject({
+      evaluation: { decision: 'suppressed', reason: 'rate_limited' },
     });
     const routedApproval = await post('/api/workbench/approval', { actionId: 'collect_evidence' });
     expect(routedApproval.status).toBe(409);
@@ -449,6 +491,7 @@ describe('private preview worker draft runtime', () => {
         claims: { summary: { disputedOrRevoked: number }; claims: unknown[] };
         risk: { policyVersion: string; assessments: unknown[] };
         arbitration: { policyVersion: string; cases: unknown[] };
+        initiative: { policyVersion: string; settings: { mode: string }; evaluations: unknown[] };
       };
     };
     expect(accountExportResponse.status).toBe(200);
@@ -463,6 +506,10 @@ describe('private preview worker draft runtime', () => {
     expect(accountExport.data.risk.assessments).toHaveLength(3);
     expect(accountExport.data.arbitration).toMatchObject({ policyVersion: 'intermodule-arbitration-v1' });
     expect(accountExport.data.arbitration.cases).toHaveLength(1);
+    expect(accountExport.data.initiative).toMatchObject({
+      policyVersion: 'initiative-policy-v1', settings: { mode: 'balanced' },
+    });
+    expect(accountExport.data.initiative.evaluations).toHaveLength(2);
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

@@ -43,6 +43,13 @@ const riskReviews = new Map();
 const riskReviewRequests = new Map();
 const arbitrationCases = new Map();
 const arbitrationRequests = new Map();
+let initiativeSettings = {
+  mode: 'reactive', maxPromptsPer24Hours: 1, minimumRelevance: 0.75,
+  pausedUntil: null, revision: 1, updatedAt: new Date(0).toISOString(), persistence: 'ephemeral',
+};
+const initiativeEvaluations = new Map();
+const initiativeEvaluationRequests = new Map();
+const initiativeSettingRequests = new Map();
 
 const groundedActions = [
   {
@@ -264,6 +271,84 @@ export default {
       return json({ outcome: 'applied', persistence: 'ephemeral', case: arbitrationCase }, 201);
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/initiative') {
+      return json(await initiativeWorkspaceSnapshot());
+    }
+
+    if (request.method === 'PUT' && url.pathname === '/api/initiative/settings') {
+      const body = await readJson(request);
+      if (!validInitiativeSettingsRequest(body)) return json({ error: 'invalid_initiative_settings' }, 400);
+      const fingerprint = await sha256Hex(JSON.stringify({
+        policyVersion: 'initiative-policy-v1', expectedRevision: body.expectedRevision,
+        value: {
+          mode: body.mode, maxPromptsPer24Hours: body.maxPromptsPer24Hours,
+          minimumRelevance: body.minimumRelevance, pausedUntil: body.pausedUntil,
+        },
+      }));
+      const repeated = initiativeSettingRequests.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json({ outcome: 'already_saved', settings: repeated.settings })
+          : json({ error: 'idempotency_mismatch' }, 409);
+      }
+      if (body.expectedRevision !== initiativeSettings.revision) {
+        return json({ error: 'revision_changed' }, 409);
+      }
+      initiativeSettings = {
+        mode: body.mode,
+        maxPromptsPer24Hours: body.maxPromptsPer24Hours,
+        minimumRelevance: body.minimumRelevance,
+        pausedUntil: body.pausedUntil,
+        revision: body.expectedRevision + 1,
+        updatedAt: new Date().toISOString(),
+        persistence: 'ephemeral',
+      };
+      initiativeSettingRequests.set(body.requestId, { fingerprint, settings: initiativeSettings });
+      recordAudit(`initiative.settings_updated:${body.requestId}`, {
+        eventType: 'initiative.settings_updated', resourceType: 'initiative_settings',
+        resourceId: 'owner_primary', purpose: 'strategy_reasoning', decision: body.mode,
+        metadata: { revision: initiativeSettings.revision, policyVersion: 'initiative-policy-v1' },
+        occurredAt: initiativeSettings.updatedAt,
+      });
+      return json({ outcome: 'saved', settings: initiativeSettings });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/initiative/evaluations') {
+      const body = await readJson(request);
+      if (!validInitiativeEvaluationRequest(body)) return json({ error: 'invalid_initiative_evaluation' }, 400);
+      const context = await initiativeContext();
+      const candidate = await initiativeCandidate(context);
+      const fingerprint = await sha256Hex(JSON.stringify({
+        policyVersion: 'initiative-policy-v1', contextHash: context.contextHash,
+        candidateId: candidate?.candidateId ?? null,
+      }));
+      const repeated = initiativeEvaluationRequests.get(body.requestId);
+      if (repeated) {
+        return repeated.fingerprint === fingerprint
+          ? json({ outcome: 'already_evaluated', persistence: 'ephemeral', evaluation: repeated.evaluation })
+          : json({ error: 'idempotency_mismatch' }, 409);
+      }
+      const createdAt = new Date();
+      const decision = initiativeDecision(initiativeSettings, [...initiativeEvaluations.values()], candidate, createdAt);
+      const evaluation = {
+        evaluationId: crypto.randomUUID(), requestId: body.requestId,
+        policyVersion: 'initiative-policy-v1', settingsRevision: initiativeSettings.revision,
+        contextHash: context.contextHash, candidate, ...decision, createdAt: createdAt.toISOString(),
+      };
+      initiativeEvaluations.set(evaluation.evaluationId, evaluation);
+      initiativeEvaluationRequests.set(body.requestId, { fingerprint, evaluation });
+      recordAudit(`initiative.evaluated:${body.requestId}`, {
+        eventType: 'initiative.evaluated', resourceType: 'initiative_evaluation',
+        resourceId: evaluation.evaluationId, purpose: 'strategy_reasoning', decision: evaluation.decision,
+        metadata: {
+          reason: evaluation.reason, candidateId: candidate?.candidateId ?? null,
+          relevance: candidate?.relevance ?? null, policyVersion: evaluation.policyVersion,
+        },
+        occurredAt: evaluation.createdAt,
+      });
+      return json({ outcome: 'evaluated', persistence: 'ephemeral', evaluation }, 201);
+    }
+
     const riskReview = url.pathname.match(/^\/api\/risk\/actions\/([^/]+)\/reviews$/);
     if (request.method === 'POST' && riskReview?.[1]) {
       const body = await readJson(request);
@@ -336,6 +421,7 @@ export default {
           claims: claimGovernanceSnapshot(),
           risk: await riskSnapshot(),
           arbitration: await arbitrationWorkspaceSnapshot(),
+          initiative: await initiativeWorkspaceSnapshot(),
           feedback: feedbackSnapshot(),
           activity,
         },
@@ -1441,6 +1527,153 @@ async function arbitrationActionHash(action) {
     evidenceState: action.evidenceState, confidence: action.confidence, riskLevel: action.riskLevel,
     utilityScore: action.utilityScore, opportunityCost: action.opportunityCost, feasible: action.feasible,
   }));
+}
+
+const initiativeWindowMilliseconds = 24 * 60 * 60 * 1000;
+
+async function initiativeContext() {
+  const workbench = snapshot();
+  const arbitration = await arbitrationWorkspaceSnapshot();
+  const contextHash = await sha256Hex(JSON.stringify({
+    policyVersion: 'initiative-policy-v1',
+    goalRevision: workbench.goal.revision,
+    evidence: workbench.evidence,
+    actions: workbench.actions.map((action) => ({
+      id: action.id, kind: action.kind, rank: action.rank, feasible: action.feasible,
+      evidenceIds: action.evidenceIds, evidenceState: action.evidenceState,
+      confidence: action.confidence, attentionCostMinutes: action.attentionCostMinutes,
+      riskLevel: action.riskLevel,
+    })),
+    arbitration: arbitration.cases.map((item) => ({
+      caseId: item.caseId, snapshotHash: item.snapshotHash,
+      contextHash: item.contextHash, stale: item.stale,
+    })),
+  }));
+  return { workbench, arbitration, contextHash };
+}
+
+async function initiativeWorkspaceSnapshot() {
+  const generatedAt = new Date();
+  const context = await initiativeContext();
+  const candidate = await initiativeCandidate(context, generatedAt);
+  const evaluations = [...initiativeEvaluations.values()]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const preview = initiativeDecision(initiativeSettings, evaluations, candidate, generatedAt);
+  const delivered = initiativeDeliveredWithinWindow(evaluations, generatedAt);
+  return {
+    generatedAt: generatedAt.toISOString(), persistence: 'ephemeral',
+    policyVersion: 'initiative-policy-v1', settings: initiativeSettings,
+    window: {
+      startsAt: new Date(generatedAt.getTime() - initiativeWindowMilliseconds).toISOString(),
+      delivered, remaining: Math.max(0, initiativeSettings.maxPromptsPer24Hours - delivered),
+    },
+    preview: { candidate, ...preview },
+    evaluations: evaluations.map((evaluation) => ({
+      ...evaluation,
+      stale: evaluation.contextHash !== context.contextHash ||
+        (evaluation.candidate !== null && new Date(evaluation.candidate.expiresAt).getTime() <= generatedAt.getTime()),
+    })),
+  };
+}
+
+async function initiativeCandidate(context, at = new Date()) {
+  const staleDecision = context.arbitration.cases.find((item) => item.stale);
+  if (staleDecision) {
+    return makeInitiativeCandidate({
+      kind: 'decision_refresh', title: 'این تصمیم به Context قدیمی متکی است',
+      prompt: 'مایلی رأی ماژول‌ها را با Strategy، Risk و Claim فعلی دوباره جمع‌آوری کنیم؟',
+      rationale: 'Snapshot داوری پس از تغییر Context یا پایان پنجره اعتبار stale شده است.',
+      relevance: 0.95, confidence: 1, targetView: 'arbitration',
+      sourceRefs: [`arbitration_case:${staleDecision.caseId}`, `snapshot:${staleDecision.snapshotHash}`],
+      contextHash: context.contextHash, at,
+    });
+  }
+  if (context.workbench.evidence.state === 'insufficient') {
+    return makeInitiativeCandidate({
+      kind: 'evidence_question', title: 'یک سؤال کوتاه برای کم‌کردن حدس',
+      prompt: 'درباره یک موقعیت واقعی که شیوه تصمیم‌گیری تو را نشان می‌دهد، چه تجربه‌ای ارزش ثبت‌کردن دارد؟',
+      rationale: 'Evidence کافی برای توصیه استراتژیک وجود ندارد؛ یک پاسخ اختیاری Information Gain بالاتری از تولید محتوای حدسی دارد.',
+      relevance: 0.9, confidence: 0.9, targetView: 'intake',
+      sourceRefs: [
+        `strategy_revision:${String(context.workbench.goal.revision)}`,
+        `evidence_count:${String(context.workbench.evidence.strategyEvidenceCount)}`,
+      ],
+      contextHash: context.contextHash, at,
+    });
+  }
+  const action = [...context.workbench.actions]
+    .filter((item) => item.kind !== 'no_action' && item.feasible && item.evidenceState === 'grounded')
+    .sort((left, right) => left.rank - right.rank)[0];
+  if (!action) return null;
+  const relevance = Math.round(Math.min(
+    0.95,
+    Math.max(0.5, 0.52 + action.confidence * 0.4 - Math.min(action.attentionCostMinutes / 1000, 0.12)),
+  ) * 100) / 100;
+  return makeInitiativeCandidate({
+    kind: 'action_window', title: 'یک حرکت مرتبط با مسیر فعلی آماده بررسی است',
+    prompt: `مایلی «${action.title}» را باز کنیم و قبل از هر اقدام، Evidence و Risk آن را ببینی؟`,
+    rationale: 'این Cue از Action رتبه‌دار، Evidence مجاز، امکان‌پذیری و Attention Cost ساخته شده و به معنی الزام به اقدام نیست.',
+    relevance, confidence: action.confidence, targetView: 'today',
+    sourceRefs: [`action:${action.id}`, ...action.evidenceIds.map((id) => `evidence:${id}`)],
+    contextHash: context.contextHash, at,
+  });
+}
+
+async function makeInitiativeCandidate(input) {
+  const hash = await sha256Hex(`initiative:${input.kind}:${input.contextHash}`);
+  return {
+    candidateId: uuidFromHash(hash), kind: input.kind, title: input.title,
+    prompt: input.prompt, rationale: input.rationale, relevance: input.relevance,
+    confidence: input.confidence, targetView: input.targetView,
+    sourceRefs: input.sourceRefs, contextHash: input.contextHash,
+    expiresAt: new Date(input.at.getTime() + initiativeWindowMilliseconds).toISOString(),
+  };
+}
+
+function initiativeDecision(settings, evaluations, candidate, at) {
+  if (settings.mode === 'reactive') return { decision: 'suppressed', reason: 'reactive_mode' };
+  if (settings.pausedUntil && new Date(settings.pausedUntil).getTime() > at.getTime()) {
+    return { decision: 'suppressed', reason: 'paused' };
+  }
+  if (!candidate) return { decision: 'suppressed', reason: 'no_material_signal' };
+  if (candidate.relevance < settings.minimumRelevance) {
+    return { decision: 'suppressed', reason: 'below_relevance' };
+  }
+  if (initiativeDeliveredWithinWindow(evaluations, at) >= settings.maxPromptsPer24Hours) {
+    return { decision: 'suppressed', reason: 'rate_limited' };
+  }
+  return { decision: 'delivered', reason: 'delivered' };
+}
+
+function initiativeDeliveredWithinWindow(evaluations, at) {
+  const startsAt = at.getTime() - initiativeWindowMilliseconds;
+  return evaluations.filter((item) => {
+    const createdAt = new Date(item.createdAt).getTime();
+    return item.decision === 'delivered' && createdAt >= startsAt && createdAt <= at.getTime();
+  }).length;
+}
+
+function validInitiativeSettingsRequest(body) {
+  const paused = body?.pausedUntil;
+  const pausedTime = typeof paused === 'string' ? new Date(paused).getTime() : null;
+  const now = Date.now();
+  return typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId) &&
+    Number.isSafeInteger(body.expectedRevision) && body.expectedRevision >= 1 &&
+    ['reactive', 'balanced', 'proactive'].includes(body.mode) &&
+    [1, 2, 3].includes(body.maxPromptsPer24Hours) &&
+    typeof body.minimumRelevance === 'number' && Number.isFinite(body.minimumRelevance) &&
+    body.minimumRelevance >= 0.5 && body.minimumRelevance <= 0.95 &&
+    (paused === null || (typeof paused === 'string' && Number.isFinite(pausedTime) &&
+      pausedTime > now && pausedTime <= now + 30 * initiativeWindowMilliseconds));
+}
+
+function validInitiativeEvaluationRequest(body) {
+  return typeof body?.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(body.requestId);
+}
+
+function uuidFromHash(hash) {
+  const value = `${hash.slice(0, 12)}4${hash.slice(13, 16)}8${hash.slice(17, 32)}`;
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
 function validArbitrationRequest(body) {

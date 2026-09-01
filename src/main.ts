@@ -33,6 +33,11 @@ import {
   InMemoryFeedbackLearningRepository,
   PostgresFeedbackLearningRepository,
 } from './feedback/workspace.js';
+import {
+  InMemoryInitiativeRepository,
+  InitiativePolicyService,
+  PostgresInitiativeRepository,
+} from './initiative/initiative-policy.js';
 import { createRequestHandler } from './http/application.js';
 import { createStaticRequestHandler } from './http/static-application.js';
 import { tenantId, userId } from './kernel/identity.js';
@@ -193,6 +198,16 @@ const arbitration = new DecisionArbitrationService(
   { tenantId: activeTenant, ownerUserId: owner },
   { workbench, risk, claims },
 );
+const initiative = new InitiativePolicyService(
+  postgres && environment.database
+    ? new PostgresInitiativeRepository(postgres, {
+        tenantId: environment.database.tenantId,
+        ownerUserId: environment.database.ownerUserId,
+      })
+    : new InMemoryInitiativeRepository(),
+  { tenantId: activeTenant, ownerUserId: owner },
+  { workbench, arbitration },
+);
 const requestHandler = createRequestHandler(
   async () => ({
     ...(postgres ? await postgres.readiness() : { ready: true }),
@@ -211,6 +226,7 @@ const requestHandler = createRequestHandler(
     claims,
     risk,
     arbitration,
+    initiative,
     ...(!postgres ? { mutationAuditTrail: auditTrail } : {}),
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity

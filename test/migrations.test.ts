@@ -86,6 +86,10 @@ const arbitrationMigrationPath = fileURLToPath(
   new URL('../db/migrations/0020_inter_module_arbitration.sql', import.meta.url),
 );
 const arbitrationSql = readFileSync(arbitrationMigrationPath, 'utf8');
+const initiativeMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0021_proactive_initiative.sql', import.meta.url),
+);
+const initiativeSql = readFileSync(initiativeMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -123,6 +127,21 @@ describe('foundation migration', () => {
     expect(arbitrationSql).toContain('effectiveAutonomyLevel');
     expect(arbitrationSql).toContain('BETWEEN 0 AND 5');
     expect(arbitrationSql).toContain('UNIQUE (tenant_id, owner_user_id, client_ref)');
+  });
+
+  it('adds owner-controlled, rate-limited proactive initiative without execution authority', () => {
+    defineMigration('0021_proactive_initiative', initiativeSql);
+    for (const table of ['initiative_settings', 'initiative_setting_requests', 'initiative_evaluations']) {
+      expect(initiativeSql).toContain(`CREATE TABLE app.${table}`);
+      expect(initiativeSql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
+      expect(initiativeSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
+    expect(initiativeSql).toContain("mode IN ('reactive', 'balanced', 'proactive')");
+    expect(initiativeSql).toContain('max_prompts_per_24_hours BETWEEN 1 AND 3');
+    expect(initiativeSql).toContain('minimum_relevance BETWEEN 0.5 AND 0.95');
+    expect(initiativeSql).toContain("policy_version = 'initiative-policy-v1'");
+    expect(initiativeSql).toContain("decision IN ('delivered', 'suppressed')");
+    expect(initiativeSql).toContain('no outbound notification or action side effect');
   });
 
   it('defines the required tenant-owned tables', () => {

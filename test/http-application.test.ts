@@ -20,6 +20,10 @@ import {
   InMemoryFeedbackLearningRepository,
 } from '../src/feedback/workspace.js';
 import {
+  InMemoryInitiativeRepository,
+  InitiativePolicyService,
+} from '../src/initiative/initiative-policy.js';
+import {
   createRequestHandler,
   type ApplicationDependencies,
 } from '../src/http/application.js';
@@ -246,6 +250,108 @@ describe('operational endpoints', () => {
     );
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: 'authentication_required' });
+  });
+
+  it('keeps proactive cues owner-configured, relevant and rate-limited', async () => {
+    let clock = new Date('2026-09-01T01:10:00.000Z');
+    const owner = userId('owner_primary');
+    const activeTenant = tenantId('tenant_primary');
+    const workbench = createDefaultWorkbenchService(
+      () => clock,
+      undefined,
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    const risk = new BrandProtectionService(new InMemoryRiskReviewRepository(), {
+      tenantId: activeTenant,
+      ownerUserId: owner,
+    });
+    const arbitration = new DecisionArbitrationService(
+      new InMemoryArbitrationRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+      { workbench, risk },
+    );
+    const initiative = new InitiativePolicyService(
+      new InMemoryInitiativeRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+      { workbench, arbitration },
+    );
+    const auditTrail = new AuditTrailService(new InMemoryAuditTrailRepository(), {
+      tenantId: activeTenant,
+      ownerUserId: owner,
+    });
+    const dependencies: ApplicationDependencies = {
+      workbench,
+      arbitration,
+      initiative,
+      mutationAuditTrail: auditTrail,
+      resolveActor: () => owner,
+      clock: () => clock,
+    };
+
+    const initial = await request('/api/initiative', () => ({ ready: true }), undefined, dependencies);
+    await expect(initial.json()).resolves.toMatchObject({
+      policyVersion: 'initiative-policy-v1',
+      settings: { mode: 'reactive', revision: 1 },
+      preview: { decision: 'suppressed', reason: 'reactive_mode', candidate: { relevance: 0.9 } },
+    });
+
+    const settings = await request(
+      '/api/initiative/settings',
+      () => ({ ready: true }),
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'initiative_http_settings',
+          expectedRevision: 1,
+          mode: 'balanced',
+          maxPromptsPer24Hours: 1,
+          minimumRelevance: 0.75,
+          pausedUntil: null,
+        }),
+      },
+      dependencies,
+    );
+    expect(settings.status).toBe(200);
+    await expect(settings.json()).resolves.toMatchObject({
+      outcome: 'saved', settings: { mode: 'balanced', revision: 2 },
+    });
+
+    clock = new Date(clock.getTime() + 1_000);
+    const first = await request(
+      '/api/initiative/evaluations',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: 'initiative_http_first' }),
+      },
+      dependencies,
+    );
+    expect(first.status).toBe(201);
+    await expect(first.json()).resolves.toMatchObject({
+      outcome: 'evaluated',
+      evaluation: { decision: 'delivered', reason: 'delivered', candidate: { kind: 'evidence_question' } },
+    });
+
+    clock = new Date(clock.getTime() + 1_000);
+    const second = await request(
+      '/api/initiative/evaluations',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: 'initiative_http_second' }),
+      },
+      dependencies,
+    );
+    await expect(second.json()).resolves.toMatchObject({
+      evaluation: { decision: 'suppressed', reason: 'rate_limited' },
+    });
+
+    const activity = await auditTrail.snapshot(owner, clock);
+    expect(activity.events.filter((event) => event.eventType === 'initiative.settings_updated')).toHaveLength(1);
+    expect(activity.events.filter((event) => event.eventType === 'initiative.evaluated')).toHaveLength(2);
   });
 
   it('accepts a human approval and returns the evolved workflow', async () => {

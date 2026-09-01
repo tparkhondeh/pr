@@ -357,6 +357,78 @@ export type ArbitrationAssessmentResult = Readonly<{
   case: ArbitrationCase;
 }>;
 
+export type InitiativeMode = 'reactive' | 'balanced' | 'proactive';
+export type InitiativeCueKind = 'evidence_question' | 'action_window' | 'decision_refresh';
+export type InitiativeDecisionReason =
+  | 'delivered'
+  | 'reactive_mode'
+  | 'paused'
+  | 'rate_limited'
+  | 'below_relevance'
+  | 'no_material_signal';
+
+export type InitiativeSettings = Readonly<{
+  mode: InitiativeMode;
+  maxPromptsPer24Hours: 1 | 2 | 3;
+  minimumRelevance: number;
+  pausedUntil: string | null;
+  revision: number;
+  updatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+}>;
+
+export type InitiativeCue = Readonly<{
+  candidateId: string;
+  kind: InitiativeCueKind;
+  title: string;
+  prompt: string;
+  rationale: string;
+  relevance: number;
+  confidence: number;
+  targetView: 'intake' | 'today' | 'arbitration';
+  sourceRefs: readonly string[];
+  contextHash: string;
+  expiresAt: string;
+}>;
+
+export type InitiativeEvaluation = Readonly<{
+  evaluationId: string;
+  requestId: string;
+  policyVersion: 'initiative-policy-v1';
+  settingsRevision: number;
+  contextHash: string;
+  candidate: InitiativeCue | null;
+  decision: 'delivered' | 'suppressed';
+  reason: InitiativeDecisionReason;
+  createdAt: string;
+  stale?: boolean;
+}>;
+
+export type InitiativeWorkspaceSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  policyVersion: 'initiative-policy-v1';
+  settings: InitiativeSettings;
+  window: Readonly<{ startsAt: string; delivered: number; remaining: number }>;
+  preview: Readonly<{
+    candidate: InitiativeCue | null;
+    decision: 'delivered' | 'suppressed';
+    reason: InitiativeDecisionReason;
+  }>;
+  evaluations: readonly InitiativeEvaluation[];
+}>;
+
+export type InitiativeSettingsResult = Readonly<{
+  outcome: 'saved' | 'already_saved';
+  settings: InitiativeSettings;
+}>;
+
+export type InitiativeEvaluationResult = Readonly<{
+  outcome: 'evaluated' | 'already_evaluated';
+  persistence: 'memory' | 'postgres' | 'ephemeral';
+  evaluation: InitiativeEvaluation;
+}>;
+
 export type DraftChannel = 'linkedin' | 'instagram' | 'x' | 'youtube' | 'podcast' | 'newsletter' | 'blog';
 export type DraftSourceKind = 'memory' | 'text_asset';
 
@@ -690,6 +762,7 @@ export type AccountDataExport = Readonly<{
     claims: ClaimGovernanceSnapshot | null;
     risk: BrandProtectionSnapshot | null;
     arbitration: ArbitrationWorkspaceSnapshot | null;
+    initiative: InitiativeWorkspaceSnapshot | null;
     draft: DraftWorkspaceSnapshot | null;
     feedback: FeedbackLearningSnapshot;
     activity: AuditTrailSnapshot;
@@ -842,6 +915,51 @@ export async function assessArbitration(input: Readonly<{
     throw new WorkbenchApiError(200, 'invalid_response');
   }
   return payload as ArbitrationAssessmentResult;
+}
+
+export async function loadInitiative(signal?: AbortSignal): Promise<InitiativeWorkspaceSnapshot> {
+  const payload = await requestJson('/api/initiative', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isInitiativeWorkspaceSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function updateInitiativeSettings(input: Readonly<{
+  requestId: string;
+  expectedRevision: number;
+  mode: InitiativeMode;
+  maxPromptsPer24Hours: 1 | 2 | 3;
+  minimumRelevance: number;
+  pausedUntil: string | null;
+}>): Promise<InitiativeSettingsResult> {
+  const payload = await requestJson('/api/initiative/settings', {
+    method: 'PUT',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (
+    !isRecord(payload) || (payload['outcome'] !== 'saved' && payload['outcome'] !== 'already_saved') ||
+    !isInitiativeSettings(payload['settings'])
+  ) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload as InitiativeSettingsResult;
+}
+
+export async function evaluateInitiative(input: Readonly<{
+  requestId: string;
+}>): Promise<InitiativeEvaluationResult> {
+  const payload = await requestJson('/api/initiative/evaluations', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (
+    !isRecord(payload) ||
+    (payload['outcome'] !== 'evaluated' && payload['outcome'] !== 'already_evaluated') ||
+    !isPersistence(payload['persistence']) || !isInitiativeEvaluation(payload['evaluation'])
+  ) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload as InitiativeEvaluationResult;
 }
 
 export async function reviewRisk(input: Readonly<{
@@ -1503,6 +1621,65 @@ function isArbitrationOutcome(value: unknown): value is ArbitrationOutcome {
     value === 'approval_required' || value === 'held';
 }
 
+function isInitiativeWorkspaceSnapshot(value: unknown): value is InitiativeWorkspaceSnapshot {
+  if (!isRecord(value) || value['policyVersion'] !== 'initiative-policy-v1') return false;
+  const window = value['window'];
+  const preview = value['preview'];
+  return (
+    typeof value['generatedAt'] === 'string' && isPersistence(value['persistence']) &&
+    isInitiativeSettings(value['settings']) &&
+    isRecord(window) && typeof window['startsAt'] === 'string' &&
+    typeof window['delivered'] === 'number' && typeof window['remaining'] === 'number' &&
+    isRecord(preview) && (preview['candidate'] === null || isInitiativeCue(preview['candidate'])) &&
+    (preview['decision'] === 'delivered' || preview['decision'] === 'suppressed') &&
+    isInitiativeReason(preview['reason']) && Array.isArray(value['evaluations']) &&
+    value['evaluations'].every(isInitiativeEvaluation)
+  );
+}
+
+function isInitiativeSettings(value: unknown): value is InitiativeSettings {
+  return isRecord(value) && isInitiativeMode(value['mode']) &&
+    (value['maxPromptsPer24Hours'] === 1 || value['maxPromptsPer24Hours'] === 2 ||
+      value['maxPromptsPer24Hours'] === 3) &&
+    typeof value['minimumRelevance'] === 'number' &&
+    (value['pausedUntil'] === null || typeof value['pausedUntil'] === 'string') &&
+    typeof value['revision'] === 'number' && typeof value['updatedAt'] === 'string' &&
+    isPersistence(value['persistence']);
+}
+
+function isInitiativeCue(value: unknown): value is InitiativeCue {
+  return isRecord(value) && typeof value['candidateId'] === 'string' &&
+    isInitiativeCueKind(value['kind']) && typeof value['title'] === 'string' &&
+    typeof value['prompt'] === 'string' && typeof value['rationale'] === 'string' &&
+    typeof value['relevance'] === 'number' && typeof value['confidence'] === 'number' &&
+    (value['targetView'] === 'intake' || value['targetView'] === 'today' || value['targetView'] === 'arbitration') &&
+    isStringArray(value['sourceRefs']) && typeof value['contextHash'] === 'string' &&
+    typeof value['expiresAt'] === 'string';
+}
+
+function isInitiativeEvaluation(value: unknown): value is InitiativeEvaluation {
+  return isRecord(value) && typeof value['evaluationId'] === 'string' &&
+    typeof value['requestId'] === 'string' && value['policyVersion'] === 'initiative-policy-v1' &&
+    typeof value['settingsRevision'] === 'number' && typeof value['contextHash'] === 'string' &&
+    (value['candidate'] === null || isInitiativeCue(value['candidate'])) &&
+    (value['decision'] === 'delivered' || value['decision'] === 'suppressed') &&
+    isInitiativeReason(value['reason']) && typeof value['createdAt'] === 'string' &&
+    (value['stale'] === undefined || typeof value['stale'] === 'boolean');
+}
+
+function isInitiativeMode(value: unknown): value is InitiativeMode {
+  return value === 'reactive' || value === 'balanced' || value === 'proactive';
+}
+
+function isInitiativeCueKind(value: unknown): value is InitiativeCueKind {
+  return value === 'evidence_question' || value === 'action_window' || value === 'decision_refresh';
+}
+
+function isInitiativeReason(value: unknown): value is InitiativeDecisionReason {
+  return value === 'delivered' || value === 'reactive_mode' || value === 'paused' ||
+    value === 'rate_limited' || value === 'below_relevance' || value === 'no_material_signal';
+}
+
 function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
@@ -1601,6 +1778,7 @@ function isAccountDataExport(payload: unknown): payload is AccountDataExport {
     (data['claims'] === null || isClaimGovernanceSnapshot(data['claims'])) &&
     (data['risk'] === null || isBrandProtectionSnapshot(data['risk'])) &&
     (data['arbitration'] === null || isArbitrationWorkspaceSnapshot(data['arbitration'])) &&
+    (data['initiative'] === null || isInitiativeWorkspaceSnapshot(data['initiative'])) &&
     (data['draft'] === null || isDraftWorkspaceSnapshot(data['draft'])) &&
     isFeedbackLearningSnapshot(data['feedback']) && isAuditTrailSnapshot(data['activity'])
   );

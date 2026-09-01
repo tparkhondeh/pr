@@ -61,6 +61,14 @@ import {
   type FeedbackLearningSnapshot,
   type PreferenceDecision,
 } from '../feedback/workspace.js';
+import {
+  InitiativeConflictError,
+  InitiativePermissionError,
+  InitiativeValidationError,
+  type EditableInitiativeSettings,
+  type InitiativeMode,
+  type InitiativePolicyService,
+} from '../initiative/initiative-policy.js';
 import type { TenantId, UserId } from '../kernel/identity.js';
 import {
   BrandProtectionBlockedError,
@@ -123,6 +131,7 @@ export type ApplicationDependencies = Readonly<{
   claims?: Pick<ClaimGovernanceService, 'snapshot' | 'review'>;
   risk?: Pick<BrandProtectionService, 'snapshot' | 'review' | 'authorizeAction'>;
   arbitration?: Pick<DecisionArbitrationService, 'snapshot' | 'assess'>;
+  initiative?: Pick<InitiativePolicyService, 'snapshot' | 'updateSettings' | 'evaluate'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -235,6 +244,21 @@ export function createRequestHandler(
 
     if (request.method === 'POST' && path === '/api/arbitration/cases') {
       await handleArbitrationAssessment(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/initiative') {
+      await handleInitiativeSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'PUT' && path === '/api/initiative/settings') {
+      await handleInitiativeSettings(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/initiative/evaluations') {
+      await handleInitiativeEvaluation(request, response, dependencies);
       return;
     }
 
@@ -951,6 +975,158 @@ function sendArbitrationError(response: ServerResponse, error: unknown): void {
   sendJson(response, 500, { error: 'arbitration_failed' });
 }
 
+async function handleInitiativeSnapshot(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = initiativeActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const snapshot = await dependencies.initiative?.snapshot(actorId, now(dependencies));
+    if (!snapshot) throw new Error('Initiative service disappeared.');
+    sendJson(response, 200, snapshot);
+  } catch (error: unknown) {
+    sendInitiativeError(response, error);
+  }
+}
+
+async function handleInitiativeSettings(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = initiativeActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const expectedRevision = body['expectedRevision'];
+    const mode = body['mode'];
+    const maxPromptsPer24Hours = body['maxPromptsPer24Hours'];
+    const minimumRelevance = body['minimumRelevance'];
+    const pausedUntil = body['pausedUntil'];
+    if (
+      typeof requestId !== 'string' || typeof expectedRevision !== 'number' ||
+      !isInitiativeMode(mode) || typeof maxPromptsPer24Hours !== 'number' ||
+      typeof minimumRelevance !== 'number' ||
+      (pausedUntil !== null && typeof pausedUntil !== 'string')
+    ) {
+      sendJson(response, 400, { error: 'invalid_initiative_settings' });
+      return;
+    }
+    const occurredAt = now(dependencies);
+    const value: EditableInitiativeSettings = {
+      mode,
+      maxPromptsPer24Hours: maxPromptsPer24Hours as 1 | 2 | 3,
+      minimumRelevance,
+      pausedUntil,
+    };
+    const result = await dependencies.initiative?.updateSettings({
+      actorId,
+      requestId,
+      expectedRevision,
+      value,
+      occurredAt,
+    });
+    if (!result) throw new Error('Initiative service disappeared.');
+    if (result.outcome === 'saved') {
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `initiative.settings_updated:${requestId}`,
+        eventType: 'initiative.settings_updated',
+        resourceType: 'initiative_settings',
+        resourceId: String(actorId),
+        purpose: 'strategy_reasoning',
+        decision: result.settings.mode,
+        metadata: { revision: result.settings.revision, policyVersion: 'initiative-policy-v1' },
+        occurredAt,
+      });
+    }
+    sendJson(response, 200, result);
+  } catch (error: unknown) {
+    sendInitiativeError(response, error);
+  }
+}
+
+async function handleInitiativeEvaluation(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = initiativeActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    if (typeof requestId !== 'string') {
+      sendJson(response, 400, { error: 'invalid_initiative_evaluation' });
+      return;
+    }
+    const occurredAt = now(dependencies);
+    const result = await dependencies.initiative?.evaluate({ actorId, requestId, occurredAt });
+    if (!result) throw new Error('Initiative service disappeared.');
+    if (result.outcome === 'evaluated') {
+      await recordMutationAudit(dependencies, {
+        actorId,
+        requestId: `initiative.evaluated:${requestId}`,
+        eventType: 'initiative.evaluated',
+        resourceType: 'initiative_evaluation',
+        resourceId: result.evaluation.evaluationId,
+        purpose: 'strategy_reasoning',
+        decision: result.evaluation.decision,
+        metadata: {
+          reason: result.evaluation.reason,
+          candidateId: result.evaluation.candidate?.candidateId ?? null,
+          relevance: result.evaluation.candidate?.relevance ?? null,
+          policyVersion: result.evaluation.policyVersion,
+        },
+        occurredAt,
+      });
+    }
+    sendJson(response, result.outcome === 'evaluated' ? 201 : 200, result);
+  } catch (error: unknown) {
+    sendInitiativeError(response, error);
+  }
+}
+
+function initiativeActor(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): UserId | undefined {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return undefined;
+  }
+  if (!dependencies.initiative) {
+    sendJson(response, 503, { error: 'initiative_unavailable' });
+    return undefined;
+  }
+  return actorId;
+}
+
+function sendInitiativeError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof InitiativeValidationError) {
+    sendJson(response, 400, { error: 'invalid_initiative_request' });
+    return;
+  }
+  if (error instanceof InitiativePermissionError) {
+    sendJson(response, 403, { error: 'initiative_permission_denied' });
+    return;
+  }
+  if (error instanceof InitiativeConflictError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  sendJson(response, 500, { error: 'initiative_failed' });
+}
+
+function isInitiativeMode(value: unknown): value is InitiativeMode {
+  return value === 'reactive' || value === 'balanced' || value === 'proactive';
+}
+
 async function handleRiskSnapshot(
   request: IncomingMessage,
   response: ServerResponse,
@@ -1150,7 +1326,7 @@ async function handleAccountExport(
   }
   const exportedAt = now(dependencies);
   try {
-    const [workbench, strategy, draft, feedback, memory, assets, research, claims, arbitration, activity] = await Promise.all([
+    const [workbench, strategy, draft, feedback, memory, assets, research, claims, arbitration, initiative, activity] = await Promise.all([
       dependencies.workbench.snapshot(),
       dependencies.strategy.snapshot(actorId),
       dependencies.drafts.snapshot(actorId, exportedAt),
@@ -1164,6 +1340,7 @@ async function handleAccountExport(
       dependencies.research?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.claims?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.arbitration?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
+      dependencies.initiative?.snapshot(actorId, exportedAt) ?? Promise.resolve(null),
       dependencies.auditTrail?.snapshot(actorId, exportedAt),
     ]);
     if (!activity) throw new Error('Audit trail disappeared.');
@@ -1198,6 +1375,7 @@ async function handleAccountExport(
           claims: claims ? serializeClaimSnapshot(claims) : null,
           risk: risk ? serializeRiskSnapshot(risk) : null,
           arbitration,
+          initiative,
           draft: draft ? serializeDraft(draft) : null,
           feedback: serializeFeedback(feedback),
           activity: serializeAuditTrail(activity),
