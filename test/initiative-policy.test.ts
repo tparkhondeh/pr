@@ -7,6 +7,7 @@ import {
 } from '../src/initiative/initiative-policy.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
 import type { WorkbenchAction, WorkbenchSnapshot } from '../src/workbench/workbench.js';
+import { testAttentionBudget, testDecisionContract, testDecisionFrame } from './support/strategic-decision.js';
 
 const tenant = tenantId('tenant_primary');
 const owner = userId('owner_primary');
@@ -161,13 +162,15 @@ function snapshot(
   evidenceCount: number,
 ): WorkbenchSnapshot {
   return {
+    policyVersion: 'strategic-decision-v1',
     generatedAt: now.toISOString(),
     runtime: { source: 'node_api', persistence: 'memory' },
     profile: { maturityPercent: evidenceCount ? 20 : 0, evidenceCount, openContradictions: 0 },
     goal: {
       id: 'goal-1', revision: evidenceCount ? 2 : 1, title: 'اعتماد', outcome: 'تعامل عمیق', successMetrics: ['کیفیت'],
     },
-    attentionBudget: { availableMinutes: 150, maximumEnergyCost: 3 },
+    attentionBudget: testAttentionBudget,
+    decisionFrame: testDecisionFrame(now),
     evidence: {
       state: evidenceState,
       strategyEvidenceCount: evidenceCount,
@@ -198,11 +201,15 @@ function action(input: Readonly<{
     riskLevel: 'low',
     attentionCostMinutes: 20,
     energyCost: 1,
+    visibilityCost: 1,
+    emotionalCost: 1,
     feasible: true,
+    feasibilityReasons: ['within_budget'],
     utilityScore: 50,
     opportunityCost: 2,
     evidenceSourceTypes: input.evidenceCount ? ['text_asset'] : [],
     interaction: input.id === 'collect_evidence' ? 'open_intake' : 'approve',
+    decision: testDecisionContract(input.kind, now),
   };
 }
 

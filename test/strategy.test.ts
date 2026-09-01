@@ -38,6 +38,8 @@ function option(overrides: Partial<StrategicOption>): StrategicOption {
     confidence: 0.8,
     attentionCostMinutes: 120,
     energyCost: 3,
+    visibilityCost: 3,
+    emotionalCost: 3,
     ...overrides,
   };
 }
@@ -76,7 +78,7 @@ describe('strategy domain', () => {
       rankStrategicOptions(
         tenant,
         [option({ id: 'one' }), option({ id: 'two' }), option({ id: 'three' })],
-        { availableMinutes: 300, maximumEnergyCost: 5 },
+        { availableMinutes: 300, maximumEnergyCost: 5, visibilityTolerance: 5, emotionalBandwidth: 5 },
         policy,
       ),
     ).toThrow('no-action');
@@ -95,9 +97,11 @@ describe('strategy domain', () => {
           benefitScore: 50,
           attentionCostMinutes: 0,
           energyCost: 1,
+          visibilityCost: 1,
+          emotionalCost: 1,
         }),
       ],
-      { availableMinutes: 300, maximumEnergyCost: 5 },
+      { availableMinutes: 300, maximumEnergyCost: 5, visibilityTolerance: 5, emotionalBandwidth: 5 },
       policy,
     );
     expect(ranked[0]?.id).toBe('excellent');
@@ -113,7 +117,7 @@ describe('strategy domain', () => {
         option({ id: 'small', attentionCostMinutes: 30 }),
         option({ id: 'wait', kind: 'no_action', attentionCostMinutes: 0 }),
       ],
-      { availableMinutes: 60, maximumEnergyCost: 5 },
+      { availableMinutes: 60, maximumEnergyCost: 5, visibilityTolerance: 5, emotionalBandwidth: 5 },
       policy,
     );
     expect(ranked.find((item) => item.id === 'large')?.feasible).toBe(false);
@@ -128,10 +132,30 @@ describe('strategy domain', () => {
           option({ id: 'two' }),
           option({ id: 'wait', kind: 'no_action', tenantId: tenantId('tenant_two') }),
         ],
-        { availableMinutes: 300, maximumEnergyCost: 5 },
+        { availableMinutes: 300, maximumEnergyCost: 5, visibilityTolerance: 5, emotionalBandwidth: 5 },
         policy,
       ),
     ).toThrow('Cross-tenant');
   });
-});
 
+  it('makes visibility and emotional bandwidth first-class feasibility constraints', () => {
+    const ranked = rankStrategicOptions(
+      tenant,
+      [
+        option({ id: 'public', visibilityCost: 5, emotionalCost: 4 }),
+        option({ id: 'private', kind: 'private_conversation', visibilityCost: 1, emotionalCost: 2 }),
+        option({ id: 'wait', kind: 'no_action', attentionCostMinutes: 0, energyCost: 1, visibilityCost: 1, emotionalCost: 1 }),
+      ],
+      { availableMinutes: 300, maximumEnergyCost: 5, visibilityTolerance: 2, emotionalBandwidth: 3 },
+      policy,
+    );
+    expect(ranked.find((item) => item.id === 'public')).toMatchObject({
+      feasible: false,
+      feasibilityReasons: ['visibility_tolerance_exceeded', 'emotional_bandwidth_exceeded'],
+    });
+    expect(ranked.find((item) => item.id === 'private')).toMatchObject({
+      feasible: true,
+      feasibilityReasons: ['within_budget'],
+    });
+  });
+});

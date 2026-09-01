@@ -135,11 +135,18 @@ describe('operational endpoints', () => {
 
     expect(response.status).toBe(200);
     const payload = await response.json() as {
+      policyVersion: string;
+      decisionFrame: { boundaries: { externalActionPermitted: boolean } };
       workflow: { status: string };
-      actions: { kind: string }[];
+      actions: Array<{ kind: string; decision: { requiredApproval: string; boundaries: { externalActionPermitted: boolean } } }>;
     };
+    expect(payload.policyVersion).toBe('strategic-decision-v1');
     expect(payload.workflow.status).toBe('awaiting_approval');
     expect(payload.actions.some((action) => action.kind === 'no_action')).toBe(true);
+    expect(payload.actions.every((action) => (
+      action.decision.requiredApproval === 'human' && !action.decision.boundaries.externalActionPermitted
+    ))).toBe(true);
+    expect(payload.decisionFrame.boundaries.externalActionPermitted).toBe(false);
     expect(response.headers.get('cache-control')).toBe('no-store');
   });
 

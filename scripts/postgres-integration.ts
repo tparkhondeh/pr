@@ -41,6 +41,43 @@ const tenantB = '22222222-2222-4222-8222-222222222222';
 const userA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const userB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const applicationRolePassword = 'pr_app_test_password';
+const integrationAttentionBudget: WorkbenchSnapshot['attentionBudget'] = {
+  availableMinutes: 150, maximumEnergyCost: 3, visibilityTolerance: 4, emotionalBandwidth: 3,
+};
+
+function integrationDecision(
+  kind: WorkbenchAction['kind'],
+  at: Date,
+): WorkbenchAction['decision'] {
+  const expiresAt = new Date(at.getTime() + 86400000).toISOString();
+  const formats: Readonly<Record<WorkbenchAction['kind'], WorkbenchAction['decision']['format']>> = {
+    no_action: 'none', private_conversation: 'private_conversation', relationship: 'relationship_action',
+    content: 'mother_concept', media: 'media_response', event: 'event_participation', research: 'research_brief',
+  };
+  return {
+    policyVersion: 'strategic-decision-v1', objective: 'تعامل عمیق', stakeholder: 'تصمیم‌گیران',
+    posture: kind === 'no_action' ? 'delay' : 'now', timingRationale: 'Integration fixture.',
+    decisionWindowEndsAt: expiresAt,
+    format: formats[kind],
+    platformSelected: false, assumptions: ['Evidence مجاز است.'], uncertainty: ['نتیجه هنوز مشاهده نشده است.'],
+    feasibilityReasons: ['within_budget'], requiredApproval: 'human',
+    measurementPlan: { signals: ['کیفیت تعامل'], reviewAfter: expiresAt },
+    boundaries: { recommendationIsExecution: false, publicApprovalGranted: false, externalActionPermitted: false },
+  };
+}
+
+function integrationDecisionFrame(at: Date): WorkbenchSnapshot['decisionFrame'] {
+  return {
+    policyVersion: 'strategic-decision-v1', why: { goalId: 'integration-goal', objective: 'تعامل عمیق' },
+    forWhom: 'تصمیم‌گیران', currentContext: integrationAttentionBudget,
+    decisionWindow: { generatedAt: at.toISOString(), expiresAt: new Date(at.getTime() + 86400000).toISOString(), durationHours: 24 },
+    rankingTransparency: {
+      method: 'declared_weighted_policy', dimensions: ['benefit', 'strategic_fit', 'risk', 'reversibility', 'confidence', 'attention'],
+      utilityScoreVisible: true, opportunityCostVisible: true, hiddenScoreUsed: false,
+    },
+    boundaries: { platformConstrained: false, publicApprovalGranted: false, externalActionPermitted: false },
+  };
+}
 
 class PgMigrationConnection implements MigrationConnection {
   public constructor(private readonly client: Client) {}
@@ -300,11 +337,14 @@ async function verifyInitiativePersistence(): Promise<void> {
     rationale: 'یک سؤال کوتاه برای کاهش حدس در مدل شخصی.',
     benefits: ['وضوح'], risks: ['مزاحمت'], prerequisites: ['رضایت مالک'],
     evidenceIds: [], evidenceCount: 0, confidence: 0.3,
-    riskLevel: 'low', attentionCostMinutes: 10, energyCost: 1, feasible: true,
+    riskLevel: 'low', attentionCostMinutes: 10, energyCost: 1, visibilityCost: 1, emotionalCost: 1,
+    feasible: true, feasibilityReasons: ['within_budget'],
     utilityScore: 40, opportunityCost: 1, rank: 1, evidenceState: 'insufficient',
     evidenceSourceTypes: [], interaction: 'open_intake',
+    decision: integrationDecision('research', at),
   };
   const workbenchSnapshot: WorkbenchSnapshot = {
+    policyVersion: 'strategic-decision-v1',
     generatedAt: at.toISOString(),
     runtime: { source: 'node_api', persistence: 'postgres' },
     profile: { maturityPercent: 0, evidenceCount: 0, openContradictions: 0 },
@@ -312,7 +352,8 @@ async function verifyInitiativePersistence(): Promise<void> {
       id: 'initiative-goal', revision: 1, title: 'اعتماد', outcome: 'تعامل عمیق',
       successMetrics: ['کیفیت'],
     },
-    attentionBudget: { availableMinutes: 150, maximumEnergyCost: 3 },
+    attentionBudget: integrationAttentionBudget,
+    decisionFrame: integrationDecisionFrame(at),
     evidence: {
       state: 'insufficient', strategyEvidenceCount: 0, withheldEvidenceCount: 0, sourceTypes: [],
     },
@@ -402,24 +443,29 @@ async function verifyArbitrationPersistence(): Promise<void> {
   const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
   const owner = userId(userA);
   const activeTenant = tenantId(tenantA);
+  const at = new Date('2026-08-31T22:48:00.000Z');
   const action: WorkbenchAction = {
     id: 'arbitration_integration_action', kind: 'content', title: 'اقدام Arbitration Integration',
     rationale: 'یک اقدام مستند که باید از قرارداد بین‌ماژولی عبور کند.',
     benefits: ['اعتماد'], risks: ['برداشت نادرست'], prerequisites: ['Claim Check'],
     evidenceIds: ['integration-evidence'], evidenceCount: 1, confidence: 0.79,
-    riskLevel: 'medium', attentionCostMinutes: 20, energyCost: 2, feasible: true,
+    riskLevel: 'medium', attentionCostMinutes: 20, energyCost: 2, visibilityCost: 3, emotionalCost: 2,
+    feasible: true, feasibilityReasons: ['within_budget'],
     utilityScore: 69, opportunityCost: 1, rank: 1, evidenceState: 'grounded',
     evidenceSourceTypes: ['text_asset'], interaction: 'approve',
+    decision: integrationDecision('content', at),
   };
   const workbenchSnapshot: WorkbenchSnapshot = {
-    generatedAt: '2026-08-31T22:48:00.000Z',
+    policyVersion: 'strategic-decision-v1',
+    generatedAt: at.toISOString(),
     runtime: { source: 'node_api', persistence: 'postgres' },
     profile: { maturityPercent: 20, evidenceCount: 1, openContradictions: 0 },
     goal: {
       id: 'integration-goal', revision: 1, title: 'اعتماد', outcome: 'تعامل عمیق',
       successMetrics: ['کیفیت'],
     },
-    attentionBudget: { availableMinutes: 150, maximumEnergyCost: 3 },
+    attentionBudget: integrationAttentionBudget,
+    decisionFrame: integrationDecisionFrame(at),
     evidence: {
       state: 'grounded', strategyEvidenceCount: 1, withheldEvidenceCount: 0,
       sourceTypes: ['text_asset'],
@@ -441,7 +487,7 @@ async function verifyArbitrationPersistence(): Promise<void> {
     requestId: 'arbitration_integration_v1',
     actionId: action.id,
     requestedAutonomyLevel: 7,
-    occurredAt: new Date('2026-08-31T22:48:00.000Z'),
+    occurredAt: at,
   } as const;
   try {
     const first = await service.assess(request);
@@ -535,6 +581,7 @@ async function verifyBrandRiskPersistence(): Promise<void> {
   const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
   const owner = userId(userA);
   const context = { tenantId: tenantId(tenantA), ownerUserId: owner };
+  const at = new Date('2026-08-31T22:45:00.000Z');
   const service = new BrandProtectionService(
     new PostgresRiskReviewRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
     context,
@@ -544,9 +591,11 @@ async function verifyBrandRiskPersistence(): Promise<void> {
     rationale: 'یک اقدام عمومی مستند که پیامدهای اعتباری آن باید بازبینی شود.',
     benefits: ['اعتماد'], risks: ['برداشت نادرست'], prerequisites: ['Claim Check'],
     evidenceIds: ['integration-evidence'], evidenceCount: 1, confidence: 0.8,
-    riskLevel: 'medium', attentionCostMinutes: 20, energyCost: 2, feasible: true,
+    riskLevel: 'medium', attentionCostMinutes: 20, energyCost: 2, visibilityCost: 3, emotionalCost: 2,
+    feasible: true, feasibilityReasons: ['within_budget'],
     utilityScore: 70, opportunityCost: 0, rank: 1, evidenceState: 'grounded',
     evidenceSourceTypes: ['text_asset'], interaction: 'approve',
+    decision: integrationDecision('content', at),
   };
   const assessment = assessAction(action);
   try {
@@ -555,7 +604,7 @@ async function verifyBrandRiskPersistence(): Promise<void> {
       expectedLevel: assessment.level, expectedAssessmentHash: assessment.assessmentHash,
       decision: 'acknowledge',
       rationale: 'Risk Review پایگاه داده با Assessment نسخه‌دار و Attestation انسانی تأیید شد.',
-      humanAttestation: true, reviewedAt: new Date('2026-08-31T22:45:00.000Z'),
+      humanAttestation: true, reviewedAt: at,
     });
     await service.authorizeAction(owner, action);
     const snapshot = await service.snapshot(owner, [action], null, new Date('2026-08-31T22:46:00.000Z'));

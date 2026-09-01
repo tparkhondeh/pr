@@ -1,3 +1,35 @@
+export type FeasibilityReason =
+  | 'within_budget'
+  | 'attention_time_exceeded'
+  | 'energy_exceeded'
+  | 'visibility_tolerance_exceeded'
+  | 'emotional_bandwidth_exceeded';
+
+export type DecisionFormat =
+  | 'none' | 'private_conversation' | 'relationship_action' | 'mother_concept'
+  | 'media_response' | 'event_participation' | 'research_brief';
+
+export type ActionDecisionContract = Readonly<{
+  policyVersion: 'strategic-decision-v1';
+  objective: string;
+  stakeholder: string;
+  posture: 'now' | 'when_ready' | 'delay';
+  timingRationale: string;
+  decisionWindowEndsAt: string;
+  format: DecisionFormat;
+  platformSelected: false;
+  assumptions: readonly string[];
+  uncertainty: readonly string[];
+  feasibilityReasons: readonly FeasibilityReason[];
+  requiredApproval: 'human';
+  measurementPlan: Readonly<{ signals: readonly string[]; reviewAfter: string }>;
+  boundaries: Readonly<{
+    recommendationIsExecution: false;
+    publicApprovalGranted: false;
+    externalActionPermitted: false;
+  }>;
+}>;
+
 export type WorkbenchAction = Readonly<{
   id: string;
   kind:
@@ -19,16 +51,21 @@ export type WorkbenchAction = Readonly<{
   riskLevel: 'low' | 'medium' | 'high';
   attentionCostMinutes: number;
   energyCost: 1 | 2 | 3 | 4 | 5;
+  visibilityCost: 1 | 2 | 3 | 4 | 5;
+  emotionalCost: 1 | 2 | 3 | 4 | 5;
   feasible: boolean;
+  feasibilityReasons: readonly FeasibilityReason[];
   utilityScore: number | null;
   opportunityCost: number | null;
   rank: number;
   evidenceState: 'insufficient' | 'grounded';
   evidenceSourceTypes: readonly string[];
   interaction: 'approve' | 'open_intake' | 'open_conversation';
+  decision: ActionDecisionContract;
 }>;
 
 export type WorkbenchSnapshot = Readonly<{
+  policyVersion: 'strategic-decision-v1';
   generatedAt: string;
   runtime: Readonly<{
     source: 'node_api' | 'preview_worker';
@@ -49,6 +86,32 @@ export type WorkbenchSnapshot = Readonly<{
   attentionBudget: Readonly<{
     availableMinutes: number;
     maximumEnergyCost: 1 | 2 | 3 | 4 | 5;
+    visibilityTolerance: 1 | 2 | 3 | 4 | 5;
+    emotionalBandwidth: 1 | 2 | 3 | 4 | 5;
+  }>;
+  decisionFrame: Readonly<{
+    policyVersion: 'strategic-decision-v1';
+    why: Readonly<{ goalId: string; objective: string }>;
+    forWhom: string;
+    currentContext: Readonly<{
+      availableMinutes: number;
+      maximumEnergyCost: 1 | 2 | 3 | 4 | 5;
+      visibilityTolerance: 1 | 2 | 3 | 4 | 5;
+      emotionalBandwidth: 1 | 2 | 3 | 4 | 5;
+    }>;
+    decisionWindow: Readonly<{ generatedAt: string; expiresAt: string; durationHours: 24 }>;
+    rankingTransparency: Readonly<{
+      method: 'declared_weighted_policy';
+      dimensions: readonly string[];
+      utilityScoreVisible: true;
+      opportunityCostVisible: true;
+      hiddenScoreUsed: false;
+    }>;
+    boundaries: Readonly<{
+      platformConstrained: false;
+      publicApprovalGranted: false;
+      externalActionPermitted: false;
+    }>;
   }>;
   evidence: Readonly<{
     state: 'insufficient' | 'grounded';
@@ -1733,7 +1796,10 @@ function isWorkbenchSnapshot(payload: unknown): payload is WorkbenchSnapshot {
   const workflow = payload['workflow'];
   const runtime = payload['runtime'];
   const evidence = payload['evidence'];
+  const attentionBudget = payload['attentionBudget'];
   return (
+    payload['policyVersion'] === 'strategic-decision-v1' &&
+    typeof payload['generatedAt'] === 'string' &&
     Array.isArray(actions) &&
     actions.length >= 3 &&
     isRecord(goal) &&
@@ -1749,6 +1815,12 @@ function isWorkbenchSnapshot(payload: unknown): payload is WorkbenchSnapshot {
     ) &&
     isRecord(runtime) &&
     typeof runtime['source'] === 'string' &&
+    isRecord(attentionBudget) &&
+    typeof attentionBudget['availableMinutes'] === 'number' &&
+    isDecisionScale(attentionBudget['maximumEnergyCost']) &&
+    isDecisionScale(attentionBudget['visibilityTolerance']) &&
+    isDecisionScale(attentionBudget['emotionalBandwidth']) &&
+    isStrategicDecisionFrame(payload['decisionFrame']) &&
     isRecord(evidence) &&
     (evidence['state'] === 'insufficient' || evidence['state'] === 'grounded') &&
     typeof evidence['strategyEvidenceCount'] === 'number' &&
@@ -1763,6 +1835,9 @@ function isWorkbenchAction(value: unknown): value is WorkbenchAction {
   return (
     typeof value['id'] === 'string' && typeof value['title'] === 'string' &&
     typeof value['rationale'] === 'string' && typeof value['evidenceCount'] === 'number' &&
+    isDecisionScale(value['energyCost']) && isDecisionScale(value['visibilityCost']) &&
+    isDecisionScale(value['emotionalCost']) && typeof value['feasible'] === 'boolean' &&
+    Array.isArray(value['feasibilityReasons']) && value['feasibilityReasons'].every(isFeasibilityReason) &&
     Array.isArray(value['evidenceIds']) &&
     value['evidenceIds'].every((evidence) => typeof evidence === 'string') &&
     (value['evidenceState'] === 'insufficient' || value['evidenceState'] === 'grounded') &&
@@ -1770,8 +1845,61 @@ function isWorkbenchAction(value: unknown): value is WorkbenchAction {
     (
       value['interaction'] === 'approve' || value['interaction'] === 'open_intake' ||
       value['interaction'] === 'open_conversation'
-    )
+    ) && isActionDecisionContract(value['decision'])
   );
+}
+
+function isStrategicDecisionFrame(value: unknown): value is WorkbenchSnapshot['decisionFrame'] {
+  if (!isRecord(value) || value['policyVersion'] !== 'strategic-decision-v1' ||
+      !isRecord(value['why']) || typeof value['forWhom'] !== 'string' ||
+      !isRecord(value['currentContext']) || !isRecord(value['decisionWindow']) ||
+      !isRecord(value['rankingTransparency']) || !isRecord(value['boundaries'])) return false;
+  const why = value['why'];
+  const context = value['currentContext'];
+  const window = value['decisionWindow'];
+  const ranking = value['rankingTransparency'];
+  const boundaries = value['boundaries'];
+  return typeof why['goalId'] === 'string' && typeof why['objective'] === 'string' &&
+    typeof context['availableMinutes'] === 'number' && isDecisionScale(context['maximumEnergyCost']) &&
+    isDecisionScale(context['visibilityTolerance']) && isDecisionScale(context['emotionalBandwidth']) &&
+    typeof window['generatedAt'] === 'string' && typeof window['expiresAt'] === 'string' &&
+    window['durationHours'] === 24 && ranking['method'] === 'declared_weighted_policy' &&
+    Array.isArray(ranking['dimensions']) && ranking['dimensions'].every((item) => typeof item === 'string') &&
+    ranking['utilityScoreVisible'] === true && ranking['opportunityCostVisible'] === true &&
+    ranking['hiddenScoreUsed'] === false && boundaries['platformConstrained'] === false &&
+    boundaries['publicApprovalGranted'] === false && boundaries['externalActionPermitted'] === false;
+}
+
+function isActionDecisionContract(value: unknown): value is ActionDecisionContract {
+  if (!isRecord(value) || value['policyVersion'] !== 'strategic-decision-v1' ||
+      typeof value['objective'] !== 'string' || typeof value['stakeholder'] !== 'string' ||
+      !['now', 'when_ready', 'delay'].includes(String(value['posture'])) ||
+      typeof value['timingRationale'] !== 'string' || typeof value['decisionWindowEndsAt'] !== 'string' ||
+      !isDecisionFormat(value['format']) || value['platformSelected'] !== false ||
+      !isStringArray(value['assumptions']) || !isStringArray(value['uncertainty']) ||
+      !Array.isArray(value['feasibilityReasons']) || !value['feasibilityReasons'].every(isFeasibilityReason) ||
+      value['requiredApproval'] !== 'human' || !isRecord(value['measurementPlan']) ||
+      !isRecord(value['boundaries'])) return false;
+  const measurement = value['measurementPlan'];
+  const boundaries = value['boundaries'];
+  return isStringArray(measurement['signals']) && typeof measurement['reviewAfter'] === 'string' &&
+    boundaries['recommendationIsExecution'] === false && boundaries['publicApprovalGranted'] === false &&
+    boundaries['externalActionPermitted'] === false;
+}
+
+function isFeasibilityReason(value: unknown): value is FeasibilityReason {
+  return value === 'within_budget' || value === 'attention_time_exceeded' || value === 'energy_exceeded' ||
+    value === 'visibility_tolerance_exceeded' || value === 'emotional_bandwidth_exceeded';
+}
+
+function isDecisionFormat(value: unknown): value is DecisionFormat {
+  return value === 'none' || value === 'private_conversation' || value === 'relationship_action' ||
+    value === 'mother_concept' || value === 'media_response' || value === 'event_participation' ||
+    value === 'research_brief';
+}
+
+function isDecisionScale(value: unknown): value is 1 | 2 | 3 | 4 | 5 {
+  return value === 1 || value === 2 || value === 3 || value === 4 || value === 5;
 }
 
 function isStrategyContextSnapshot(payload: unknown): payload is StrategyContextSnapshot {

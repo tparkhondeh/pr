@@ -610,7 +610,30 @@ function actionHash(action: WorkbenchAction): string {
     utilityScore: action.utilityScore,
     opportunityCost: action.opportunityCost,
     feasible: action.feasible,
+    feasibilityReasons: action.feasibilityReasons,
+    attentionCostMinutes: action.attentionCostMinutes,
+    energyCost: action.energyCost,
+    visibilityCost: action.visibilityCost,
+    emotionalCost: action.emotionalCost,
+    decision: stableDecisionContract(action),
   }));
+}
+
+function stableDecisionContract(action: WorkbenchAction): Record<string, unknown> {
+  return {
+    policyVersion: action.decision.policyVersion,
+    objective: action.decision.objective,
+    stakeholder: action.decision.stakeholder,
+    posture: action.decision.posture,
+    format: action.decision.format,
+    platformSelected: action.decision.platformSelected,
+    assumptions: action.decision.assumptions,
+    uncertainty: action.decision.uncertainty,
+    feasibilityReasons: action.decision.feasibilityReasons,
+    requiredApproval: action.decision.requiredApproval,
+    measurementSignals: action.decision.measurementPlan.signals,
+    boundaries: action.decision.boundaries,
+  };
 }
 
 function parseSnapshot(value: unknown): ArbitrationCaseSnapshot {

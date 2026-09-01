@@ -1486,7 +1486,22 @@ export function App() {
             <p className="overline">پیشنهاد استراتژیک امروز</p>
             <h2>برای {snapshot.goal.title}</h2>
           </div>
-          <div className="budget"><Clock3 size={18} /><span>بودجه توجه امروز</span><strong>{formatMinutes(snapshot.attentionBudget.availableMinutes)}</strong></div>
+          <div className="decision-budget">
+            <span><Clock3 size={15} /><small>زمان</small><strong>{formatMinutes(snapshot.attentionBudget.availableMinutes)}</strong></span>
+            <span><CircleGauge size={15} /><small>انرژی</small><strong>{snapshot.attentionBudget.maximumEnergyCost}/۵</strong></span>
+            <span><Eye size={15} /><small>تحمل دیده‌شدن</small><strong>{snapshot.attentionBudget.visibilityTolerance}/۵</strong></span>
+            <span><BrainCircuit size={15} /><small>ظرفیت احساسی</small><strong>{snapshot.attentionBudget.emotionalBandwidth}/۵</strong></span>
+          </div>
+        </section>
+
+        <section className="decision-frame-strip" aria-label="قاب تصمیم استراتژیک">
+          <ShieldCheck size={18} />
+          <div>
+            <span><b>چرا:</b> {snapshot.decisionFrame.why.objective}</span>
+            <span><b>برای چه کسی:</b> {snapshot.decisionFrame.forWhom}</span>
+            <span><b>چه زمانی:</b> معتبر تا {formatTimestamp(snapshot.decisionFrame.decisionWindow.expiresAt)}</span>
+          </div>
+          <small>Platform هنوز انتخاب نشده · Score و Opportunity Cost قابل مشاهده‌اند · هیچ اقدام بیرونی مجاز نشده</small>
         </section>
 
         {snapshot.evidence.state === 'insufficient' ? (
@@ -1520,10 +1535,13 @@ export function App() {
                   <span className="kind">{kindLabels[action.kind]}</span>
                   <strong>{action.title}</strong>
                   <small>{action.rationale}</small>
+                  {!action.feasible ? <em>{action.feasibilityReasons.map(feasibilityReasonLabel).join(' · ')}</em> : null}
                 </span>
                 <span className="metrics">
                   <span><b>{action.utilityScore ?? '—'}</b> امتیاز</span>
+                  <span>Opportunity Cost: <b>{action.opportunityCost ?? '—'}</b></span>
                   <span>{formatMinutes(action.attentionCostMinutes)}</span>
+                  <span>دیده‌شدن {action.visibilityCost}/۵ · احساسی {action.emotionalCost}/۵</span>
                   <span className={action.riskLevel === 'low' ? 'risk low' : 'risk'}>ریسک {riskLabels[action.riskLevel]}</span>
                 </span>
                 <span className="radio">{selected === action.id ? <Check size={15} /> : null}</span>
@@ -1534,6 +1552,17 @@ export function App() {
           <aside className="evidence-card">
             <div className="evidence-title"><ShieldCheck size={20} /><span>چرا این پیشنهاد؟</span></div>
             <p>{selectedAction?.rationale}</p>
+            {selectedAction ? (
+              <div className="decision-contract">
+                <span><b>What</b>{kindLabels[selectedAction.kind]}</span>
+                <span><b>For whom</b>{selectedAction.decision.stakeholder}</span>
+                <span><b>When</b>{decisionPostureLabel(selectedAction.decision.posture)}</span>
+                <span><b>Format</b>{decisionFormatLabel(selectedAction.decision.format)}</span>
+                <p><b>فرض کلیدی:</b> {selectedAction.decision.assumptions[0]}</p>
+                <p><b>عدم‌قطعیت:</b> {selectedAction.decision.uncertainty[0]}</p>
+                <p><b>سنجش:</b> {selectedAction.decision.measurementPlan.signals.slice(0, 3).join('، ')}</p>
+              </div>
+            ) : null}
             <ul>
               <li><BookOpenText size={16} /><span><b>{selectedAction?.evidenceCount ?? 0} شاهد</b> مجاز و قابل‌ردیابی</span></li>
               <li><Fingerprint size={16} /><span><b>فایده:</b> {selectedAction?.benefits[0]}</span></li>
@@ -1559,7 +1588,7 @@ export function App() {
               </button>
               <small>
                 {selectedAction?.interaction === 'approve'
-                  ? 'تأیید فقط Workflow را آماده می‌کند؛ هیچ اقدام بیرونی اجرا نمی‌شود.'
+                  ? `تأیید انسانی فقط Workflow را آماده می‌کند؛ اعتبار تصمیم تا ${formatTimestamp(selectedAction.decision.decisionWindowEndsAt)} است و هیچ اقدام بیرونی اجرا نمی‌شود.`
                   : 'این مسیر فقط شما را به جمع‌آوری Evidence می‌برد و اقدام بیرونی اجرا نمی‌کند.'}
               </small>
             </div>
@@ -4032,6 +4061,32 @@ function formatMinutes(minutes: number): string {
   if (minutes % 60 === 0) return `${String(minutes / 60)} ساعت`;
   if (minutes > 60) return `${String(Math.floor(minutes / 60))} ساعت و ${String(minutes % 60)} دقیقه`;
   return `${String(minutes)} دقیقه`;
+}
+
+function decisionPostureLabel(value: WorkbenchAction['decision']['posture']): string {
+  return { now: 'در پنجره فعلی', when_ready: 'پس از رفع محدودیت', delay: 'تعویق آگاهانه' }[value];
+}
+
+function decisionFormatLabel(value: WorkbenchAction['decision']['format']): string {
+  return {
+    none: 'عدم اقدام',
+    private_conversation: 'گفت‌وگوی خصوصی',
+    relationship_action: 'اقدام رابطه‌ای',
+    mother_concept: 'Mother Concept؛ بدون انتخاب Platform',
+    media_response: 'پاسخ رسانه‌ای',
+    event_participation: 'مشارکت در رویداد',
+    research_brief: 'Research Brief',
+  }[value];
+}
+
+function feasibilityReasonLabel(value: WorkbenchAction['feasibilityReasons'][number]): string {
+  return {
+    within_budget: 'در بودجه فعلی',
+    attention_time_exceeded: 'زمان کافی نیست',
+    energy_exceeded: 'انرژی کافی نیست',
+    visibility_tolerance_exceeded: 'تحمل دیده‌شدن کافی نیست',
+    emotional_bandwidth_exceeded: 'ظرفیت احساسی کافی نیست',
+  }[value];
 }
 
 function persistenceLabel(persistence: WorkbenchSnapshot['runtime']['persistence']): string {

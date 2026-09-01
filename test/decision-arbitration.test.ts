@@ -10,6 +10,7 @@ import {
 import { tenantId, userId } from '../src/kernel/identity.js';
 import type { BrandProtectionSnapshot } from '../src/risk/brand-protection.js';
 import type { WorkbenchAction, WorkbenchSnapshot } from '../src/workbench/workbench.js';
+import { testAttentionBudget, testDecisionContract, testDecisionFrame } from './support/strategic-decision.js';
 
 const tenant = tenantId('tenant_primary');
 const owner = userId('owner_primary');
@@ -200,25 +201,31 @@ function groundedAction(): WorkbenchAction {
     riskLevel: 'medium',
     attentionCostMinutes: 120,
     energyCost: 3,
+    visibilityCost: 4,
+    emotionalCost: 3,
     feasible: true,
+    feasibilityReasons: ['within_budget'],
     utilityScore: 54.2,
     opportunityCost: 13.4,
     rank: 2,
     evidenceState: 'grounded',
     evidenceSourceTypes: ['text_asset'],
     interaction: 'approve',
+    decision: testDecisionContract('content', now),
   };
 }
 
 function workbenchSnapshot(action: WorkbenchAction): WorkbenchSnapshot {
   return {
+    policyVersion: 'strategic-decision-v1',
     generatedAt: now.toISOString(),
     runtime: { source: 'node_api', persistence: 'memory' },
     profile: { maturityPercent: 20, evidenceCount: action.evidenceCount, openContradictions: 0 },
     goal: {
       id: 'goal-1', revision: 3, title: 'اعتماد', outcome: 'تعامل عمیق', successMetrics: ['کیفیت'],
     },
-    attentionBudget: { availableMinutes: 150, maximumEnergyCost: 3 },
+    attentionBudget: testAttentionBudget,
+    decisionFrame: testDecisionFrame(now),
     evidence: {
       state: action.evidenceState,
       strategyEvidenceCount: action.evidenceCount,

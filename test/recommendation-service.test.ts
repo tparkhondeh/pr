@@ -58,6 +58,8 @@ function option(id: string, kind: StrategicOption['kind']): StrategicOption {
     confidence: 0.8,
     attentionCostMinutes: kind === 'no_action' ? 0 : 60,
     energyCost: kind === 'no_action' ? 1 : 3,
+    visibilityCost: kind === 'content' ? 4 : 1,
+    emotionalCost: kind === 'no_action' ? 1 : 2,
   };
 }
 
@@ -78,7 +80,12 @@ function request() {
     },
     dataClass: 'confidential' as const,
     at: new Date('2026-08-31T00:00:00Z'),
-    attentionBudget: { availableMinutes: 180, maximumEnergyCost: 4 as const },
+    attentionBudget: {
+      availableMinutes: 180,
+      maximumEnergyCost: 4 as const,
+      visibilityTolerance: 4 as const,
+      emotionalBandwidth: 3 as const,
+    },
     rankingPolicy: {
       benefitWeight: 0.25,
       strategicFitWeight: 0.3,
@@ -125,4 +132,3 @@ describe('recommendation service', () => {
     ).rejects.toBeInstanceOf(RecommendationPermissionError);
   });
 });
-

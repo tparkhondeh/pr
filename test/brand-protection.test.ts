@@ -9,6 +9,7 @@ import {
   riskDimensions,
 } from '../src/risk/brand-protection.js';
 import type { WorkbenchAction } from '../src/workbench/workbench.js';
+import { testDecisionContract } from './support/strategic-decision.js';
 
 const owner = userId('owner_primary');
 const context = { tenantId: tenantId('tenant_primary'), ownerUserId: owner };
@@ -29,13 +30,17 @@ function action(overrides: Partial<WorkbenchAction> = {}): WorkbenchAction {
     riskLevel: 'medium',
     attentionCostMinutes: 30,
     energyCost: 2,
+    visibilityCost: 3,
+    emotionalCost: 2,
     feasible: true,
+    feasibilityReasons: ['within_budget'],
     utilityScore: 70,
     opportunityCost: 0,
     rank: 1,
     evidenceState: 'grounded',
     evidenceSourceTypes: ['text_asset'],
     interaction: 'approve',
+    decision: testDecisionContract('content'),
     ...overrides,
   };
 }

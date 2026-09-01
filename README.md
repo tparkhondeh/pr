@@ -22,6 +22,7 @@ Goal، Audience، Timing، Quality و Conflict می‌سنجد.
 - [Perception Engine](docs/architecture/perception-engine-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
+- [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
 - [Master Implementation Prompt مرحله Foundation](docs/implementation/foundation-master-prompt-v1.0.md)
 - [ADRهای Draft مرحله Foundation](docs/decisions/foundation-adrs-draft-v1.0.md)
 - [Data & Policy Kernel](docs/architecture/data-kernel-v1.0.md)
@@ -63,8 +64,11 @@ Health endpoint پس از اجرا: `GET /health`
 pnpm web:dev
 ```
 
-Workbench فعلی حلقه تصمیم MVP را نمایش می‌دهد: Goal، Action شامل عدم اقدام،
-Attention Budget، Evidence، Risk و Approval انسانی. تا وقتی هیچ Evidence با رضایت
+Workbench فعلی قرارداد `strategic-decision-v1` را نمایش می‌دهد: Goal، Action شامل
+عدم اقدام، Attention Budget چندبعدی، Evidence، Risk و Approval انسانی. هر Action
+Why/What/For Whom/When/Format، Assumption، Uncertainty، Decision Window، برنامه سنجش،
+Utility و Opportunity Cost قابل مشاهده دارد. Platform قبل از انتخاب Action وارد تصمیم
+نمی‌شود و Recommendation هیچ Execution/Public Approval ایجاد نمی‌کند. تا وقتی هیچ Evidence با رضایت
 صریح `brandUsage` وجود ندارد، سیستم از پیشنهاد بیرونی خودداری می‌کند و فقط مسیرهای
 ورود منبع، گفت‌وگوی Evidence-first و «عدم اقدام» را نشان می‌دهد؛ تعداد شاهد نمایشی یا
 Seedشده به کاربر ارائه نمی‌شود. View از `GET /api/workbench` داده می‌گیرد و تأیید را
@@ -73,6 +77,9 @@ Seedشده به کاربر ارائه نمی‌شود. View از `GET /api/workb
 `DATABASE_URL`، `PR_TENANT_ID` و `PR_OWNER_USER_ID`، تأیید با Optimistic Lock در
 PostgreSQL ذخیره و در همان Transaction به Audit Log و Outbox افزوده می‌شود.
 نسخه خصوصی Sites همین قرارداد را با state موقت Worker برای تست UI ارائه می‌کند.
+جزئیات در
+[`docs/architecture/strategic-decision-contract-v1.0.md`](docs/architecture/strategic-decision-contract-v1.0.md)
+ثبت شده است.
 
 اجرای `NODE_ENV=production` بدون PostgreSQL به‌صورت پیش‌فرض متوقف می‌شود. فقط Preview
 خصوصی و disposable می‌تواند با opt-in صریح `PR_ALLOW_EPHEMERAL_PRODUCTION=true`

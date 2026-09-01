@@ -36,12 +36,21 @@ describe('private preview worker draft runtime', () => {
       env,
     );
     const coldSnapshot = await coldWorkbench.json() as {
+      policyVersion: string;
+      attentionBudget: { visibilityTolerance: number; emotionalBandwidth: number };
+      decisionFrame: { rankingTransparency: { hiddenScoreUsed: boolean }; boundaries: { externalActionPermitted: boolean } };
       evidence: { state: string; strategyEvidenceCount: number };
-      actions: Array<{ id: string; interaction: string }>;
+      actions: Array<{ id: string; interaction: string; decision: { requiredApproval: string; boundaries: { externalActionPermitted: boolean } } }>;
     };
+    expect(coldSnapshot).toMatchObject({
+      policyVersion: 'strategic-decision-v1',
+      attentionBudget: { visibilityTolerance: 4, emotionalBandwidth: 3 },
+      decisionFrame: { rankingTransparency: { hiddenScoreUsed: false }, boundaries: { externalActionPermitted: false } },
+    });
     expect(coldSnapshot.evidence).toMatchObject({ state: 'insufficient', strategyEvidenceCount: 0 });
     expect(coldSnapshot.actions[0]).toMatchObject({
       id: 'collect_evidence', interaction: 'open_intake',
+      decision: { requiredApproval: 'human', boundaries: { externalActionPermitted: false } },
     });
     const initialInitiative = await worker.fetch(
       new Request('https://preview.example/api/initiative'),
@@ -446,11 +455,20 @@ describe('private preview worker draft runtime', () => {
     );
     const approvedSnapshot = await approvedWorkbench.json() as {
       workflow: { approvedEvidenceIds: string[] };
+      actions: Array<{ id: string; decision: { format: string; platformSelected: boolean; measurementPlan: { signals: string[] } } }>;
     };
     expect(approvedSnapshot.workflow.approvedEvidenceIds).toEqual(expect.arrayContaining([
       'evidence_turn_runtime',
       approvedAsset.record.evidenceId,
     ]));
+    const essayDecision = approvedSnapshot.actions.find((action) => action.id === 'essay')?.decision;
+    expect(essayDecision).toMatchObject({
+      format: 'mother_concept',
+      platformSelected: false,
+    });
+    expect(essayDecision?.measurementPlan.signals).toEqual(
+      expect.arrayContaining(['کیفیت تعامل', 'تغییر ادراک']),
+    );
 
     const lateAssetResponse = await post('/api/assets/text', {
       requestId: 'asset_runtime_after_approval',

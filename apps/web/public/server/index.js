@@ -71,7 +71,10 @@ const groundedActions = [
     riskLevel: 'low',
     attentionCostMinutes: 30,
     energyCost: 2,
+    visibilityCost: 1,
+    emotionalCost: 2,
     feasible: true,
+    feasibilityReasons: ['within_budget'],
     utilityScore: 67.6,
     opportunityCost: 0,
     rank: 1,
@@ -89,7 +92,10 @@ const groundedActions = [
     riskLevel: 'medium',
     attentionCostMinutes: 120,
     energyCost: 3,
+    visibilityCost: 4,
+    emotionalCost: 3,
     feasible: true,
+    feasibilityReasons: ['within_budget'],
     utilityScore: 54.2,
     opportunityCost: 13.4,
     rank: 2,
@@ -107,12 +113,22 @@ const groundedActions = [
     riskLevel: 'low',
     attentionCostMinutes: 0,
     energyCost: 1,
+    visibilityCost: 1,
+    emotionalCost: 1,
     feasible: true,
+    feasibilityReasons: ['within_budget'],
     utilityScore: 53.9,
     opportunityCost: 13.7,
     rank: 3,
   },
 ];
+
+const decisionAttentionBudget = {
+  availableMinutes: 150,
+  maximumEnergyCost: 3,
+  visibilityTolerance: 4,
+  emotionalBandwidth: 3,
+};
 
 export default {
   async fetch(request, env) {
@@ -975,7 +991,7 @@ export default {
         return json({ error: 'invalid_json' }, 400);
       }
       const context = ownerEvidenceContext();
-      const action = workbenchActions(context).find((candidate) => candidate.id === body?.actionId);
+      const action = workbenchActions(context, new Date()).find((candidate) => candidate.id === body?.actionId);
       if (!action) return json({ error: 'action_not_found' }, 404);
       if (action.interaction !== 'approve') {
         return json({ error: 'action_not_approvable' }, 409);
@@ -1193,12 +1209,14 @@ export default {
 };
 
 function snapshot() {
+  const generatedAt = new Date();
   const context = ownerEvidenceContext();
   const effectiveApproval = context.strategy.evidenceIds.length > 0 || approval?.actionId === 'wait'
     ? approval
     : null;
   return {
-    generatedAt: new Date().toISOString(),
+    policyVersion: 'strategic-decision-v1',
+    generatedAt: generatedAt.toISOString(),
     runtime: { source: 'preview_worker', persistence: 'ephemeral' },
     profile: {
       maturityPercent: context.maturity.percent,
@@ -1212,14 +1230,15 @@ function snapshot() {
       outcome: strategy.goal.outcome,
       successMetrics: strategy.goal.successMetrics,
     },
-    attentionBudget: { availableMinutes: 150, maximumEnergyCost: 3 },
+    attentionBudget: decisionAttentionBudget,
+    decisionFrame: strategicDecisionFrame(generatedAt),
     evidence: {
       state: context.strategy.evidenceIds.length > 0 ? 'grounded' : 'insufficient',
       strategyEvidenceCount: context.strategy.evidenceIds.length,
       withheldEvidenceCount: context.strategy.withheldEvidenceCount,
       sourceTypes: context.strategy.sourceTypes,
     },
-    actions: workbenchActions(context),
+    actions: workbenchActions(context, generatedAt),
     workflow: {
       id: 'workbench_today',
       status: effectiveApproval ? 'approved' : 'awaiting_approval',
@@ -1329,8 +1348,8 @@ function ownerEvidenceContext() {
   };
 }
 
-function workbenchActions(context) {
-  if (context.strategy.evidenceIds.length === 0) return coldStartActions(context);
+function workbenchActions(context, generatedAt) {
+  if (context.strategy.evidenceIds.length === 0) return coldStartActions(context, generatedAt);
   return groundedActions.map((action) => {
     const evidenceIds = action.kind === 'content'
       ? context.strategy.evidenceIds
@@ -1345,11 +1364,12 @@ function workbenchActions(context) {
       evidenceState: 'grounded',
       evidenceSourceTypes: context.strategy.sourceTypes,
       interaction: 'approve',
+      decision: strategicActionDecision(action, generatedAt, evidenceCount, false),
     };
   });
 }
 
-function coldStartActions(context) {
+function coldStartActions(context, generatedAt) {
   const withheld = context.strategy.withheldEvidenceCount;
   return [
     {
@@ -1359,29 +1379,126 @@ function coldStartActions(context) {
         : 'هنوز هیچ شاهد مالک‌محور و مجازی برای تحلیل برند وجود ندارد؛ قبل از پیشنهاد حرکت بیرونی، یک منبع واقعی ثبت کنید.',
       benefits: ['ساخت پایه قابل‌ردیابی برای تصمیم بعدی'], risks: ['ورود متن نامرتبط یا بیش‌ازحد حساس'],
       prerequisites: ['انتخاب یک متن واقعی', 'تعیین صریح مجوز تحلیل برند'], evidenceIds: [], evidenceCount: 0,
-      confidence: 1, riskLevel: 'low', attentionCostMinutes: 10, energyCost: 1, feasible: true,
+      confidence: 1, riskLevel: 'low', attentionCostMinutes: 10, energyCost: 1,
+      visibilityCost: 1, emotionalCost: 1, feasible: true, feasibilityReasons: ['within_budget'],
       utilityScore: null, opportunityCost: null, rank: 1, evidenceState: 'insufficient',
       evidenceSourceTypes: [], interaction: 'open_intake',
+      decision: strategicActionDecision({ kind: 'research', feasible: true, feasibilityReasons: ['within_budget'] }, generatedAt, 0, true),
     },
     {
       id: 'reflect_first', kind: 'private_conversation', title: 'یک تجربه واقعی را در گفت‌وگو ثبت کن',
       rationale: 'اگر منبع آماده‌ای ندارید، یک تجربه مشخص را تعریف کنید؛ سیستم فقط با تأیید جداگانه آن را به حافظه تبدیل می‌کند.',
       benefits: ['شروع کم‌اصطکاک مدل شخصی'], risks: ['یک Self-report منفرد هنوز شاهد مستقل نیست'],
       prerequisites: ['تعریف یک موقعیت مشخص', 'تأیید جداگانه حافظه'], evidenceIds: [], evidenceCount: 0,
-      confidence: 1, riskLevel: 'low', attentionCostMinutes: 8, energyCost: 1, feasible: true,
+      confidence: 1, riskLevel: 'low', attentionCostMinutes: 8, energyCost: 1,
+      visibilityCost: 1, emotionalCost: 2, feasible: true, feasibilityReasons: ['within_budget'],
       utilityScore: null, opportunityCost: null, rank: 2, evidenceState: 'insufficient',
       evidenceSourceTypes: [], interaction: 'open_conversation',
+      decision: strategicActionDecision({ kind: 'private_conversation', feasible: true, feasibilityReasons: ['within_budget'] }, generatedAt, 0, true),
     },
     {
       id: 'wait', kind: 'no_action', title: 'تا رسیدن شاهد، اقدام عمومی نکن',
       rationale: `برای هدف «${strategy.goal.title}» هنوز Evidence مجاز کافی وجود ندارد؛ خودداری از توصیه عمومی از ساختن قطعیت کاذب معتبرتر است.`,
       benefits: ['پرهیز از توصیه و ادعای بدون پشتوانه'], risks: ['عقب‌افتادن یک پنجره زمانی کوتاه'],
       prerequisites: ['بازبینی پس از ورود اولین منبع مجاز'], evidenceIds: [], evidenceCount: 0,
-      confidence: 1, riskLevel: 'low', attentionCostMinutes: 0, energyCost: 1, feasible: true,
+      confidence: 1, riskLevel: 'low', attentionCostMinutes: 0, energyCost: 1,
+      visibilityCost: 1, emotionalCost: 1, feasible: true, feasibilityReasons: ['within_budget'],
       utilityScore: null, opportunityCost: null, rank: 3, evidenceState: 'insufficient',
       evidenceSourceTypes: [], interaction: 'approve',
+      decision: strategicActionDecision({ kind: 'no_action', feasible: true, feasibilityReasons: ['within_budget'] }, generatedAt, 0, true),
     },
   ];
+}
+
+function strategicDecisionFrame(generatedAt) {
+  const expiresAt = new Date(generatedAt.getTime() + 86400000).toISOString();
+  return {
+    policyVersion: 'strategic-decision-v1',
+    why: { goalId: strategy.goalId, objective: strategy.goal.outcome },
+    forWhom: strategy.desiredPositioning.audience,
+    currentContext: { ...decisionAttentionBudget },
+    decisionWindow: { generatedAt: generatedAt.toISOString(), expiresAt, durationHours: 24 },
+    rankingTransparency: {
+      method: 'declared_weighted_policy',
+      dimensions: ['benefit', 'strategic_fit', 'risk', 'reversibility', 'confidence', 'attention'],
+      utilityScoreVisible: true, opportunityCostVisible: true, hiddenScoreUsed: false,
+    },
+    boundaries: { platformConstrained: false, publicApprovalGranted: false, externalActionPermitted: false },
+  };
+}
+
+function strategicActionDecision(action, generatedAt, evidenceCount, coldStart) {
+  const expiresAt = new Date(generatedAt.getTime() + 86400000).toISOString();
+  const posture = action.kind === 'no_action' ? 'delay' : (!action.feasible || coldStart) ? 'when_ready' : 'now';
+  const timingRationale = coldStart
+    ? 'این مسیر فقط پس از ورود Evidence مجاز دوباره سنجیده می‌شود.'
+    : action.kind === 'no_action'
+      ? 'عدم اقدام تا Snapshot بعدی یک انتخاب آگاهانه و قابل بازگشت است.'
+      : posture === 'when_ready'
+        ? 'حداقل یکی از محدودیت‌های Attention Budget فعلی رعایت نشده است.'
+        : 'Action در بودجه فعلی جا می‌گیرد، اما اجرا همچنان به تصمیم انسانی نیاز دارد.';
+  return {
+    policyVersion: 'strategic-decision-v1',
+    objective: strategy.goal.outcome,
+    stakeholder: strategy.desiredPositioning.audience,
+    posture,
+    timingRationale,
+    decisionWindowEndsAt: expiresAt,
+    format: strategicDecisionFormat(action.kind),
+    platformSelected: false,
+    assumptions: coldStart
+      ? ['Evidence مجاز کافی برای توصیه بیرونی هنوز وجود ندارد.', 'عدم اقدام از ساختن قطعیت یا تجربه جعلی معتبرتر است.']
+      : [`${String(evidenceCount)} Evidence مجاز، Context فعلی این پیشنهاد را پشتیبانی می‌کند.`, 'Attention Budget فعلی خوداظهاری و فقط برای این پنجره تصمیم معتبر است.'],
+    uncertainty: strategicDecisionUncertainty(action.kind, coldStart),
+    feasibilityReasons: action.feasibilityReasons,
+    requiredApproval: 'human',
+    measurementPlan: { signals: strategicMeasurementSignals(action.kind), reviewAfter: expiresAt },
+    boundaries: { recommendationIsExecution: false, publicApprovalGranted: false, externalActionPermitted: false },
+  };
+}
+
+function strategicDecisionFormat(kind) {
+  return {
+    no_action: 'none', private_conversation: 'private_conversation', relationship: 'relationship_action',
+    content: 'mother_concept', media: 'media_response', event: 'event_participation', research: 'research_brief',
+  }[kind];
+}
+
+function strategicDecisionUncertainty(kind, coldStart) {
+  if (coldStart) return ['تناسب Action با هویت، مخاطب و زمان بدون Evidence کافی معلوم نیست.'];
+  if (kind === 'content') return ['واکنش واقعی Stakeholder و نتیجه بیرونی هنوز مشاهده نشده است.', 'Platform، Claim، Voice و Risk Gate پس از انتخاب Mother Concept جداگانه بررسی می‌شوند.'];
+  if (kind === 'no_action') return ['ممکن است یک پنجره زمانی کوتاه پیش از Snapshot بعدی بسته شود.'];
+  return ['واکنش واقعی Stakeholder و نتیجه بیرونی هنوز مشاهده نشده است.', 'زمان‌بندی انسانی و آمادگی طرف مقابل باید پیش از اجرا دوباره بررسی شود.'];
+}
+
+function strategicMeasurementSignals(kind) {
+  const signals = {
+    no_action: ['رضایت کاربر از سکوت', 'پشیمانی کاربر', 'انرژی حفظ‌شده'],
+    private_conversation: ['عمق تعامل', 'تغییر رابطه', 'فرصت ایجادشده'],
+    relationship: ['تغییر رابطه', 'کیفیت تعامل', 'رضایت کاربر'],
+    content: ['کیفیت تعامل', 'تغییر ادراک', 'پیام خصوصی', 'پشیمانی کاربر'],
+    media: ['کیفیت پوشش', 'تغییر ادراک', 'فرصت رسانه‌ای'],
+    event: ['کیفیت ارتباط', 'رابطه ایجادشده', 'فرصت بعدی'],
+    research: ['کیفیت Source', 'رفع عدم‌قطعیت', 'تصمیم قابل‌ردیابی'],
+  }[kind] ?? [];
+  return [...new Set([...strategy.goal.successMetrics, ...signals])].slice(0, 8);
+}
+
+function stableStrategicDecision(action) {
+  return {
+    policyVersion: action.decision.policyVersion,
+    objective: action.decision.objective,
+    stakeholder: action.decision.stakeholder,
+    posture: action.decision.posture,
+    format: action.decision.format,
+    platformSelected: action.decision.platformSelected,
+    assumptions: action.decision.assumptions,
+    uncertainty: action.decision.uncertainty,
+    feasibilityReasons: action.decision.feasibilityReasons,
+    requiredApproval: action.decision.requiredApproval,
+    measurementSignals: action.decision.measurementPlan.signals,
+    boundaries: action.decision.boundaries,
+  };
 }
 
 function contextualRationale(action, evidenceCount) {
@@ -1475,6 +1592,9 @@ async function assessRiskAction(action) {
       id: action.id, kind: action.kind, title: action.title, rationale: action.rationale,
       risks: action.risks, prerequisites: action.prerequisites, evidenceIds: action.evidenceIds,
       evidenceState: action.evidenceState, riskLevel: action.riskLevel,
+      attentionCostMinutes: action.attentionCostMinutes, energyCost: action.energyCost,
+      visibilityCost: action.visibilityCost, emotionalCost: action.emotionalCost,
+      feasibilityReasons: action.feasibilityReasons, decision: stableStrategicDecision(action),
     }, findings: ordered,
   }));
   const material = ordered.filter((finding) => finding.level !== 'green').map((finding) => finding.dimension).join('، ');
@@ -1691,6 +1811,9 @@ async function arbitrationActionHash(action) {
     risks: action.risks, prerequisites: action.prerequisites, evidenceIds: action.evidenceIds,
     evidenceState: action.evidenceState, confidence: action.confidence, riskLevel: action.riskLevel,
     utilityScore: action.utilityScore, opportunityCost: action.opportunityCost, feasible: action.feasible,
+    feasibilityReasons: action.feasibilityReasons, attentionCostMinutes: action.attentionCostMinutes,
+    energyCost: action.energyCost, visibilityCost: action.visibilityCost, emotionalCost: action.emotionalCost,
+    decision: stableStrategicDecision(action),
   }));
 }
 
@@ -1707,7 +1830,9 @@ async function initiativeContext() {
       id: action.id, kind: action.kind, rank: action.rank, feasible: action.feasible,
       evidenceIds: action.evidenceIds, evidenceState: action.evidenceState,
       confidence: action.confidence, attentionCostMinutes: action.attentionCostMinutes,
-      riskLevel: action.riskLevel,
+      energyCost: action.energyCost, visibilityCost: action.visibilityCost,
+      emotionalCost: action.emotionalCost, feasibilityReasons: action.feasibilityReasons,
+      riskLevel: action.riskLevel, decision: stableStrategicDecision(action),
     })),
     arbitration: arbitration.cases.map((item) => ({
       caseId: item.caseId, snapshotHash: item.snapshotHash,

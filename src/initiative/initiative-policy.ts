@@ -637,7 +637,22 @@ function actionContext(action: WorkbenchAction): Record<string, unknown> {
     evidenceState: action.evidenceState,
     confidence: action.confidence,
     attentionCostMinutes: action.attentionCostMinutes,
+    energyCost: action.energyCost,
+    visibilityCost: action.visibilityCost,
+    emotionalCost: action.emotionalCost,
+    feasibilityReasons: action.feasibilityReasons,
     riskLevel: action.riskLevel,
+    decision: {
+      policyVersion: action.decision.policyVersion,
+      objective: action.decision.objective,
+      stakeholder: action.decision.stakeholder,
+      posture: action.decision.posture,
+      format: action.decision.format,
+      assumptions: action.decision.assumptions,
+      uncertainty: action.decision.uncertainty,
+      measurementSignals: action.decision.measurementPlan.signals,
+      boundaries: action.decision.boundaries,
+    },
   };
 }
 

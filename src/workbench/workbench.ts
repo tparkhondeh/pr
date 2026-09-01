@@ -7,9 +7,16 @@ import {
   type StrategyContextSnapshot,
 } from '../strategy/context.js';
 import {
+  createActionDecisionContract,
+  createStrategicDecisionFrame,
+  type ActionDecisionContract,
+  type StrategicDecisionFrame,
+} from '../strategy/decision-contract.js';
+import {
   rankStrategicOptions,
   validateGoal,
   type AttentionBudget,
+  type FeasibilityReason,
   type Goal,
   type RankedOption,
   type RankingPolicy,
@@ -48,16 +55,21 @@ export type WorkbenchAction = Readonly<{
   riskLevel: 'low' | 'medium' | 'high';
   attentionCostMinutes: number;
   energyCost: StrategicOption['energyCost'];
+  visibilityCost: StrategicOption['visibilityCost'];
+  emotionalCost: StrategicOption['emotionalCost'];
   feasible: boolean;
+  feasibilityReasons: readonly FeasibilityReason[];
   utilityScore: number | null;
   opportunityCost: number | null;
   rank: number;
   evidenceState: 'insufficient' | 'grounded';
   evidenceSourceTypes: readonly string[];
   interaction: 'approve' | 'open_intake' | 'open_conversation';
+  decision: ActionDecisionContract;
 }>;
 
 export type WorkbenchSnapshot = Readonly<{
+  policyVersion: 'strategic-decision-v1';
   generatedAt: string;
   runtime: WorkbenchRuntime;
   profile: Readonly<{
@@ -73,6 +85,7 @@ export type WorkbenchSnapshot = Readonly<{
     successMetrics: readonly string[];
   }>;
   attentionBudget: AttentionBudget;
+  decisionFrame: StrategicDecisionFrame;
   evidence: Readonly<{
     state: 'insufficient' | 'grounded';
     strategyEvidenceCount: number;
@@ -158,6 +171,7 @@ export class WorkbenchService {
   }
 
   public async snapshot(): Promise<WorkbenchSnapshot> {
+    const generatedAt = this.#clock();
     const [strategy, evidence] = await Promise.all([
       this.#strategyContext.snapshot(this.#ownerUserId),
       this.#evidenceContext.snapshot(),
@@ -166,7 +180,8 @@ export class WorkbenchService {
     const grounded = evidence.strategy.evidenceIds.length > 0;
     const effectiveApproval = grounded || approval?.actionId === 'wait' ? approval : null;
     return {
-      generatedAt: this.#clock().toISOString(),
+      policyVersion: 'strategic-decision-v1',
+      generatedAt: generatedAt.toISOString(),
       runtime: { source: 'node_api', persistence: this.#approvalRepository.persistence },
       profile: {
         maturityPercent: evidence.maturity.percent,
@@ -181,6 +196,7 @@ export class WorkbenchService {
         successMetrics: strategy.goal.successMetrics,
       },
       attentionBudget: this.#attentionBudget,
+      decisionFrame: createStrategicDecisionFrame(strategy, this.#attentionBudget, generatedAt),
       evidence: {
         state: grounded ? 'grounded' : 'insufficient',
         strategyEvidenceCount: evidence.strategy.evidenceIds.length,
@@ -188,8 +204,8 @@ export class WorkbenchService {
         sourceTypes: evidence.strategy.sourceTypes,
       },
       actions: grounded
-        ? this.#rankedOptions.map((option) => toWorkbenchAction(option, strategy, evidence))
-        : coldStartActions(strategy, evidence),
+        ? this.#rankedOptions.map((option) => toWorkbenchAction(option, strategy, evidence, generatedAt))
+        : coldStartActions(strategy, evidence, generatedAt),
       workflow: {
         id: this.#awaitingWorkflow.id,
         status: effectiveApproval ? 'approved' : this.#awaitingWorkflow.status,
@@ -211,7 +227,7 @@ export class WorkbenchService {
       this.#evidenceContext.snapshot(),
     ]);
     if (evidence.strategy.evidenceIds.length === 0) {
-      const coldAction = coldStartActions(strategy, evidence).find(
+      const coldAction = coldStartActions(strategy, evidence, occurredAt).find(
         (candidate) => candidate.id === actionId,
       );
       if (!coldAction) throw new WorkbenchActionNotFoundError(actionId);
@@ -226,7 +242,7 @@ export class WorkbenchService {
     if (!option) throw new WorkbenchActionNotFoundError(actionId);
     if (!option.feasible) throw new WorkbenchApprovalConflictError('action_not_feasible');
     const approvedEvidenceIds = evidence.strategy.evidenceIds.length > 0
-      ? toWorkbenchAction(option, strategy, evidence).evidenceIds
+      ? toWorkbenchAction(option, strategy, evidence, occurredAt).evidenceIds
       : [];
 
     evolveWorkflow(this.#awaitingWorkflow, {
@@ -278,7 +294,12 @@ export function createDefaultWorkbenchService(
         priority: 5,
         successMetrics: ['کیفیت تعامل', 'فرصت‌های ایجادشده', 'تغییر ادراک'],
       },
-      attentionBudget: { availableMinutes: 150, maximumEnergyCost: 3 },
+      attentionBudget: {
+        availableMinutes: 150,
+        maximumEnergyCost: 3,
+        visibilityTolerance: 4,
+        emotionalBandwidth: 3,
+      },
       rankingPolicy: {
         benefitWeight: 0.25,
         strategicFitWeight: 0.3,
@@ -305,6 +326,8 @@ export function createDefaultWorkbenchService(
           confidence: 0.84,
           attentionCostMinutes: 30,
           energyCost: 2,
+          visibilityCost: 1,
+          emotionalCost: 2,
         },
         {
           id: 'essay',
@@ -323,6 +346,8 @@ export function createDefaultWorkbenchService(
           confidence: 0.78,
           attentionCostMinutes: 120,
           energyCost: 3,
+          visibilityCost: 4,
+          emotionalCost: 3,
         },
         {
           id: 'wait',
@@ -341,6 +366,8 @@ export function createDefaultWorkbenchService(
           confidence: 0.71,
           attentionCostMinutes: 0,
           energyCost: 1,
+          visibilityCost: 1,
+          emotionalCost: 1,
         },
       ],
     },
@@ -355,6 +382,7 @@ function toWorkbenchAction(
   option: RankedOption,
   strategy: StrategyContextSnapshot,
   evidence: OwnerEvidenceContextSnapshot,
+  generatedAt: Date,
 ): WorkbenchAction {
   const usableEvidenceIds = option.kind === 'content'
     ? evidence.strategy.evidenceIds
@@ -377,13 +405,24 @@ function toWorkbenchAction(
     riskLevel: option.riskScore < 30 ? 'low' : option.riskScore < 60 ? 'medium' : 'high',
     attentionCostMinutes: option.attentionCostMinutes,
     energyCost: option.energyCost,
+    visibilityCost: option.visibilityCost,
+    emotionalCost: option.emotionalCost,
     feasible: option.feasible,
+    feasibilityReasons: option.feasibilityReasons,
     utilityScore: option.feasible ? round(option.utilityScore) : null,
     opportunityCost: option.feasible ? round(option.opportunityCost) : null,
     rank: option.rank,
     evidenceState: 'grounded',
     evidenceSourceTypes: evidence.strategy.sourceTypes,
     interaction: 'approve',
+    decision: createActionDecisionContract({
+      kind: option.kind,
+      strategy,
+      generatedAt,
+      feasible: option.feasible,
+      feasibilityReasons: option.feasibilityReasons,
+      evidenceCount: usableEvidenceIds.length,
+    }),
   };
 }
 
@@ -404,6 +443,7 @@ function contextualRationale(
 function coldStartActions(
   strategy: StrategyContextSnapshot,
   evidence: OwnerEvidenceContextSnapshot,
+  generatedAt: Date,
 ): readonly WorkbenchAction[] {
   const withheld = evidence.strategy.withheldEvidenceCount;
   return [
@@ -423,13 +463,20 @@ function coldStartActions(
       riskLevel: 'low',
       attentionCostMinutes: 10,
       energyCost: 1,
+      visibilityCost: 1,
+      emotionalCost: 1,
       feasible: true,
+      feasibilityReasons: ['within_budget'],
       utilityScore: null,
       opportunityCost: null,
       rank: 1,
       evidenceState: 'insufficient',
       evidenceSourceTypes: [],
       interaction: 'open_intake',
+      decision: createActionDecisionContract({
+        kind: 'research', strategy, generatedAt, feasible: true,
+        feasibilityReasons: ['within_budget'], evidenceCount: 0, coldStart: true,
+      }),
     },
     {
       id: 'reflect_first',
@@ -445,13 +492,20 @@ function coldStartActions(
       riskLevel: 'low',
       attentionCostMinutes: 8,
       energyCost: 1,
+      visibilityCost: 1,
+      emotionalCost: 2,
       feasible: true,
+      feasibilityReasons: ['within_budget'],
       utilityScore: null,
       opportunityCost: null,
       rank: 2,
       evidenceState: 'insufficient',
       evidenceSourceTypes: [],
       interaction: 'open_conversation',
+      decision: createActionDecisionContract({
+        kind: 'private_conversation', strategy, generatedAt, feasible: true,
+        feasibilityReasons: ['within_budget'], evidenceCount: 0, coldStart: true,
+      }),
     },
     {
       id: 'wait',
@@ -467,13 +521,20 @@ function coldStartActions(
       riskLevel: 'low',
       attentionCostMinutes: 0,
       energyCost: 1,
+      visibilityCost: 1,
+      emotionalCost: 1,
       feasible: true,
+      feasibilityReasons: ['within_budget'],
       utilityScore: null,
       opportunityCost: null,
       rank: 3,
       evidenceState: 'insufficient',
       evidenceSourceTypes: [],
       interaction: 'approve',
+      decision: createActionDecisionContract({
+        kind: 'no_action', strategy, generatedAt, feasible: true,
+        feasibilityReasons: ['within_budget'], evidenceCount: 0, coldStart: true,
+      }),
     },
   ];
 }

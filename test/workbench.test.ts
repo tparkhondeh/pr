@@ -24,12 +24,25 @@ describe('workbench application state', () => {
     const snapshot = await createDefaultWorkbenchService(() => fixedTime).snapshot();
 
     expect(snapshot.generatedAt).toBe(fixedTime.toISOString());
+    expect(snapshot.policyVersion).toBe('strategic-decision-v1');
+    expect(snapshot.decisionFrame).toMatchObject({
+      why: { objective: 'ایجاد تعامل‌های عمیق و قابل‌ردیابی با ذی‌نفعان اصلی' },
+      decisionWindow: { durationHours: 24, expiresAt: '2026-09-01T12:00:00.000Z' },
+      rankingTransparency: { utilityScoreVisible: true, opportunityCostVisible: true, hiddenScoreUsed: false },
+      boundaries: { platformConstrained: false, publicApprovalGranted: false, externalActionPermitted: false },
+    });
     expect(snapshot.runtime).toEqual({ source: 'node_api', persistence: 'memory' });
     expect(snapshot.workflow.status).toBe('awaiting_approval');
     expect(snapshot.actions).toHaveLength(3);
     expect(snapshot.actions[0]?.id).toBe('collect_evidence');
     expect(snapshot.actions.some((action) => action.kind === 'no_action')).toBe(true);
     expect(snapshot.actions.every((action) => action.evidenceCount === 0)).toBe(true);
+    expect(snapshot.actions.map((action) => action.decision.requiredApproval)).toEqual([
+      'human', 'human', 'human',
+    ]);
+    expect(snapshot.actions.map((action) => action.decision.boundaries.externalActionPermitted)).toEqual([
+      false, false, false,
+    ]);
     expect(snapshot.evidence).toEqual({
       state: 'insufficient',
       strategyEvidenceCount: 0,
@@ -44,6 +57,15 @@ describe('workbench application state', () => {
     expect(snapshot.actions[0]?.id).toBe('conversation');
     expect(snapshot.actions.every((action) => action.evidenceCount > 0)).toBe(true);
     expect(snapshot.actions.every((action) => action.evidenceState === 'grounded')).toBe(true);
+    const firstDecision = snapshot.actions[0]?.decision;
+    expect(firstDecision).toMatchObject({
+      posture: 'now', format: 'private_conversation', platformSelected: false,
+    });
+    expect(firstDecision?.measurementPlan.signals).toEqual(
+      expect.arrayContaining(['عمق تعامل', 'تغییر رابطه']),
+    );
+    expect(snapshot.actions[1]?.decision).toMatchObject({ format: 'mother_concept', platformSelected: false });
+    expect(snapshot.actions.every((action) => action.feasibilityReasons[0] === 'within_budget')).toBe(true);
     expect(snapshot.evidence).toMatchObject({ state: 'grounded', strategyEvidenceCount: 1 });
     expect(snapshot.profile).toMatchObject({ maturityPercent: 23, evidenceCount: 1 });
   });

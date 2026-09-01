@@ -54,7 +54,10 @@ const option: RankedOption = {
   confidence: 0.8,
   attentionCostMinutes: 60,
   energyCost: 3,
+  visibilityCost: 3,
+  emotionalCost: 2,
   feasible: true,
+  feasibilityReasons: ['within_budget'],
   utilityScore: 65,
   opportunityCost: 0,
   rank: 1,
@@ -132,4 +135,3 @@ describe('draft preparation pipeline', () => {
     ).rejects.toBeInstanceOf(DraftPermissionError);
   });
 });
-
