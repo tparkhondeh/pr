@@ -97,6 +97,12 @@ import {
   type PerceptionWorkspaceSnapshot,
 } from '../perception/workspace.js';
 import {
+  OpportunityRadarPermissionError,
+  OpportunityRadarValidationError,
+  type OpportunityRadarService,
+  type OpportunityRadarSnapshot,
+} from '../opportunities/radar.js';
+import {
   RelationshipConflictError,
   RelationshipNotFoundError,
   RelationshipPermissionError,
@@ -178,6 +184,7 @@ export type ApplicationDependencies = Readonly<{
   relationships?: Pick<RelationshipWorkspaceService, 'snapshot' | 'create' | 'delete'>;
   perception?: Pick<PerceptionWorkspaceService, 'snapshot' | 'create' | 'delete'>;
   expression?: Pick<AuthenticExpressionService, 'snapshot' | 'review'>;
+  opportunities?: Pick<OpportunityRadarService, 'snapshot'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -347,6 +354,11 @@ export function createRequestHandler(
 
     if (request.method === 'POST' && path === '/api/expression/review') {
       await handleExpressionReview(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'GET' && path === '/api/opportunities') {
+      await handleOpportunityRadar(request, response, dependencies);
       return;
     }
 
@@ -1711,6 +1723,40 @@ function sendExpressionError(response: ServerResponse, error: unknown): void {
     return;
   }
   sendJson(response, 500, { error: 'expression_failed' });
+}
+
+async function handleOpportunityRadar(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.opportunities) {
+    sendJson(response, 503, { error: 'opportunity_radar_unavailable' });
+    return;
+  }
+  try {
+    const snapshot = await dependencies.opportunities.snapshot(actorId, now(dependencies));
+    sendJson(response, 200, serializeOpportunityRadar(snapshot));
+  } catch (error: unknown) {
+    if (error instanceof OpportunityRadarValidationError) {
+      sendJson(response, 400, { error: 'invalid_opportunity_radar_request' });
+      return;
+    }
+    if (error instanceof OpportunityRadarPermissionError) {
+      sendJson(response, 403, { error: 'opportunity_radar_permission_denied' });
+      return;
+    }
+    sendJson(response, 500, { error: 'opportunity_radar_failed' });
+  }
+}
+
+function serializeOpportunityRadar(snapshot: OpportunityRadarSnapshot): Record<string, unknown> {
+  return { ...snapshot, generatedAt: snapshot.generatedAt.toISOString() };
 }
 
 async function handleRiskSnapshot(

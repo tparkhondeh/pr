@@ -29,6 +29,7 @@ import {
   type ApplicationDependencies,
 } from '../src/http/application.js';
 import { tenantId, userId } from '../src/kernel/identity.js';
+import { OpportunityRadarService } from '../src/opportunities/radar.js';
 import {
   InMemoryPerceptionWorkspaceRepository,
   PerceptionWorkspaceService,
@@ -760,6 +761,55 @@ describe('operational endpoints', () => {
       }],
     });
     expect(researchSnapshot.sources[0]?.citation).toContain('https://research.example.org/report');
+  });
+
+  it('exposes an explainable opportunity radar without granting action authority', async () => {
+    const fixedTime = new Date('2026-08-31T18:00:00.000Z');
+    const activeTenant = tenantId('tenant_primary');
+    const owner = userId('owner_primary');
+    const research = new ResearchWorkspaceService(
+      new InMemoryResearchWorkspaceRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    await research.importSource({
+      actorId: owner,
+      requestId: 'opportunity_http_source',
+      title: 'اعتماد بنیان‌گذاران در تصمیم‌های شفاف',
+      publisher: 'مرکز پژوهش نمونه',
+      url: 'https://research.example.org/opportunity',
+      excerpt: 'گزارش درباره تصمیم‌گیران کسب‌وکار و شواهد قابل‌ردیابی است.',
+      statement: 'تصمیم شفاف و مستند می‌تواند اعتماد بنیان‌گذاران را تقویت کند.',
+      quality: 'primary',
+      stance: 'supports',
+      publishedAt: new Date('2026-08-01T00:00:00.000Z'),
+      maxAgeDays: 90,
+      accessedAt: fixedTime,
+    });
+    const strategy = new StrategyContextService(
+      new InMemoryStrategyContextRepository(defaultStrategyContext(activeTenant, owner)),
+      { tenantId: activeTenant, ownerUserId: owner },
+    );
+    const opportunities = new OpportunityRadarService(
+      { tenantId: activeTenant, ownerUserId: owner },
+      research,
+      strategy,
+    );
+    const response = await request('/api/opportunities', () => ({ ready: true }), undefined, {
+      opportunities,
+      resolveActor: () => owner,
+      clock: () => fixedTime,
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      generatedAt: fixedTime.toISOString(),
+      policyVersion: 'opportunity-radar-v1',
+      summary: { sourcesAssessed: 1, consider: 1, explorationBudget: 1, explorationUsed: 0 },
+      assessments: [{
+        alignment: 'direct', decision: 'consider', nextStep: 'bring_to_strategy_review',
+        boundaries: { trendIsOpportunity: false, actionRecommended: false, publicApprovalGranted: false, externalActionPermitted: false },
+      }],
+      boundaries: { externalMonitoringIncluded: false, trendIsOpportunity: false, hiddenOpportunityScoreUsed: false, actionRecommended: false, externalActionPermitted: false },
+    });
   });
 
   it('exposes human claim review without treating citation as automatic verification', async () => {

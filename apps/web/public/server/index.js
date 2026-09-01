@@ -142,6 +142,10 @@ export default {
       return json(researchSnapshot());
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/opportunities') {
+      return json(opportunityRadarSnapshot());
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/research/sources') {
       const body = await readJson(request);
       if (!validResearchSource(body)) return json({ error: 'invalid_research_input' }, 400);
@@ -2297,6 +2301,139 @@ function researchSnapshot() {
     },
     sources,
   };
+}
+
+function opportunityRadarSnapshot() {
+  const research = researchSnapshot();
+  let explorationUsed = false;
+  const assessments = research.sources.map((source) => {
+    const base = assessOpportunitySource(source);
+    if (base.explorationEligible && !explorationUsed) {
+      explorationUsed = true;
+      return finalizeOpportunityAssessment(
+        base, 'explore', true, 'research_more',
+        'این Source تازه و معتبر با یک حوزه مجاور تماس دارد؛ در سقف Exploration این Snapshot فقط برای تحقیق بیشتر نگه داشته می‌شود.',
+      );
+    }
+    if (base.explorationEligible) {
+      return finalizeOpportunityAssessment(
+        base, 'monitor', false, 'watch',
+        'Source مجاور است، اما بودجه Exploration این Snapshot مصرف شده؛ فقط در Watchlist می‌ماند.',
+      );
+    }
+    return finalizeOpportunityAssessment(base, base.decision, false, base.nextStep, base.rationale);
+  });
+  return {
+    generatedAt: research.generatedAt,
+    persistence: 'ephemeral',
+    policyVersion: 'opportunity-radar-v1',
+    strategyRevision: strategy.revision,
+    summary: {
+      sourcesAssessed: assessments.length,
+      consider: assessments.filter((item) => item.decision === 'consider').length,
+      monitor: assessments.filter((item) => item.decision === 'monitor').length,
+      explore: assessments.filter((item) => item.decision === 'explore').length,
+      ignored: assessments.filter((item) => item.decision === 'ignore').length,
+      explorationBudget: 1,
+      explorationUsed: assessments.filter((item) => item.exploration).length,
+    },
+    assessments,
+    boundaries: {
+      externalMonitoringIncluded: false,
+      trendIsOpportunity: false,
+      hiddenOpportunityScoreUsed: false,
+      actionRecommended: false,
+      externalActionPermitted: false,
+    },
+  };
+}
+
+function assessOpportunitySource(source) {
+  const sourceTerms = new Set(opportunityTerms(`${source.title} ${source.statement} ${source.excerpt} ${source.publisher}`));
+  const goalTerms = opportunityTerms(`${strategy.goal.title} ${strategy.goal.outcome} ${strategy.goal.successMetrics.join(' ')}`);
+  const audienceTerms = opportunityTerms(`${strategy.desiredPositioning.audience} ${strategy.desiredPositioning.desiredPerception} ${strategy.desiredPositioning.differentiation} ${strategy.desiredPositioning.proofPoints.join(' ')}`);
+  const matchedGoalTerms = distinct(goalTerms.filter((term) => sourceTerms.has(term))).slice(0, 12);
+  const matchedAudienceTerms = distinct(audienceTerms.filter((term) => sourceTerms.has(term))).slice(0, 12);
+  const totalMatches = new Set([...matchedGoalTerms, ...matchedAudienceTerms]).size;
+  const alignment = (matchedGoalTerms.length > 0 && matchedAudienceTerms.length > 0) || totalMatches >= 3
+    ? 'direct' : totalMatches > 0 ? 'adjacent' : 'none';
+  const qualityFavorable = source.quality === 'primary' || source.quality === 'authoritative_secondary';
+  const timingFavorable = source.freshness === 'fresh';
+  const conflict = source.conflictDetected || source.factCheckStatus === 'conflicted' || source.factCheckStatus === 'contradicted';
+  const factors = [
+    opportunityFactor('goal', matchedGoalTerms.length ? 'favorable' : 'unknown', matchedGoalTerms.length ? `هم‌پوشانی با Goal: ${matchedGoalTerms.join('، ')}` : 'هم‌پوشانی واژگانی روشن با Goal ثبت‌شده پیدا نشد.'),
+    opportunityFactor('audience', matchedAudienceTerms.length ? 'favorable' : 'unknown', matchedAudienceTerms.length ? `هم‌پوشانی با Audience/Positioning: ${matchedAudienceTerms.join('، ')}` : 'تناسب روشن با Audience یا Positioning ثبت‌شده پیدا نشد.'),
+    opportunityFactor('timing', timingFavorable ? 'favorable' : 'caution', `Freshness منبع: ${source.freshness} (${String(source.ageDays)} روز).`),
+    opportunityFactor('source_quality', qualityFavorable ? 'favorable' : 'caution', `کیفیت منبع: ${source.quality}.`),
+    opportunityFactor('source_conflict', conflict ? 'caution' : 'favorable', conflict ? 'برای Statement مرتبط، تعارض یا Contradiction ثبت شده است.' : 'در Workspace فعلی تعارض ثبت‌شده‌ای برای این Statement وجود ندارد.'),
+  ];
+  const common = { source, alignment, matchedGoalTerms, matchedAudienceTerms, factors };
+  if (source.freshness === 'stale' || source.quality === 'unverified') {
+    return { ...common, decision: 'ignore', explorationEligible: false, nextStep: 'ignore',
+      rationale: 'Source برای تصمیم فرصت، کهنه یا تأییدنشده است؛ Popularity احتمالی جای Freshness و Quality را نمی‌گیرد.',
+      uncertainty: 'داده Audience response، timing window و context بیرونی مستقل در دسترس نیست.' };
+  }
+  if (conflict || source.stance === 'contradicts') {
+    return { ...common, decision: 'monitor', explorationEligible: false, nextStep: 'research_more',
+      rationale: 'وجود تعارض یا Stance مخالف مانع تبدیل این Source به Opportunity Candidate می‌شود؛ فعلاً فقط باید رصد و تحقیق شود.',
+      uncertainty: 'حل تعارض منابع و اثر آن بر Goal هنوز انجام نشده است.' };
+  }
+  if (alignment === 'direct' && qualityFavorable && timingFavorable) {
+    return { ...common, decision: 'consider', explorationEligible: false, nextStep: 'bring_to_strategy_review',
+      rationale: 'Source تازه و معتبر با Goal و Audience/Positioning هم‌پوشانی مستقیم دارد؛ فقط برای Strategy Review قابل طرح است.',
+      uncertainty: 'تناسب انسانی، ظرفیت توجه، ریسک و واکنش Audience هنوز ارزیابی کامل نشده‌اند.' };
+  }
+  if ((alignment === 'adjacent' || alignment === 'none') && qualityFavorable && timingFavorable) {
+    return { ...common, decision: 'monitor', explorationEligible: true, nextStep: 'watch',
+      rationale: 'Source معتبر و تازه است اما تناسب مستقیم کافی ندارد.',
+      uncertainty: 'این مسیر Exploration است و هنوز ارتباط آن با Person/Brand/Goal اثبات نشده است.' };
+  }
+  return { ...common, decision: 'monitor', explorationEligible: false, nextStep: 'watch',
+    rationale: 'برخی عوامل مثبت‌اند، اما Timing، Quality یا Alignment برای Strategy Review کافی نیست.',
+    uncertainty: 'اطلاعات Context، Audience response و attention cost کامل نیست.' };
+}
+
+function finalizeOpportunityAssessment(base, decision, exploration, nextStep, rationale) {
+  return {
+    sourceId: base.source.sourceId,
+    title: base.source.title,
+    publisher: base.source.publisher,
+    citation: base.source.citation,
+    alignment: base.alignment,
+    decision,
+    exploration,
+    matchedGoalTerms: base.matchedGoalTerms,
+    matchedAudienceTerms: base.matchedAudienceTerms,
+    factors: base.factors,
+    rationale,
+    uncertainty: base.uncertainty,
+    nextStep,
+    trace: {
+      claimId: base.source.claimId,
+      evidenceId: base.source.evidenceId,
+      factCheckStatus: base.source.factCheckStatus,
+    },
+    boundaries: {
+      trendIsOpportunity: false,
+      actionRecommended: false,
+      publicApprovalGranted: false,
+      externalActionPermitted: false,
+    },
+  };
+}
+
+function opportunityFactor(factor, status, rationale) {
+  return { factor, status, rationale };
+}
+
+const opportunityStopTerms = new Set([
+  'برای', 'اینکه', 'است', 'هست', 'شود', 'شده', 'کردن', 'درباره', 'یعنی', 'اما', 'اگر', 'یک', 'های',
+  'that', 'this', 'with', 'from', 'have', 'about', 'were', 'been', 'into', 'your', 'their', 'will',
+]);
+
+function opportunityTerms(value) {
+  return value.toLocaleLowerCase('fa-IR').split(/[^\p{L}\p{N}]+/u)
+    .map((term) => term.trim()).filter((term) => term.length >= 4 && !opportunityStopTerms.has(term));
 }
 
 function validClaimReview(body) {

@@ -649,6 +649,60 @@ export type AuthenticExpressionReview = Readonly<{
   }>;
 }>;
 
+export type OpportunityDecision = 'ignore' | 'monitor' | 'explore' | 'consider';
+export type OpportunityAlignment = 'none' | 'adjacent' | 'direct';
+export type OpportunityFactorStatus = 'favorable' | 'caution' | 'unknown';
+export type OpportunityFactor = Readonly<{
+  factor: 'goal' | 'audience' | 'timing' | 'source_quality' | 'source_conflict';
+  status: OpportunityFactorStatus;
+  rationale: string;
+}>;
+export type OpportunityAssessment = Readonly<{
+  sourceId: string;
+  title: string;
+  publisher: string;
+  citation: string;
+  alignment: OpportunityAlignment;
+  decision: OpportunityDecision;
+  exploration: boolean;
+  matchedGoalTerms: readonly string[];
+  matchedAudienceTerms: readonly string[];
+  factors: readonly OpportunityFactor[];
+  rationale: string;
+  uncertainty: string;
+  nextStep: 'ignore' | 'watch' | 'research_more' | 'bring_to_strategy_review';
+  trace: Readonly<{ claimId: string; evidenceId: string; factCheckStatus: string }>;
+  boundaries: Readonly<{
+    trendIsOpportunity: false;
+    actionRecommended: false;
+    publicApprovalGranted: false;
+    externalActionPermitted: false;
+  }>;
+}>;
+export type OpportunityRadarSnapshot = Readonly<{
+  generatedAt: string;
+  persistence: 'memory' | 'postgres' | 'mixed' | 'ephemeral';
+  policyVersion: 'opportunity-radar-v1';
+  strategyRevision: number;
+  summary: Readonly<{
+    sourcesAssessed: number;
+    consider: number;
+    monitor: number;
+    explore: number;
+    ignored: number;
+    explorationBudget: 1;
+    explorationUsed: number;
+  }>;
+  assessments: readonly OpportunityAssessment[];
+  boundaries: Readonly<{
+    externalMonitoringIncluded: false;
+    trendIsOpportunity: false;
+    hiddenOpportunityScoreUsed: false;
+    actionRecommended: false;
+    externalActionPermitted: false;
+  }>;
+}>;
+
 export type DraftChannel = 'linkedin' | 'instagram' | 'x' | 'youtube' | 'podcast' | 'newsletter' | 'blog';
 export type DraftSourceKind = 'memory' | 'text_asset';
 
@@ -1307,6 +1361,15 @@ export async function reviewAuthenticExpression(input: Readonly<{
     body: JSON.stringify(input),
   });
   if (!isAuthenticExpressionReview(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function loadOpportunityRadar(signal?: AbortSignal): Promise<OpportunityRadarSnapshot> {
+  const payload = await requestJson('/api/opportunities', {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!isOpportunityRadarSnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
   return payload;
 }
 
@@ -2233,6 +2296,52 @@ function isExpressionFinding(value: unknown): value is ExpressionGateFinding {
 function isExpressionSource(value: unknown): value is AuthenticExpressionReview['selectedSources'][number] {
   return isRecord(value) && typeof value['ref'] === 'string' && typeof value['title'] === 'string' &&
     typeof value['assertionId'] === 'string' && typeof value['evidenceId'] === 'string';
+}
+
+function isOpportunityRadarSnapshot(value: unknown): value is OpportunityRadarSnapshot {
+  if (!isRecord(value) || value['policyVersion'] !== 'opportunity-radar-v1' || typeof value['generatedAt'] !== 'string' ||
+      !(isPersistence(value['persistence']) || value['persistence'] === 'mixed') || typeof value['strategyRevision'] !== 'number' ||
+      !isRecord(value['summary']) || !Array.isArray(value['assessments']) || !isRecord(value['boundaries'])) return false;
+  const summary = value['summary'];
+  const boundaries = value['boundaries'];
+  return typeof summary['sourcesAssessed'] === 'number' && typeof summary['consider'] === 'number' &&
+    typeof summary['monitor'] === 'number' && typeof summary['explore'] === 'number' &&
+    typeof summary['ignored'] === 'number' && summary['explorationBudget'] === 1 &&
+    typeof summary['explorationUsed'] === 'number' && value['assessments'].every(isOpportunityAssessment) &&
+    boundaries['externalMonitoringIncluded'] === false && boundaries['trendIsOpportunity'] === false &&
+    boundaries['hiddenOpportunityScoreUsed'] === false && boundaries['actionRecommended'] === false &&
+    boundaries['externalActionPermitted'] === false;
+}
+
+function isOpportunityAssessment(value: unknown): value is OpportunityAssessment {
+  if (!isRecord(value) || typeof value['sourceId'] !== 'string' || typeof value['title'] !== 'string' ||
+      typeof value['publisher'] !== 'string' || typeof value['citation'] !== 'string' ||
+      !isOpportunityAlignment(value['alignment']) || !isOpportunityDecision(value['decision']) ||
+      typeof value['exploration'] !== 'boolean' || !isStringArray(value['matchedGoalTerms']) ||
+      !isStringArray(value['matchedAudienceTerms']) || !Array.isArray(value['factors']) ||
+      typeof value['rationale'] !== 'string' || typeof value['uncertainty'] !== 'string' ||
+      !['ignore', 'watch', 'research_more', 'bring_to_strategy_review'].includes(String(value['nextStep'])) ||
+      !isRecord(value['trace']) || !isRecord(value['boundaries'])) return false;
+  const trace = value['trace'];
+  const boundaries = value['boundaries'];
+  return value['factors'].every(isOpportunityFactor) && typeof trace['claimId'] === 'string' &&
+    typeof trace['evidenceId'] === 'string' && typeof trace['factCheckStatus'] === 'string' &&
+    boundaries['trendIsOpportunity'] === false && boundaries['actionRecommended'] === false &&
+    boundaries['publicApprovalGranted'] === false && boundaries['externalActionPermitted'] === false;
+}
+
+function isOpportunityFactor(value: unknown): value is OpportunityFactor {
+  return isRecord(value) && ['goal', 'audience', 'timing', 'source_quality', 'source_conflict'].includes(String(value['factor'])) &&
+    (value['status'] === 'favorable' || value['status'] === 'caution' || value['status'] === 'unknown') &&
+    typeof value['rationale'] === 'string';
+}
+
+function isOpportunityAlignment(value: unknown): value is OpportunityAlignment {
+  return value === 'none' || value === 'adjacent' || value === 'direct';
+}
+
+function isOpportunityDecision(value: unknown): value is OpportunityDecision {
+  return value === 'ignore' || value === 'monitor' || value === 'explore' || value === 'consider';
 }
 
 function isStringArray(value: unknown): value is readonly string[] {

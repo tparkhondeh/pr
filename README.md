@@ -7,7 +7,9 @@ Workbench وب، Approval انسانی، ورودی مکالمه‌ای Consent-
 Asset/Evidence، مرکز حقوق داده، داوری قطعی اختلاف میان ماژول‌ها و Proactive Mode
 کنترل‌شده، نقشه خصوصی Stakeholder/Relationship و Perception Engine کیفی پیاده‌سازی شده‌اند.
 Authentic Expression Gate نیز Narrative Seedهای evidence-bound، Voice Preferenceهای
-قابل بازگشت و Anti-Generic Review توضیح‌پذیر را بدون مجوز انتشار ترکیب می‌کند.
+قابل بازگشت و Anti-Generic Review توضیح‌پذیر را بدون مجوز انتشار ترکیب می‌کند. رادار
+فرصت نیز Sourceهای Research را بدون Score پنهان، مانیتورینگ یا اقدام خودکار در برابر
+Goal، Audience، Timing، Quality و Conflict می‌سنجد.
 
 ## اسناد فعلی
 
@@ -19,6 +21,7 @@ Authentic Expression Gate نیز Narrative Seedهای evidence-bound، Voice Pre
 - [Controlled Proactive Initiative](docs/architecture/proactive-initiative-v1.0.md)
 - [Perception Engine](docs/architecture/perception-engine-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
+- [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Master Implementation Prompt مرحله Foundation](docs/implementation/foundation-master-prompt-v1.0.md)
 - [ADRهای Draft مرحله Foundation](docs/decisions/foundation-adrs-draft-v1.0.md)
 - [Data & Policy Kernel](docs/architecture/data-kernel-v1.0.md)
@@ -233,6 +236,18 @@ Conflict باز نشان می‌دهد. ثبت منبع هرگز Claim را خو
 ندارد و Adapter آینده در
 [`docs/architecture/research-layer-v1.0.md`](docs/architecture/research-layer-v1.0.md)
 تعریف شده است.
+
+نمای «رادار فرصت» قرارداد `opportunity-radar-v1` را اجرا می‌کند. Trend یا محبوبیت
+به‌تنهایی Opportunity نیست؛ هر Source ثبت‌شده در Research با Strategy جاری و عوامل
+مستقل Goal، Audience/Positioning، Timing/Freshness، Quality و Conflict سنجیده می‌شود.
+خروجی فقط `ignore`، `monitor`، `explore` یا `consider` است و هیچ Average/Score پنهان
+ساخته نمی‌شود. برای کاهش Filter Bubble، در هر Snapshot حداکثر یک Source تازه و معتبر
+با Alignment اثبات‌نشده وارد Exploration می‌شود. حتی `consider` فقط ورودی Strategy
+Review است و Action Recommendation، Public Approval یا External Action ایجاد نمی‌کند.
+Fetch و Monitoring بیرونی در این Slice وجود ندارد. API این نمای owner-only برابر
+`GET /api/opportunities` است و جزئیات در
+[`docs/architecture/opportunity-radar-v1.0.md`](docs/architecture/opportunity-radar-v1.0.md)
+ثبت شده است.
 
 نمای «دفتر ادعاها» Claimهای ساخته‌شده از Draft و Research را با Statement دقیق، Evidence،
 Source Ref، Purpose، Channel، دسته حساس و Trace Status نشان می‌دهد. Citation-ready هیچ Claimی

@@ -47,6 +47,7 @@ import {
   PerceptionWorkspaceService,
   PostgresPerceptionWorkspaceRepository,
 } from './perception/workspace.js';
+import { OpportunityRadarService } from './opportunities/radar.js';
 import {
   InMemoryResearchWorkspaceRepository,
   PostgresResearchWorkspaceRepository,
@@ -174,6 +175,11 @@ const research = new ResearchWorkspaceService(
     : new InMemoryResearchWorkspaceRepository(),
   { tenantId: activeTenant, ownerUserId: owner },
 );
+const opportunities = new OpportunityRadarService(
+  { tenantId: activeTenant, ownerUserId: owner },
+  research,
+  strategy,
+);
 const claimRepository = postgres && environment.database
   ? new PostgresClaimGovernanceRepository(postgres, {
       tenantId: environment.database.tenantId,
@@ -264,6 +270,7 @@ const requestHandler = createRequestHandler(
     relationships,
     perception,
     expression,
+    opportunities,
     ...(!postgres ? { mutationAuditTrail: auditTrail } : {}),
     tenantId: activeTenant,
     // Single-owner bootstrap identity. Replace with verified SIWC/session identity

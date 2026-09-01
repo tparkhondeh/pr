@@ -18,6 +18,7 @@ import {
   MessageCircleMore,
   Network,
   PencilLine,
+  Radar,
   RefreshCw,
   RotateCcw,
   Scale,
@@ -60,6 +61,7 @@ import {
   loadInitiative,
   loadRelationships,
   loadOnboarding,
+  loadOpportunityRadar,
   loadPerception,
   loadPersonalMemory,
   loadResearch,
@@ -85,6 +87,7 @@ import {
   type FeedbackLearningSnapshot,
   type MemoryRightKind,
   type OnboardingSnapshot,
+  type OpportunityRadarSnapshot,
   type PerceptionConfidence,
   type PerceptionDimension,
   type PerceptionPerspective,
@@ -132,7 +135,7 @@ const riskLabels: Readonly<Record<WorkbenchAction['riskLevel'], string>> = {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
-  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'relationships' | 'perception' | 'expression' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
+  const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'opportunities' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'relationships' | 'perception' | 'expression' | 'strategy' | 'draft' | 'learning' | 'data'>('today');
   const [selected, setSelected] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -163,6 +166,9 @@ export function App() {
   const [researchSnapshot, setResearchSnapshot] = useState<ResearchWorkspaceSnapshot | null>(null);
   const [researchViewState, setResearchViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [researchViewError, setResearchViewError] = useState<string | null>(null);
+  const [opportunitySnapshot, setOpportunitySnapshot] = useState<OpportunityRadarSnapshot | null>(null);
+  const [opportunityViewState, setOpportunityViewState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [opportunityViewError, setOpportunityViewError] = useState<string | null>(null);
   const [claimSnapshot, setClaimSnapshot] = useState<ClaimGovernanceSnapshot | null>(null);
   const [claimViewState, setClaimViewState] = useState<'idle' | 'loading' | 'ready' | 'mutating' | 'error'>('idle');
   const [claimViewError, setClaimViewError] = useState<string | null>(null);
@@ -329,6 +335,19 @@ export function App() {
       if (signal?.aborted) return;
       setResearchViewError(errorMessage(caught));
       setResearchViewState('error');
+    }
+  }, []);
+
+  const refreshOpportunities = useCallback(async (signal?: AbortSignal) => {
+    setOpportunityViewState('loading');
+    setOpportunityViewError(null);
+    try {
+      setOpportunitySnapshot(await loadOpportunityRadar(signal));
+      setOpportunityViewState('ready');
+    } catch (caught: unknown) {
+      if (signal?.aborted) return;
+      setOpportunityViewError(errorMessage(caught));
+      setOpportunityViewState('error');
     }
   }, []);
 
@@ -963,6 +982,14 @@ export function App() {
       badge: researchSnapshot?.summary.conflicts ? String(researchSnapshot.summary.conflicts) : undefined,
     },
     {
+      label: 'رادار فرصت',
+      icon: Radar,
+      view: 'opportunities' as const,
+      badge: opportunitySnapshot?.summary.consider || opportunitySnapshot?.summary.explore
+        ? String(opportunitySnapshot.summary.consider + opportunitySnapshot.summary.explore)
+        : undefined,
+    },
+    {
       label: 'دفتر ادعاها',
       icon: ShieldCheck,
       view: 'claims' as const,
@@ -1043,6 +1070,7 @@ export function App() {
                 if (view === 'intake') void refreshOnboarding();
                 if (view === 'memory') void refreshMemory();
                 if (view === 'research') void refreshResearch();
+                if (view === 'opportunities') void refreshOpportunities();
                 if (view === 'claims') void refreshClaims();
                 if (view === 'risk') void refreshRisk();
                 if (view === 'arbitration') void refreshArbitration();
@@ -1078,6 +1106,8 @@ export function App() {
               ? 'حافظه‌ای که شما کنترل می‌کنید.'
               : activeView === 'research'
                 ? 'منبع بیرونی، جدا از حافظه شخصی.'
+              : activeView === 'opportunities'
+                ? 'ترند فقط زمانی فرصت است که با شما و زمان شما تناسب داشته باشد.'
               : activeView === 'claims'
                 ? 'هیچ ادعایی بدون Trace عمومی نشود.'
               : activeView === 'risk'
@@ -1149,6 +1179,14 @@ export function App() {
             onRefresh={() => refreshResearch()}
             snapshot={researchSnapshot}
             state={researchViewState}
+          />
+        ) : activeView === 'opportunities' ? (
+          <OpportunityRadarPanel
+            error={opportunityViewError}
+            onGoToResearch={() => { setActiveView('research'); void refreshResearch(); }}
+            onRefresh={() => refreshOpportunities()}
+            snapshot={opportunitySnapshot}
+            state={opportunityViewState}
           />
         ) : activeView === 'claims' ? (
           <ClaimGovernancePanel
@@ -2175,6 +2213,80 @@ function researchFactStatusLabel(status: ResearchWorkspaceSnapshot['sources'][nu
     contradicted: 'منبع نقض‌کننده',
     conflicted: 'تعارض منابع',
   }[status];
+}
+
+function OpportunityRadarPanel({
+  error,
+  onGoToResearch,
+  onRefresh,
+  snapshot,
+  state,
+}: Readonly<{
+  error: string | null;
+  onGoToResearch: () => void;
+  onRefresh: () => Promise<void>;
+  snapshot: OpportunityRadarSnapshot | null;
+  state: 'idle' | 'loading' | 'ready' | 'error';
+}>) {
+  if (!snapshot && (state === 'idle' || state === 'loading')) {
+    return <section className="memory-view-state" aria-live="polite"><LoaderCircle className="spin" size={24} /><h2>در حال سنجش Sourceها با Strategy…</h2><p>Goal، Audience، Timing، Quality و Conflict جداگانه بررسی می‌شوند.</p></section>;
+  }
+  if (!snapshot) {
+    return <section className="memory-view-state" aria-live="polite"><Radar size={25} /><h2>رادار فرصت در دسترس نیست</h2><p>{error ?? 'برای دریافت دوباره تلاش کنید.'}</p><button onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> تلاش دوباره</button></section>;
+  }
+  return (
+    <section className="opportunity-center" aria-label="رادار فرصت خارجی">
+      <header className="draft-head opportunity-head">
+        <div><p className="overline">OPPORTUNITY RADAR v1 · TREND ≠ OPPORTUNITY</p><h2>هر موضوع داغ، حرکت مناسب شما نیست.</h2><p>فقط Sourceهای ثبت‌شده در Research با Strategy فعلی مقایسه می‌شوند. این Radar مانیتورینگ بیرونی یا Action Recommendation اجرا نمی‌کند.</p></div>
+        <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button"><RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> ارزیابی دوباره</button>
+      </header>
+      {error ? <div className="inline-error" role="alert"><TriangleAlert size={16} />{error}</div> : null}
+      <div className="opportunity-summary">
+        <article><span>Source بررسی‌شده</span><strong>{snapshot.summary.sourcesAssessed}</strong></article>
+        <article><span>Strategy Review</span><strong>{snapshot.summary.consider}</strong></article>
+        <article><span>Monitor</span><strong>{snapshot.summary.monitor}</strong></article>
+        <article><span>Exploration</span><strong>{snapshot.summary.explore}/{snapshot.summary.explorationBudget}</strong></article>
+        <article><span>Ignore</span><strong>{snapshot.summary.ignored}</strong></article>
+      </div>
+      <div className="opportunity-boundary"><ShieldCheck size={18} /><span><b>بدون Score پنهان و بدون Side Effect</b><small>Trend خودکار Opportunity نیست · Action و Public Approval صادر نمی‌شود · Strategy revision: {snapshot.strategyRevision}</small></span></div>
+      {snapshot.assessments.length === 0 ? (
+        <section className="opportunity-empty"><Radar size={28} /><h3>هنوز Source بیرونی برای سنجش وجود ندارد</h3><p>ابتدا در Research یک منبع دارای Citation، Freshness و Quality ثبت کنید.</p><button onClick={onGoToResearch} type="button">رفتن به تحقیق بیرونی <ChevronLeft size={16} /></button></section>
+      ) : (
+        <div className="opportunity-list">
+          {snapshot.assessments.map((assessment) => (
+            <article className={`opportunity-card ${assessment.decision}`} key={assessment.sourceId}>
+              <header><div><span className="overline">{opportunityAlignmentLabel(assessment.alignment)} · {assessment.publisher}</span><h3>{assessment.title}</h3></div><strong>{opportunityDecisionLabel(assessment.decision)}</strong></header>
+              <p>{assessment.rationale}</p>
+              <div className="opportunity-factors">
+                {assessment.factors.map((factor) => <span className={factor.status} key={factor.factor}><b>{opportunityFactorLabel(factor.factor)}</b><small>{factor.rationale}</small></span>)}
+              </div>
+              {(assessment.matchedGoalTerms.length > 0 || assessment.matchedAudienceTerms.length > 0) ? (
+                <div className="opportunity-terms"><span>Goal: {assessment.matchedGoalTerms.join('، ') || '—'}</span><span>Audience: {assessment.matchedAudienceTerms.join('، ') || '—'}</span></div>
+              ) : null}
+              <blockquote>{assessment.uncertainty}</blockquote>
+              <footer><span>Next: {opportunityNextStepLabel(assessment.nextStep)}</span><code>{assessment.trace.factCheckStatus} · {assessment.trace.evidenceId.slice(0, 12)}…</code><b>External Action: ممنوع</b></footer>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function opportunityDecisionLabel(value: OpportunityRadarSnapshot['assessments'][number]['decision']): string {
+  return { ignore: 'نادیده بگیر', monitor: 'فقط رصد', explore: 'تحقیق اکتشافی', consider: 'ورود به Strategy Review' }[value];
+}
+
+function opportunityAlignmentLabel(value: OpportunityRadarSnapshot['assessments'][number]['alignment']): string {
+  return { none: 'بدون Alignment روشن', adjacent: 'حوزه مجاور', direct: 'Alignment مستقیم' }[value];
+}
+
+function opportunityFactorLabel(value: OpportunityRadarSnapshot['assessments'][number]['factors'][number]['factor']): string {
+  return { goal: 'Goal', audience: 'Audience', timing: 'Timing', source_quality: 'Quality', source_conflict: 'Conflict' }[value];
+}
+
+function opportunityNextStepLabel(value: OpportunityRadarSnapshot['assessments'][number]['nextStep']): string {
+  return { ignore: 'فعلاً کنار گذاشته شود', watch: 'در Watchlist بماند', research_more: 'تحقیق بیشتری انجام شود', bring_to_strategy_review: 'فقط در Strategy مرور شود' }[value];
 }
 
 function ClaimGovernancePanel({
@@ -4070,6 +4182,10 @@ function errorMessage(error: unknown): string {
     invalid_expression_request: 'متن باید حداقل ۲۰ نویسه داشته باشد و حداکثر پنج Asset یکتا انتخاب شود.',
     expression_permission_denied: 'فقط مالک می‌تواند این تحلیل را اجرا کند؛ Asset بدون Brand Usage پذیرفته نمی‌شود.',
     expression_failed: 'Authentic Expression Gate کامل نشد؛ دوباره تلاش کنید.',
+    opportunity_radar_unavailable: 'رادار فرصت در دسترس نیست.',
+    invalid_opportunity_radar_request: 'زمان یا Context ارزیابی فرصت معتبر نیست.',
+    opportunity_radar_permission_denied: 'فقط مالک می‌تواند ارزیابی خصوصی فرصت‌ها را ببیند.',
+    opportunity_radar_failed: 'ارزیابی Sourceهای بیرونی کامل نشد؛ دوباره تلاش کنید.',
     invalid_response: 'پاسخ API با قرارداد Workbench هم‌خوان نیست.',
   };
   return messages[error.code] ?? 'در پردازش درخواست خطایی رخ داد.';

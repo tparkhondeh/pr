@@ -226,6 +226,26 @@ describe('private preview worker draft runtime', () => {
         { factCheckStatus: 'conflicted', usableForPublicClaim: false },
       ],
     });
+    const opportunityResponse = await worker.fetch(
+      new Request('https://preview.example/api/opportunities'),
+      env,
+    );
+    const opportunityPayload = await opportunityResponse.json() as {
+      policyVersion: string;
+      summary: { sourcesAssessed: number; explorationBudget: number; explorationUsed: number };
+      assessments: Array<{ decision: string; boundaries: { actionRecommended: boolean; externalActionPermitted: boolean } }>;
+      boundaries: { trendIsOpportunity: boolean; hiddenOpportunityScoreUsed: boolean; externalActionPermitted: boolean };
+    };
+    expect(opportunityPayload).toMatchObject({
+      policyVersion: 'opportunity-radar-v1',
+      summary: { sourcesAssessed: 2, explorationBudget: 1 },
+      boundaries: { trendIsOpportunity: false, hiddenOpportunityScoreUsed: false, externalActionPermitted: false },
+    });
+    expect(opportunityPayload.summary.explorationUsed).toBeLessThanOrEqual(1);
+    expect(opportunityPayload.assessments).toHaveLength(2);
+    expect(opportunityPayload.assessments.every((item) => (
+      item.decision === 'monitor' && !item.boundaries.actionRecommended && !item.boundaries.externalActionPermitted
+    ))).toBe(true);
     const claimsBeforeResponse = await worker.fetch(
       new Request('https://preview.example/api/claims'),
       env,
