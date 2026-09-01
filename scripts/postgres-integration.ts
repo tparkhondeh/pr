@@ -312,7 +312,7 @@ async function verifyModelInvocationJournalPersistence(): Promise<void> {
     const replayedCompletion = await journal.complete(owner, completion);
     let completionMismatchRejected = false;
     try {
-      await journal.complete(owner, { ...completion, status: 'provider_failed' });
+      await journal.complete(owner, { ...completion, statusReason: 'different_cost_gate_reason' });
     } catch (error: unknown) {
       completionMismatchRejected = error instanceof ModelInvocationConflictError &&
         error.reason === 'completion_mismatch';
