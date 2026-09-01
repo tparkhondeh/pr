@@ -122,6 +122,188 @@ describe('strategic quality baseline', () => {
     );
   });
 
+  it('records meaningful action outcomes without inventing an outcome baseline', async () => {
+    const workbench = createGroundedWorkbench();
+    const service = new StrategicQualityService(
+      new InMemoryStrategicQualityRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+      workbench,
+    );
+    const source = await workbench.snapshot();
+    const action = source.actions.find((candidate) => candidate.id === 'essay');
+    if (!action) throw new Error('Expected an essay recommendation.');
+    await workbench.approve(action.id, owner, fixedTime);
+    const reviewed = await service.review({
+      actorId: owner,
+      requestId: 'strategic_review_for_outcome',
+      actionId: action.id,
+      decision: 'accepted',
+      usefulness: 5,
+      trust: 5,
+      friction: 2,
+      expectedStrategyRevision: action.decision.strategyRevision,
+      expectedDecisionContextRevision: action.decision.decisionContextRevision,
+      expectedDecisionContextHash: action.decision.decisionContextHash,
+      expectedDecisionWindowEndsAt: action.decision.decisionWindowEndsAt,
+      reviewedAt: fixedTime,
+    });
+    const review = reviewed.recentReviews[0];
+    if (!review) throw new Error('Expected an accepted review.');
+    const recordedAt = new Date(fixedTime.getTime() + 60_000);
+    const input = {
+      actorId: owner,
+      requestId: 'strategic_outcome_first',
+      reviewId: review.id,
+      executionStatus: 'completed' as const,
+      satisfaction: 5,
+      regret: 1,
+      energy: 4,
+      engagementQuality: 4,
+      interactionDepth: 5,
+      privateMessages: 2,
+      opportunitiesCreated: 1,
+      relationshipChange: 'positive' as const,
+      mediaOpportunities: 0,
+      perceptionShift: 'positive' as const,
+      businessOutcome: 'early_signal' as const,
+      note: 'یک گفت‌وگوی عمیق و یک فرصت واقعی ایجاد شد.',
+      outcomeOccurredAt: recordedAt.toISOString(),
+      recordedAt,
+    };
+
+    const first = await service.recordOutcome(input);
+    const repeated = await service.recordOutcome(input);
+
+    expect(first.outcomeBaseline).toMatchObject({
+      status: 'collecting',
+      sampleSize: 1,
+      remainingSamples: 4,
+      completed: 1,
+      baselineMetrics: null,
+      observedMetrics: {
+        completionRate: 1,
+        followThroughRate: 1,
+        averageSatisfaction: 5,
+        averageRegret: 1,
+        averageEnergy: 4,
+        privateMessages: 2,
+        opportunitiesCreated: 1,
+        relationshipImprovements: 1,
+        positivePerceptionShifts: 1,
+      },
+    });
+    expect(repeated.recentOutcomes).toHaveLength(1);
+    await expect(service.recordOutcome({ ...input, satisfaction: 4 })).rejects.toBeInstanceOf(
+      StrategicQualityConflictError,
+    );
+    const revised = await service.review({
+      actorId: owner,
+      requestId: 'strategic_review_supersedes_acceptance',
+      actionId: action.id,
+      decision: 'needs_revision',
+      usefulness: 3,
+      trust: 3,
+      friction: 3,
+      expectedStrategyRevision: action.decision.strategyRevision,
+      expectedDecisionContextRevision: action.decision.decisionContextRevision,
+      expectedDecisionContextHash: action.decision.decisionContextHash,
+      expectedDecisionWindowEndsAt: action.decision.decisionWindowEndsAt,
+      reviewedAt: new Date(fixedTime.getTime() + 2 * 60_000),
+    });
+    await expect(service.recordOutcome({
+      ...input,
+      requestId: 'strategic_outcome_for_superseded_review',
+      recordedAt: new Date(fixedTime.getTime() + 3 * 60_000),
+    })).rejects.toMatchObject({ reason: 'review_superseded' });
+    const revisedReview = revised.recentReviews.find(
+      (candidate) => candidate.decision === 'needs_revision',
+    );
+    if (!revisedReview) throw new Error('Expected a superseding review.');
+    await expect(service.recordOutcome({
+      ...input,
+      requestId: 'strategic_outcome_for_unaccepted_review',
+      reviewId: revisedReview.id,
+      recordedAt: new Date(fixedTime.getTime() + 3 * 60_000),
+    })).rejects.toMatchObject({ reason: 'review_not_accepted' });
+  });
+
+  it('establishes an outcome baseline only after five accepted actions have follow-ups', async () => {
+    const base = await createGroundedWorkbench().snapshot();
+    let revision = 1;
+    const mutableWorkbench = {
+      snapshot: (): Promise<WorkbenchSnapshot> => Promise.resolve(
+        withRevision(base, revision, base.actions[0]?.id),
+      ),
+    };
+    const service = new StrategicQualityService(
+      new InMemoryStrategicQualityRepository(),
+      { tenantId: activeTenant, ownerUserId: owner },
+      mutableWorkbench,
+    );
+    let quality = await service.snapshot(owner, fixedTime);
+    for (let index = 1; index <= 5; index += 1) {
+      revision = index;
+      const snapshot = await mutableWorkbench.snapshot();
+      const action = snapshot.actions[0];
+      if (!action) throw new Error('Expected a strategic action.');
+      quality = await service.review({
+        actorId: owner,
+        requestId: `strategic_outcome_review_${String(index)}`,
+        actionId: action.id,
+        decision: 'accepted',
+        usefulness: 4,
+        trust: 4,
+        friction: 2,
+        expectedStrategyRevision: action.decision.strategyRevision,
+        expectedDecisionContextRevision: action.decision.decisionContextRevision,
+        expectedDecisionContextHash: action.decision.decisionContextHash,
+        expectedDecisionWindowEndsAt: action.decision.decisionWindowEndsAt,
+        reviewedAt: fixedTime,
+      });
+      const review = quality.recentReviews.find(
+        (candidate) => candidate.strategyRevision === revision,
+      );
+      if (!review) throw new Error('Expected an accepted review.');
+      const recordedAt = new Date(fixedTime.getTime() + index * 60_000);
+      quality = await service.recordOutcome({
+        actorId: owner,
+        requestId: `strategic_outcome_cycle_${String(index)}`,
+        reviewId: review.id,
+        executionStatus: index <= 3 ? 'completed' : index === 4 ? 'partial' : 'not_executed',
+        satisfaction: index,
+        regret: 6 - index,
+        energy: 3,
+        privateMessages: 0,
+        opportunitiesCreated: index === 3 ? 1 : 0,
+        relationshipChange: 'none',
+        mediaOpportunities: 0,
+        perceptionShift: 'unknown',
+        businessOutcome: 'none',
+        outcomeOccurredAt: recordedAt.toISOString(),
+        recordedAt,
+      });
+    }
+
+    expect(quality.outcomeBaseline).toMatchObject({
+      status: 'established',
+      sampleSize: 5,
+      remainingSamples: 0,
+      completed: 3,
+      partial: 1,
+      notExecuted: 1,
+      observedMetrics: {
+        completionRate: 0.6,
+        followThroughRate: 0.8,
+        averageSatisfaction: 3,
+        averageRegret: 3,
+      },
+      baselineMetrics: {
+        completionRate: 0.6,
+        followThroughRate: 0.8,
+      },
+    });
+  });
+
   it('establishes a baseline only after five context-bound samples', async () => {
     const base = await createGroundedWorkbench().snapshot();
     let revision = 1;
@@ -190,12 +372,20 @@ describe('strategic quality baseline', () => {
   });
 });
 
-function withRevision(source: WorkbenchSnapshot, revision: number): WorkbenchSnapshot {
+function withRevision(
+  source: WorkbenchSnapshot,
+  revision: number,
+  approvedActionId?: string,
+): WorkbenchSnapshot {
   const hash = revision.toString(16).padStart(64, '0');
   return {
     ...source,
     goal: { ...source.goal, revision },
     decisionContext: { ...source.decisionContext, revision, contextHash: hash },
+    workflow: {
+      ...source.workflow,
+      ...(approvedActionId ? { approvedActionId } : {}),
+    },
     actions: source.actions.map((action) => ({
       ...action,
       decision: {

@@ -537,7 +537,10 @@ describe('private preview worker draft runtime', () => {
     };
     const qualityReview = await post('/api/strategic-quality/reviews', reviewRequest);
     expect(qualityReview.status).toBe(200);
-    await expect(qualityReview.json()).resolves.toMatchObject({
+    const qualityReviewPayload = await qualityReview.json() as {
+      recentReviews: Array<{ id: string }>;
+    };
+    expect(qualityReviewPayload).toMatchObject({
       ownerBaseline: {
         status: 'collecting', sampleSize: 1, accepted: 1,
         observedMetrics: { acceptanceRate: 1, averageUsefulness: 5 },
@@ -549,6 +552,40 @@ describe('private preview worker draft runtime', () => {
     expect((await post('/api/strategic-quality/reviews', {
       ...reviewRequest,
       usefulness: 4,
+    })).status).toBe(409);
+    const acceptedReviewId = qualityReviewPayload.recentReviews[0]?.id;
+    if (!acceptedReviewId) throw new Error('Expected an accepted strategic review.');
+    const outcomeRequest = {
+      requestId: 'strategic_outcome_runtime_essay',
+      reviewId: acceptedReviewId,
+      executionStatus: 'completed',
+      satisfaction: 5,
+      regret: 1,
+      energy: 4,
+      engagementQuality: 5,
+      interactionDepth: 4,
+      privateMessages: 1,
+      opportunitiesCreated: 1,
+      relationshipChange: 'positive',
+      mediaOpportunities: 0,
+      perceptionShift: 'positive',
+      businessOutcome: 'early_signal',
+      note: 'یک تعامل عمیق و یک فرصت قابل پیگیری ایجاد شد.',
+      outcomeOccurredAt: new Date().toISOString(),
+    };
+    const qualityOutcome = await post('/api/strategic-quality/outcomes', outcomeRequest);
+    expect(qualityOutcome.status).toBe(200);
+    await expect(qualityOutcome.json()).resolves.toMatchObject({
+      outcomeBaseline: {
+        status: 'collecting', sampleSize: 1, completed: 1, baselineMetrics: null,
+        observedMetrics: { followThroughRate: 1, opportunitiesCreated: 1 },
+      },
+      recentOutcomes: [{ reviewId: acceptedReviewId, actionId: 'essay', executionStatus: 'completed' }],
+    });
+    expect((await post('/api/strategic-quality/outcomes', outcomeRequest)).status).toBe(200);
+    expect((await post('/api/strategic-quality/outcomes', {
+      ...outcomeRequest,
+      satisfaction: 4,
     })).status).toBe(409);
 
     const lateAssetResponse = await post('/api/assets/text', {
@@ -751,7 +788,13 @@ describe('private preview worker draft runtime', () => {
         initiative: { policyVersion: string; settings: { mode: string }; evaluations: unknown[] };
         relationships: { policyVersion: string; summary: { totalStakeholders: number }; stakeholders: unknown[] };
         perception: { policyVersion: string; summary: { totalSignals: number }; signals: unknown[] };
-        strategicQuality: { policyVersion: string; ownerBaseline: { sampleSize: number }; recentReviews: unknown[] };
+        strategicQuality: {
+          policyVersion: string;
+          ownerBaseline: { sampleSize: number };
+          outcomeBaseline: { sampleSize: number };
+          recentReviews: unknown[];
+          recentOutcomes: unknown[];
+        };
       };
     };
     expect(accountExportResponse.status).toBe(200);
@@ -782,8 +825,10 @@ describe('private preview worker draft runtime', () => {
     expect(accountExport.data.perception.signals).toHaveLength(3);
     expect(accountExport.data.strategicQuality).toMatchObject({
       policyVersion: 'strategic-quality-v1', ownerBaseline: { sampleSize: 1 },
+      outcomeBaseline: { sampleSize: 1 },
     });
     expect(accountExport.data.strategicQuality.recentReviews).toHaveLength(1);
+    expect(accountExport.data.strategicQuality.recentOutcomes).toHaveLength(1);
 
     const activityAfterExport = await worker.fetch(
       new Request('https://preview.example/api/account/activity'),

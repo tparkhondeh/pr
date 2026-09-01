@@ -22,6 +22,7 @@ Goal، Audience، Timing، Quality و Conflict می‌سنجد.
 - [Perception Engine](docs/architecture/perception-engine-v1.0.md)
 - [Decision Context و Attention Budget نسخه‌دار](docs/architecture/decision-context-v1.0.md)
 - [Strategic Quality Baseline](docs/architecture/strategic-quality-baseline-v1.0.md)
+- [Strategic Outcome Follow-up](docs/architecture/strategic-outcome-followup-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
@@ -284,6 +285,13 @@ Attention Budget پنج‌بعدی، Human Gate، مسیر No-action، Grounding
 ثبت می‌شود. پذیرش فقط برای Action تأییدشده معتبر است و تا پنج نمونه واقعی، اعداد صرفاً
 مشاهده موقت‌اند و `baselineMetrics` عمداً `null` می‌ماند. APIهای این بخش
 `GET /api/strategic-quality` و `POST /api/strategic-quality/reviews` هستند.
+
+همین نما قرارداد `strategic-outcome-followup-v1` را برای نتیجه واقعی Action پذیرفته‌شده
+اجرا می‌کند. مالک وضعیت اجرا، رضایت، پشیمانی، انرژی، کیفیت/عمق تعامل، فرصت، تغییر رابطه
+و ادراک و Outcome کسب‌وکار را از `POST /api/strategic-quality/outcomes` ثبت می‌کند.
+Review ردشده یا superseded پذیرفته نمی‌شود، هر اصلاح append-only است و تا پنج Follow-up
+واقعی `outcomeBaseline.baselineMetrics` خالی می‌ماند. Like و View به‌تنهایی Metric موفقیت
+نیستند و این داده هیچ تغییر خودکار Identity، Strategy یا اقدام بیرونی ایجاد نمی‌کند.
 
 نمای «داده و شفافیت» ردپای owner-scoped تصمیم‌ها، تأییدها، حقوق حافظه و Exportها را
 از `GET /api/account/activity` نمایش می‌دهد. کاربر از `GET /api/account/export` یک

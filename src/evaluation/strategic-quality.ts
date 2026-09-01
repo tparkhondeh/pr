@@ -4,10 +4,15 @@ import type { WorkbenchAction, WorkbenchSnapshot } from '../workbench/workbench.
 import type { EvaluationSeverity } from './evaluation.js';
 
 export const strategicQualityPolicyVersion = 'strategic-quality-v1' as const;
+export const strategicOutcomePolicyVersion = 'strategic-outcome-followup-v1' as const;
 export const strategicQualityMinimumSamples = 5;
+export const strategicOutcomeMinimumSamples = 5;
 
 export type StrategicRecommendationDecision = 'accepted' | 'rejected' | 'needs_revision';
 export type StrategicQualityPersistence = 'memory' | 'postgres';
+export type StrategicOutcomeExecutionStatus = 'completed' | 'partial' | 'not_executed';
+export type StrategicOutcomeChange = 'positive' | 'none' | 'negative' | 'unknown';
+export type StrategicBusinessOutcome = 'none' | 'early_signal' | 'material' | 'unknown';
 
 export type StrategicRecommendationReview = Readonly<{
   id: string;
@@ -26,6 +31,29 @@ export type StrategicRecommendationReview = Readonly<{
   decisionWindowEndsAt: Date;
   reviewedAt: Date;
   supersedesReviewId?: string;
+}>;
+
+export type StrategicActionOutcome = Readonly<{
+  id: string;
+  reviewId: string;
+  actionId: string;
+  actionTitle: string;
+  executionStatus: StrategicOutcomeExecutionStatus;
+  satisfaction: 1 | 2 | 3 | 4 | 5;
+  regret: 1 | 2 | 3 | 4 | 5;
+  energy: 1 | 2 | 3 | 4 | 5;
+  engagementQuality?: 1 | 2 | 3 | 4 | 5;
+  interactionDepth?: 1 | 2 | 3 | 4 | 5;
+  privateMessages: number;
+  opportunitiesCreated: number;
+  relationshipChange: StrategicOutcomeChange;
+  mediaOpportunities: number;
+  perceptionShift: StrategicOutcomeChange;
+  businessOutcome: StrategicBusinessOutcome;
+  note?: string;
+  outcomeOccurredAt: Date;
+  recordedAt: Date;
+  supersedesOutcomeId?: string;
 }>;
 
 export type StrategicRubricResult = Readonly<{
@@ -47,6 +75,22 @@ export type StrategicQualityMetrics = Readonly<{
   averageUsefulness: number;
   averageTrust: number;
   averageFriction: number;
+}>;
+
+export type StrategicOutcomeMetrics = Readonly<{
+  completionRate: number;
+  followThroughRate: number;
+  averageSatisfaction: number;
+  averageRegret: number;
+  averageEnergy: number;
+  averageEngagementQuality: number | null;
+  averageInteractionDepth: number | null;
+  privateMessages: number;
+  opportunitiesCreated: number;
+  relationshipImprovements: number;
+  mediaOpportunities: number;
+  positivePerceptionShifts: number;
+  materialBusinessOutcomes: number;
 }>;
 
 export type StrategicQualitySnapshot = Readonly<{
@@ -71,7 +115,20 @@ export type StrategicQualitySnapshot = Readonly<{
     observedMetrics: StrategicQualityMetrics | null;
     baselineMetrics: StrategicQualityMetrics | null;
   }>;
+  outcomeBaseline: Readonly<{
+    policyVersion: typeof strategicOutcomePolicyVersion;
+    status: 'collecting' | 'established';
+    minimumSampleSize: typeof strategicOutcomeMinimumSamples;
+    sampleSize: number;
+    remainingSamples: number;
+    completed: number;
+    partial: number;
+    notExecuted: number;
+    observedMetrics: StrategicOutcomeMetrics | null;
+    baselineMetrics: StrategicOutcomeMetrics | null;
+  }>;
   recentReviews: readonly StrategicRecommendationReview[];
+  recentOutcomes: readonly StrategicActionOutcome[];
 }>;
 
 export type StrategicReviewCommand = Readonly<{
@@ -91,10 +148,34 @@ export type StrategicReviewCommand = Readonly<{
   reviewedAt: Date;
 }>;
 
+export type StrategicOutcomeCommand = Readonly<{
+  tenantId: TenantId;
+  actorId: UserId;
+  requestId: string;
+  review: StrategicRecommendationReview;
+  executionStatus: StrategicOutcomeExecutionStatus;
+  satisfaction: 1 | 2 | 3 | 4 | 5;
+  regret: 1 | 2 | 3 | 4 | 5;
+  energy: 1 | 2 | 3 | 4 | 5;
+  engagementQuality?: 1 | 2 | 3 | 4 | 5;
+  interactionDepth?: 1 | 2 | 3 | 4 | 5;
+  privateMessages: number;
+  opportunitiesCreated: number;
+  relationshipChange: StrategicOutcomeChange;
+  mediaOpportunities: number;
+  perceptionShift: StrategicOutcomeChange;
+  businessOutcome: StrategicBusinessOutcome;
+  note?: string;
+  outcomeOccurredAt: Date;
+  recordedAt: Date;
+}>;
+
 export interface StrategicQualityRepository {
   readonly persistence: StrategicQualityPersistence;
   list(generatedAt: Date): Promise<readonly StrategicRecommendationReview[]>;
   record(command: StrategicReviewCommand): Promise<readonly StrategicRecommendationReview[]>;
+  listOutcomes(generatedAt: Date): Promise<readonly StrategicActionOutcome[]>;
+  recordOutcome(command: StrategicOutcomeCommand): Promise<readonly StrategicActionOutcome[]>;
 }
 
 export class StrategicQualityValidationError extends Error {}
@@ -106,7 +187,10 @@ export class StrategicQualityConflictError extends Error {
     | 'strategy_changed'
     | 'decision_context_changed'
     | 'decision_expired'
-    | 'acceptance_not_approved') {
+    | 'acceptance_not_approved'
+    | 'review_not_accepted'
+    | 'review_superseded'
+    | 'outcome_before_review') {
     super(`Strategic quality conflict: ${reason}`);
   }
 }
@@ -120,11 +204,18 @@ export class StrategicQualityService {
 
   public async snapshot(actorId: UserId, generatedAt: Date): Promise<StrategicQualitySnapshot> {
     this.assertOwner(actorId);
-    const [workbench, reviews] = await Promise.all([
+    const [workbench, reviews, outcomes] = await Promise.all([
       this.workbench.snapshot(),
       this.repository.list(generatedAt),
+      this.repository.listOutcomes(generatedAt),
     ]);
-    return makeStrategicQualitySnapshot(generatedAt, this.repository.persistence, workbench, reviews);
+    return makeStrategicQualitySnapshot(
+      generatedAt,
+      this.repository.persistence,
+      workbench,
+      reviews,
+      outcomes,
+    );
   }
 
   public async review(input: Readonly<{
@@ -190,11 +281,83 @@ export class StrategicQualityService {
       decisionWindowEndsAt,
       reviewedAt: input.reviewedAt,
     });
+    const outcomes = await this.repository.listOutcomes(input.reviewedAt);
     return makeStrategicQualitySnapshot(
       input.reviewedAt,
       this.repository.persistence,
       workbench,
       reviews,
+      outcomes,
+    );
+  }
+
+  public async recordOutcome(input: Readonly<{
+    actorId: UserId;
+    requestId: string;
+    reviewId: string;
+    executionStatus: StrategicOutcomeExecutionStatus;
+    satisfaction: number;
+    regret: number;
+    energy: number;
+    engagementQuality?: number;
+    interactionDepth?: number;
+    privateMessages: number;
+    opportunitiesCreated: number;
+    relationshipChange: StrategicOutcomeChange;
+    mediaOpportunities: number;
+    perceptionShift: StrategicOutcomeChange;
+    businessOutcome: StrategicBusinessOutcome;
+    note?: string;
+    outcomeOccurredAt: string;
+    recordedAt: Date;
+  }>): Promise<StrategicQualitySnapshot> {
+    this.assertOwner(input.actorId);
+    validateRequestId(input.requestId);
+    validateOutcomeInput(input);
+    const reviews = await this.repository.list(input.recordedAt);
+    const review = reviews.find((candidate) => candidate.id === input.reviewId);
+    if (!review) throw new StrategicQualityNotFoundError();
+    const current = currentReviews(reviews).find((candidate) => candidate.id === review.id);
+    if (!current) throw new StrategicQualityConflictError('review_superseded');
+    if (review.decision !== 'accepted') {
+      throw new StrategicQualityConflictError('review_not_accepted');
+    }
+    const outcomeOccurredAt = new Date(input.outcomeOccurredAt);
+    if (outcomeOccurredAt.getTime() < review.reviewedAt.getTime()) {
+      throw new StrategicQualityConflictError('outcome_before_review');
+    }
+    const outcomes = await this.repository.recordOutcome({
+      tenantId: this.identity.tenantId,
+      actorId: input.actorId,
+      requestId: input.requestId,
+      review,
+      executionStatus: input.executionStatus,
+      satisfaction: input.satisfaction as 1 | 2 | 3 | 4 | 5,
+      regret: input.regret as 1 | 2 | 3 | 4 | 5,
+      energy: input.energy as 1 | 2 | 3 | 4 | 5,
+      ...(input.engagementQuality !== undefined
+        ? { engagementQuality: input.engagementQuality as 1 | 2 | 3 | 4 | 5 }
+        : {}),
+      ...(input.interactionDepth !== undefined
+        ? { interactionDepth: input.interactionDepth as 1 | 2 | 3 | 4 | 5 }
+        : {}),
+      privateMessages: input.privateMessages,
+      opportunitiesCreated: input.opportunitiesCreated,
+      relationshipChange: input.relationshipChange,
+      mediaOpportunities: input.mediaOpportunities,
+      perceptionShift: input.perceptionShift,
+      businessOutcome: input.businessOutcome,
+      ...(input.note?.trim() ? { note: input.note.trim() } : {}),
+      outcomeOccurredAt,
+      recordedAt: input.recordedAt,
+    });
+    const workbench = await this.workbench.snapshot();
+    return makeStrategicQualitySnapshot(
+      input.recordedAt,
+      this.repository.persistence,
+      workbench,
+      reviews,
+      outcomes,
     );
   }
 
@@ -209,6 +372,8 @@ export class InMemoryStrategicQualityRepository implements StrategicQualityRepos
   public readonly persistence = 'memory' as const;
   readonly #reviews = new Map<string, StrategicRecommendationReview>();
   readonly #requests = new Map<string, Readonly<{ fingerprint: string; reviewId: string }>>();
+  readonly #outcomes = new Map<string, StrategicActionOutcome>();
+  readonly #outcomeRequests = new Map<string, Readonly<{ fingerprint: string; outcomeId: string }>>();
 
   public list(): Promise<readonly StrategicRecommendationReview[]> {
     return Promise.resolve(this.current());
@@ -238,9 +403,48 @@ export class InMemoryStrategicQualityRepository implements StrategicQualityRepos
     return Promise.resolve(this.current());
   }
 
+  public listOutcomes(): Promise<readonly StrategicActionOutcome[]> {
+    return Promise.resolve(this.currentOutcomes());
+  }
+
+  public recordOutcome(command: StrategicOutcomeCommand): Promise<readonly StrategicActionOutcome[]> {
+    const fingerprint = outcomeFingerprint(command);
+    const repeated = this.#outcomeRequests.get(command.requestId);
+    if (repeated) {
+      if (repeated.fingerprint !== fingerprint) {
+        throw new StrategicQualityConflictError('idempotency_mismatch');
+      }
+      return Promise.resolve(this.currentOutcomes());
+    }
+    const currentReview = currentReviews([...this.#reviews.values()]).find(
+      (review) => review.id === command.review.id,
+    );
+    if (!currentReview) throw new StrategicQualityConflictError('review_superseded');
+    if (currentReview.decision !== 'accepted') {
+      throw new StrategicQualityConflictError('review_not_accepted');
+    }
+    const prior = currentOutcomes([...this.#outcomes.values()]).find(
+      (outcome) => outcome.reviewId === command.review.id,
+    );
+    const id = deterministicUuid(
+      `strategic-outcome:${command.tenantId}:${command.actorId}:${command.requestId}`,
+    );
+    const outcome = toOutcome(id, command, prior?.id);
+    this.#outcomes.set(id, outcome);
+    this.#outcomeRequests.set(command.requestId, { fingerprint, outcomeId: id });
+    return Promise.resolve(this.currentOutcomes());
+  }
+
   private current(): readonly StrategicRecommendationReview[] {
     return [...this.#reviews.values()].sort(
       (left, right) => right.reviewedAt.getTime() - left.reviewedAt.getTime(),
+    );
+  }
+
+
+  private currentOutcomes(): readonly StrategicActionOutcome[] {
+    return [...this.#outcomes.values()].sort(
+      (left, right) => right.recordedAt.getTime() - left.recordedAt.getTime(),
     );
   }
 }
@@ -363,13 +567,28 @@ function makeStrategicQualitySnapshot(
   persistence: StrategicQualityPersistence,
   workbench: WorkbenchSnapshot,
   reviews: readonly StrategicRecommendationReview[],
+  outcomes: readonly StrategicActionOutcome[],
 ): StrategicQualitySnapshot {
   const current = currentReviews(reviews);
+  const currentActionOutcomes = currentOutcomes(outcomes);
   const accepted = current.filter((review) => review.decision === 'accepted').length;
   const rejected = current.filter((review) => review.decision === 'rejected').length;
   const needsRevision = current.filter((review) => review.decision === 'needs_revision').length;
   const observedMetrics = current.length === 0 ? null : metrics(current, accepted);
   const established = current.length >= strategicQualityMinimumSamples;
+  const completed = currentActionOutcomes.filter(
+    (outcome) => outcome.executionStatus === 'completed',
+  ).length;
+  const partial = currentActionOutcomes.filter(
+    (outcome) => outcome.executionStatus === 'partial',
+  ).length;
+  const notExecuted = currentActionOutcomes.filter(
+    (outcome) => outcome.executionStatus === 'not_executed',
+  ).length;
+  const observedOutcomeMetrics = currentActionOutcomes.length === 0
+    ? null
+    : outcomeMetrics(currentActionOutcomes, completed, partial);
+  const outcomeEstablished = currentActionOutcomes.length >= strategicOutcomeMinimumSamples;
   return {
     policyVersion: strategicQualityPolicyVersion,
     generatedAt,
@@ -392,8 +611,26 @@ function makeStrategicQualitySnapshot(
       observedMetrics,
       baselineMetrics: established ? observedMetrics : null,
     },
+    outcomeBaseline: {
+      policyVersion: strategicOutcomePolicyVersion,
+      status: outcomeEstablished ? 'established' : 'collecting',
+      minimumSampleSize: strategicOutcomeMinimumSamples,
+      sampleSize: currentActionOutcomes.length,
+      remainingSamples: Math.max(
+        0,
+        strategicOutcomeMinimumSamples - currentActionOutcomes.length,
+      ),
+      completed,
+      partial,
+      notExecuted,
+      observedMetrics: observedOutcomeMetrics,
+      baselineMetrics: outcomeEstablished ? observedOutcomeMetrics : null,
+    },
     recentReviews: [...reviews]
       .sort((left, right) => right.reviewedAt.getTime() - left.reviewedAt.getTime())
+      .slice(0, 50),
+    recentOutcomes: [...outcomes]
+      .sort((left, right) => right.recordedAt.getTime() - left.recordedAt.getTime())
       .slice(0, 50),
   };
 }
@@ -419,6 +656,23 @@ function currentReviews(
   return [...latest.values()];
 }
 
+function currentOutcomes(
+  outcomes: readonly StrategicActionOutcome[],
+): readonly StrategicActionOutcome[] {
+  const superseded = new Set(
+    outcomes.flatMap((outcome) => outcome.supersedesOutcomeId
+      ? [outcome.supersedesOutcomeId]
+      : []),
+  );
+  const latest = new Map<string, StrategicActionOutcome>();
+  for (const outcome of [...outcomes]
+    .filter((candidate) => !superseded.has(candidate.id))
+    .sort((left, right) => right.recordedAt.getTime() - left.recordedAt.getTime())) {
+    if (!latest.has(outcome.reviewId)) latest.set(outcome.reviewId, outcome);
+  }
+  return [...latest.values()];
+}
+
 function metrics(
   reviews: readonly StrategicRecommendationReview[],
   accepted: number,
@@ -430,6 +684,47 @@ function metrics(
     averageUsefulness: average((review) => review.usefulness),
     averageTrust: average((review) => review.trust),
     averageFriction: average((review) => review.friction),
+  };
+}
+
+function outcomeMetrics(
+  outcomes: readonly StrategicActionOutcome[],
+  completed: number,
+  partial: number,
+): StrategicOutcomeMetrics {
+  const average = (
+    values: readonly number[],
+  ): number | null => values.length === 0
+    ? null
+    : round(values.reduce((total, value) => total + value, 0) / values.length);
+  return {
+    completionRate: round(completed / outcomes.length),
+    followThroughRate: round((completed + partial) / outcomes.length),
+    averageSatisfaction: average(outcomes.map((outcome) => outcome.satisfaction)) ?? 0,
+    averageRegret: average(outcomes.map((outcome) => outcome.regret)) ?? 0,
+    averageEnergy: average(outcomes.map((outcome) => outcome.energy)) ?? 0,
+    averageEngagementQuality: average(outcomes.flatMap((outcome) =>
+      outcome.engagementQuality === undefined ? [] : [outcome.engagementQuality])),
+    averageInteractionDepth: average(outcomes.flatMap((outcome) =>
+      outcome.interactionDepth === undefined ? [] : [outcome.interactionDepth])),
+    privateMessages: outcomes.reduce((total, outcome) => total + outcome.privateMessages, 0),
+    opportunitiesCreated: outcomes.reduce(
+      (total, outcome) => total + outcome.opportunitiesCreated,
+      0,
+    ),
+    relationshipImprovements: outcomes.filter(
+      (outcome) => outcome.relationshipChange === 'positive',
+    ).length,
+    mediaOpportunities: outcomes.reduce(
+      (total, outcome) => total + outcome.mediaOpportunities,
+      0,
+    ),
+    positivePerceptionShifts: outcomes.filter(
+      (outcome) => outcome.perceptionShift === 'positive',
+    ).length,
+    materialBusinessOutcomes: outcomes.filter(
+      (outcome) => outcome.businessOutcome === 'material',
+    ).length,
   };
 }
 
@@ -458,6 +753,39 @@ function toReview(
   };
 }
 
+function toOutcome(
+  id: string,
+  command: StrategicOutcomeCommand,
+  supersedesOutcomeId?: string,
+): StrategicActionOutcome {
+  return {
+    id,
+    reviewId: command.review.id,
+    actionId: command.review.actionId,
+    actionTitle: command.review.actionTitle,
+    executionStatus: command.executionStatus,
+    satisfaction: command.satisfaction,
+    regret: command.regret,
+    energy: command.energy,
+    ...(command.engagementQuality !== undefined
+      ? { engagementQuality: command.engagementQuality }
+      : {}),
+    ...(command.interactionDepth !== undefined
+      ? { interactionDepth: command.interactionDepth }
+      : {}),
+    privateMessages: command.privateMessages,
+    opportunitiesCreated: command.opportunitiesCreated,
+    relationshipChange: command.relationshipChange,
+    mediaOpportunities: command.mediaOpportunities,
+    perceptionShift: command.perceptionShift,
+    businessOutcome: command.businessOutcome,
+    ...(command.note ? { note: command.note } : {}),
+    outcomeOccurredAt: command.outcomeOccurredAt,
+    recordedAt: command.recordedAt,
+    ...(supersedesOutcomeId ? { supersedesOutcomeId } : {}),
+  };
+}
+
 export function reviewFingerprint(command: StrategicReviewCommand): string {
   return createHash('sha256').update(JSON.stringify({
     actionId: command.action.id,
@@ -470,6 +798,26 @@ export function reviewFingerprint(command: StrategicReviewCommand): string {
     decisionContextRevision: command.decisionContextRevision,
     decisionContextHash: command.decisionContextHash,
     decisionWindowEndsAt: command.decisionWindowEndsAt.toISOString(),
+  })).digest('hex');
+}
+
+export function outcomeFingerprint(command: StrategicOutcomeCommand): string {
+  return createHash('sha256').update(JSON.stringify({
+    reviewId: command.review.id,
+    executionStatus: command.executionStatus,
+    satisfaction: command.satisfaction,
+    regret: command.regret,
+    energy: command.energy,
+    engagementQuality: command.engagementQuality ?? null,
+    interactionDepth: command.interactionDepth ?? null,
+    privateMessages: command.privateMessages,
+    opportunitiesCreated: command.opportunitiesCreated,
+    relationshipChange: command.relationshipChange,
+    mediaOpportunities: command.mediaOpportunities,
+    perceptionShift: command.perceptionShift,
+    businessOutcome: command.businessOutcome,
+    note: command.note ?? null,
+    outcomeOccurredAt: command.outcomeOccurredAt.toISOString(),
   })).digest('hex');
 }
 
@@ -505,8 +853,69 @@ function validateReviewInput(input: Readonly<{
   }
 }
 
+function validateOutcomeInput(input: Readonly<{
+  reviewId: string;
+  executionStatus: StrategicOutcomeExecutionStatus;
+  satisfaction: number;
+  regret: number;
+  energy: number;
+  engagementQuality?: number;
+  interactionDepth?: number;
+  privateMessages: number;
+  opportunitiesCreated: number;
+  relationshipChange: StrategicOutcomeChange;
+  mediaOpportunities: number;
+  perceptionShift: StrategicOutcomeChange;
+  businessOutcome: StrategicBusinessOutcome;
+  note?: string;
+  outcomeOccurredAt: string;
+  recordedAt: Date;
+}>): void {
+  if (!isUuid(input.reviewId)) {
+    throw new StrategicQualityValidationError('Strategic review id is invalid.');
+  }
+  if (!['completed', 'partial', 'not_executed'].includes(input.executionStatus)) {
+    throw new StrategicQualityValidationError('Outcome execution status is invalid.');
+  }
+  if (![input.satisfaction, input.regret, input.energy].every(isRating)) {
+    throw new StrategicQualityValidationError('Outcome ratings must be integers from 1 to 5.');
+  }
+  if (
+    (input.engagementQuality !== undefined && !isRating(input.engagementQuality)) ||
+    (input.interactionDepth !== undefined && !isRating(input.interactionDepth))
+  ) {
+    throw new StrategicQualityValidationError('Optional outcome ratings must be integers from 1 to 5.');
+  }
+  if (![input.privateMessages, input.opportunitiesCreated, input.mediaOpportunities].every(
+    (value) => Number.isSafeInteger(value) && value >= 0 && value <= 10_000,
+  )) {
+    throw new StrategicQualityValidationError('Outcome counts must be integers from 0 to 10000.');
+  }
+  if (!['positive', 'none', 'negative', 'unknown'].includes(input.relationshipChange) ||
+      !['positive', 'none', 'negative', 'unknown'].includes(input.perceptionShift)) {
+    throw new StrategicQualityValidationError('Outcome change signal is invalid.');
+  }
+  if (!['none', 'early_signal', 'material', 'unknown'].includes(input.businessOutcome)) {
+    throw new StrategicQualityValidationError('Business outcome signal is invalid.');
+  }
+  if (input.note !== undefined && input.note.trim().length > 2_000) {
+    throw new StrategicQualityValidationError('Outcome note is too long.');
+  }
+  const outcomeOccurredAt = new Date(input.outcomeOccurredAt);
+  if (
+    Number.isNaN(outcomeOccurredAt.getTime()) ||
+    outcomeOccurredAt.getTime() > input.recordedAt.getTime() + 5 * 60 * 1_000
+  ) {
+    throw new StrategicQualityValidationError('Outcome timestamp is invalid.');
+  }
+}
+
 function isRating(value: number): boolean {
   return Number.isInteger(value) && value >= 1 && value <= 5;
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
 }
 
 function validateRequestId(value: string): void {

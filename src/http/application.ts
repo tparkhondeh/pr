@@ -68,6 +68,9 @@ import {
   StrategicQualityValidationError,
   type StrategicQualityService,
   type StrategicQualitySnapshot,
+  type StrategicBusinessOutcome,
+  type StrategicOutcomeChange,
+  type StrategicOutcomeExecutionStatus,
   type StrategicRecommendationDecision,
 } from '../evaluation/strategic-quality.js';
 import {
@@ -194,7 +197,7 @@ export type ApplicationDependencies = Readonly<{
     'sources' | 'snapshot' | 'create' | 'edit' | 'approve' | 'export'
   >;
   learning?: Pick<FeedbackLearningService, 'snapshot' | 'rejectDraft' | 'decide'>;
-  strategicQuality?: Pick<StrategicQualityService, 'snapshot' | 'review'>;
+  strategicQuality?: Pick<StrategicQualityService, 'snapshot' | 'review' | 'recordOutcome'>;
   research?: Pick<ResearchWorkspaceService, 'snapshot' | 'importSource'>;
   claims?: Pick<ClaimGovernanceService, 'snapshot' | 'review'>;
   risk?: Pick<BrandProtectionService, 'snapshot' | 'review' | 'authorizeAction'>;
@@ -300,6 +303,11 @@ export function createRequestHandler(
 
     if (request.method === 'POST' && path === '/api/strategic-quality/reviews') {
       await handleStrategicQualityReview(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/strategic-quality/outcomes') {
+      await handleStrategicOutcome(request, response, dependencies);
       return;
     }
 
@@ -616,6 +624,91 @@ async function handleStrategicQualityReview(
   }
 }
 
+async function handleStrategicOutcome(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = strategicQualityActor(request, response, dependencies);
+  if (!actorId) return;
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const reviewId = body['reviewId'];
+    const executionStatus = body['executionStatus'];
+    const satisfaction = body['satisfaction'];
+    const regret = body['regret'];
+    const energy = body['energy'];
+    const engagementQuality = body['engagementQuality'];
+    const interactionDepth = body['interactionDepth'];
+    const privateMessages = body['privateMessages'];
+    const opportunitiesCreated = body['opportunitiesCreated'];
+    const relationshipChange = body['relationshipChange'];
+    const mediaOpportunities = body['mediaOpportunities'];
+    const perceptionShift = body['perceptionShift'];
+    const businessOutcome = body['businessOutcome'];
+    const note = body['note'];
+    const outcomeOccurredAt = body['outcomeOccurredAt'];
+    if (
+      typeof requestId !== 'string' || typeof reviewId !== 'string' ||
+      !isStrategicOutcomeExecutionStatus(executionStatus) ||
+      typeof satisfaction !== 'number' || typeof regret !== 'number' ||
+      typeof energy !== 'number' ||
+      (engagementQuality !== undefined && typeof engagementQuality !== 'number') ||
+      (interactionDepth !== undefined && typeof interactionDepth !== 'number') ||
+      typeof privateMessages !== 'number' || typeof opportunitiesCreated !== 'number' ||
+      !isStrategicOutcomeChange(relationshipChange) ||
+      typeof mediaOpportunities !== 'number' || !isStrategicOutcomeChange(perceptionShift) ||
+      !isStrategicBusinessOutcome(businessOutcome) ||
+      (note !== undefined && typeof note !== 'string') ||
+      typeof outcomeOccurredAt !== 'string'
+    ) {
+      sendJson(response, 400, { error: 'invalid_strategic_outcome_input' });
+      return;
+    }
+    const recordedAt = now(dependencies);
+    const snapshot = await dependencies.strategicQuality?.recordOutcome({
+      actorId,
+      requestId,
+      reviewId,
+      executionStatus,
+      satisfaction,
+      regret,
+      energy,
+      ...(engagementQuality !== undefined ? { engagementQuality } : {}),
+      ...(interactionDepth !== undefined ? { interactionDepth } : {}),
+      privateMessages,
+      opportunitiesCreated,
+      relationshipChange,
+      mediaOpportunities,
+      perceptionShift,
+      businessOutcome,
+      ...(note !== undefined ? { note } : {}),
+      outcomeOccurredAt,
+      recordedAt,
+    });
+    if (!snapshot) throw new Error('Strategic quality service disappeared.');
+    await recordMutationAudit(dependencies, {
+      requestId: `strategic-quality.outcome:${requestId}`,
+      eventType: 'strategic_action.outcome_recorded',
+      resourceType: 'strategic_action_outcome',
+      resourceId: reviewId,
+      actorId,
+      purpose: 'personal_understanding',
+      decision: 'recorded',
+      metadata: { executionStatus, satisfaction, regret, energy },
+      occurredAt: recordedAt,
+    });
+    sendJson(response, 200, serializeStrategicQuality(snapshot));
+  } catch (error: unknown) {
+    if (error instanceof InvalidJsonBodyError || error instanceof StrategicQualityValidationError) {
+      sendJson(response, 400, { error: 'invalid_strategic_outcome_input' });
+      return;
+    }
+    sendStrategicQualityError(response, error);
+  }
+}
+
 function strategicQualityActor(
   request: IncomingMessage,
   response: ServerResponse,
@@ -644,10 +737,16 @@ function serializeStrategicQuality(snapshot: StrategicQualitySnapshot): Record<s
     },
     rubric: snapshot.rubric,
     ownerBaseline: snapshot.ownerBaseline,
+    outcomeBaseline: snapshot.outcomeBaseline,
     recentReviews: snapshot.recentReviews.map((review) => ({
       ...review,
       decisionWindowEndsAt: review.decisionWindowEndsAt.toISOString(),
       reviewedAt: review.reviewedAt.toISOString(),
+    })),
+    recentOutcomes: snapshot.recentOutcomes.map((outcome) => ({
+      ...outcome,
+      outcomeOccurredAt: outcome.outcomeOccurredAt.toISOString(),
+      recordedAt: outcome.recordedAt.toISOString(),
     })),
   };
 }
@@ -2508,6 +2607,20 @@ function isStrategicRecommendationDecision(
   value: unknown,
 ): value is StrategicRecommendationDecision {
   return value === 'accepted' || value === 'rejected' || value === 'needs_revision';
+}
+
+function isStrategicOutcomeExecutionStatus(
+  value: unknown,
+): value is StrategicOutcomeExecutionStatus {
+  return value === 'completed' || value === 'partial' || value === 'not_executed';
+}
+
+function isStrategicOutcomeChange(value: unknown): value is StrategicOutcomeChange {
+  return value === 'positive' || value === 'none' || value === 'negative' || value === 'unknown';
+}
+
+function isStrategicBusinessOutcome(value: unknown): value is StrategicBusinessOutcome {
+  return value === 'none' || value === 'early_signal' || value === 'material' || value === 'unknown';
 }
 
 function isPreferenceDecision(value: unknown): value is PreferenceDecision {

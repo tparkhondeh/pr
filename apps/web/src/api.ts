@@ -893,6 +893,9 @@ export type FeedbackLearningSnapshot = Readonly<{
 }>;
 
 export type StrategicRecommendationDecision = 'accepted' | 'rejected' | 'needs_revision';
+export type StrategicOutcomeExecutionStatus = 'completed' | 'partial' | 'not_executed';
+export type StrategicOutcomeChange = 'positive' | 'none' | 'negative' | 'unknown';
+export type StrategicBusinessOutcome = 'none' | 'early_signal' | 'material' | 'unknown';
 
 export type StrategicQualitySnapshot = Readonly<{
   policyVersion: 'strategic-quality-v1';
@@ -938,6 +941,18 @@ export type StrategicQualitySnapshot = Readonly<{
       averageFriction: number;
     }> | null;
   }>;
+  outcomeBaseline: Readonly<{
+    policyVersion: 'strategic-outcome-followup-v1';
+    status: 'collecting' | 'established';
+    minimumSampleSize: 5;
+    sampleSize: number;
+    remainingSamples: number;
+    completed: number;
+    partial: number;
+    notExecuted: number;
+    observedMetrics: StrategicOutcomeMetrics | null;
+    baselineMetrics: StrategicOutcomeMetrics | null;
+  }>;
   recentReviews: readonly Readonly<{
     id: string;
     actionId: string;
@@ -956,6 +971,44 @@ export type StrategicQualitySnapshot = Readonly<{
     reviewedAt: string;
     supersedesReviewId?: string;
   }>[];
+  recentOutcomes: readonly Readonly<{
+    id: string;
+    reviewId: string;
+    actionId: string;
+    actionTitle: string;
+    executionStatus: StrategicOutcomeExecutionStatus;
+    satisfaction: 1 | 2 | 3 | 4 | 5;
+    regret: 1 | 2 | 3 | 4 | 5;
+    energy: 1 | 2 | 3 | 4 | 5;
+    engagementQuality?: 1 | 2 | 3 | 4 | 5;
+    interactionDepth?: 1 | 2 | 3 | 4 | 5;
+    privateMessages: number;
+    opportunitiesCreated: number;
+    relationshipChange: StrategicOutcomeChange;
+    mediaOpportunities: number;
+    perceptionShift: StrategicOutcomeChange;
+    businessOutcome: StrategicBusinessOutcome;
+    note?: string;
+    outcomeOccurredAt: string;
+    recordedAt: string;
+    supersedesOutcomeId?: string;
+  }>[];
+}>;
+
+type StrategicOutcomeMetrics = Readonly<{
+  completionRate: number;
+  followThroughRate: number;
+  averageSatisfaction: number;
+  averageRegret: number;
+  averageEnergy: number;
+  averageEngagementQuality: number | null;
+  averageInteractionDepth: number | null;
+  privateMessages: number;
+  opportunitiesCreated: number;
+  relationshipImprovements: number;
+  mediaOpportunities: number;
+  positivePerceptionShifts: number;
+  materialBusinessOutcomes: number;
 }>;
 
 export type ConversationTargetView = 'today' | 'memory' | 'strategy' | 'research' | 'draft' | 'risk' | 'data';
@@ -1765,6 +1818,33 @@ export async function submitStrategicRecommendationReview(input: Readonly<{
   expectedDecisionWindowEndsAt: string;
 }>): Promise<StrategicQualitySnapshot> {
   const payload = await requestJson('/api/strategic-quality/reviews', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!isStrategicQualitySnapshot(payload)) throw new WorkbenchApiError(200, 'invalid_response');
+  return payload;
+}
+
+export async function submitStrategicOutcome(input: Readonly<{
+  requestId: string;
+  reviewId: string;
+  executionStatus: StrategicOutcomeExecutionStatus;
+  satisfaction: number;
+  regret: number;
+  energy: number;
+  engagementQuality?: number;
+  interactionDepth?: number;
+  privateMessages: number;
+  opportunitiesCreated: number;
+  relationshipChange: StrategicOutcomeChange;
+  mediaOpportunities: number;
+  perceptionShift: StrategicOutcomeChange;
+  businessOutcome: StrategicBusinessOutcome;
+  note?: string;
+  outcomeOccurredAt: string;
+}>): Promise<StrategicQualitySnapshot> {
+  const payload = await requestJson('/api/strategic-quality/outcomes', {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify(input),
@@ -2729,11 +2809,13 @@ function isStrategicQualitySnapshot(payload: unknown): payload is StrategicQuali
     !isRecord(payload) || payload['policyVersion'] !== 'strategic-quality-v1' ||
     typeof payload['generatedAt'] !== 'string' || !isPersistence(payload['persistence']) ||
     !isRecord(payload['context']) || !isRecord(payload['rubric']) ||
-    !isRecord(payload['ownerBaseline']) || !Array.isArray(payload['recentReviews'])
+    !isRecord(payload['ownerBaseline']) || !isRecord(payload['outcomeBaseline']) ||
+    !Array.isArray(payload['recentReviews']) || !Array.isArray(payload['recentOutcomes'])
   ) return false;
   const context = payload['context'];
   const rubric = payload['rubric'];
   const baseline = payload['ownerBaseline'];
+  const outcomeBaseline = payload['outcomeBaseline'];
   const isMetrics = (value: unknown): boolean => isRecord(value) &&
     typeof value['acceptanceRate'] === 'number' && typeof value['averageUsefulness'] === 'number' &&
     typeof value['averageTrust'] === 'number' && typeof value['averageFriction'] === 'number';
@@ -2756,6 +2838,16 @@ function isStrategicQualitySnapshot(payload: unknown): payload is StrategicQuali
     typeof baseline['rejected'] === 'number' && typeof baseline['needsRevision'] === 'number' &&
     (baseline['observedMetrics'] === null || isMetrics(baseline['observedMetrics'])) &&
     (baseline['baselineMetrics'] === null || isMetrics(baseline['baselineMetrics'])) &&
+    outcomeBaseline['policyVersion'] === 'strategic-outcome-followup-v1' &&
+    (outcomeBaseline['status'] === 'collecting' || outcomeBaseline['status'] === 'established') &&
+    outcomeBaseline['minimumSampleSize'] === 5 &&
+    typeof outcomeBaseline['sampleSize'] === 'number' &&
+    typeof outcomeBaseline['remainingSamples'] === 'number' &&
+    typeof outcomeBaseline['completed'] === 'number' &&
+    typeof outcomeBaseline['partial'] === 'number' &&
+    typeof outcomeBaseline['notExecuted'] === 'number' &&
+    (outcomeBaseline['observedMetrics'] === null || isStrategicOutcomeMetrics(outcomeBaseline['observedMetrics'])) &&
+    (outcomeBaseline['baselineMetrics'] === null || isStrategicOutcomeMetrics(outcomeBaseline['baselineMetrics'])) &&
     payload['recentReviews'].every((review) => isRecord(review) &&
       typeof review['id'] === 'string' && typeof review['actionId'] === 'string' &&
       typeof review['actionTitle'] === 'string' && isStrategicActionKind(review['actionKind']) &&
@@ -2765,8 +2857,51 @@ function isStrategicQualitySnapshot(payload: unknown): payload is StrategicQuali
       isDecisionScale(review['friction']) && typeof review['strategyRevision'] === 'number' &&
       typeof review['decisionContextRevision'] === 'number' &&
       typeof review['decisionContextHash'] === 'string' &&
-      typeof review['decisionWindowEndsAt'] === 'string' && typeof review['reviewedAt'] === 'string')
+      typeof review['decisionWindowEndsAt'] === 'string' && typeof review['reviewedAt'] === 'string') &&
+    payload['recentOutcomes'].every((outcome) => isRecord(outcome) &&
+      typeof outcome['id'] === 'string' && typeof outcome['reviewId'] === 'string' &&
+      typeof outcome['actionId'] === 'string' && typeof outcome['actionTitle'] === 'string' &&
+      isStrategicOutcomeExecutionStatus(outcome['executionStatus']) &&
+      isDecisionScale(outcome['satisfaction']) && isDecisionScale(outcome['regret']) &&
+      isDecisionScale(outcome['energy']) &&
+      (outcome['engagementQuality'] === undefined || isDecisionScale(outcome['engagementQuality'])) &&
+      (outcome['interactionDepth'] === undefined || isDecisionScale(outcome['interactionDepth'])) &&
+      typeof outcome['privateMessages'] === 'number' &&
+      typeof outcome['opportunitiesCreated'] === 'number' &&
+      isStrategicOutcomeChange(outcome['relationshipChange']) &&
+      typeof outcome['mediaOpportunities'] === 'number' &&
+      isStrategicOutcomeChange(outcome['perceptionShift']) &&
+      isStrategicBusinessOutcome(outcome['businessOutcome']) &&
+      typeof outcome['outcomeOccurredAt'] === 'string' && typeof outcome['recordedAt'] === 'string')
   );
+}
+
+function isStrategicOutcomeMetrics(value: unknown): value is StrategicOutcomeMetrics {
+  if (!isRecord(value)) return false;
+  return typeof value['completionRate'] === 'number' &&
+    typeof value['followThroughRate'] === 'number' &&
+    typeof value['averageSatisfaction'] === 'number' &&
+    typeof value['averageRegret'] === 'number' && typeof value['averageEnergy'] === 'number' &&
+    (value['averageEngagementQuality'] === null || typeof value['averageEngagementQuality'] === 'number') &&
+    (value['averageInteractionDepth'] === null || typeof value['averageInteractionDepth'] === 'number') &&
+    typeof value['privateMessages'] === 'number' &&
+    typeof value['opportunitiesCreated'] === 'number' &&
+    typeof value['relationshipImprovements'] === 'number' &&
+    typeof value['mediaOpportunities'] === 'number' &&
+    typeof value['positivePerceptionShifts'] === 'number' &&
+    typeof value['materialBusinessOutcomes'] === 'number';
+}
+
+function isStrategicOutcomeExecutionStatus(value: unknown): value is StrategicOutcomeExecutionStatus {
+  return value === 'completed' || value === 'partial' || value === 'not_executed';
+}
+
+function isStrategicOutcomeChange(value: unknown): value is StrategicOutcomeChange {
+  return value === 'positive' || value === 'none' || value === 'negative' || value === 'unknown';
+}
+
+function isStrategicBusinessOutcome(value: unknown): value is StrategicBusinessOutcome {
+  return value === 'none' || value === 'early_signal' || value === 'material' || value === 'unknown';
 }
 
 function isStrategicActionKind(value: unknown): value is WorkbenchAction['kind'] {

@@ -253,6 +253,9 @@ Gate: expert rubric و user acceptance به baseline برسند؛ unsupported cl
 
 وضعیت اجرا: `strategic-quality-v1` ثبت Rubric و Review متصل به Context را فراهم کرده است؛
 تا پیش از پنج نمونه واقعی `baselineMetrics` خالی می‌ماند و Gate همچنان در حالت جمع‌آوری است.
+`strategic-outcome-followup-v1` نیز پیامد Action پذیرفته‌شده را با رضایت، پشیمانی،
+انرژی، کیفیت تعامل و Outcomeهای رابطه/فرصت ثبت می‌کند؛ این baseline هم تا پنج Follow-up
+واقعی `null` می‌ماند و هیچ تغییر خودکار Identity یا Strategy ایجاد نمی‌کند.
 
 ### Phase 3 — Authentic Execution
 

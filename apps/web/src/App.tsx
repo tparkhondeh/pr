@@ -76,6 +76,7 @@ import {
   saveDecisionContext,
   submitConversationTurn,
   submitStrategicRecommendationReview,
+  submitStrategicOutcome,
   updateInitiativeSettings,
   type AppliedMemoryRight,
   type ArbitrationWorkspaceSnapshot,
@@ -90,6 +91,9 @@ import {
   type DraftWorkspaceSnapshot,
   type FeedbackLearningSnapshot,
   type StrategicQualitySnapshot,
+  type StrategicBusinessOutcome,
+  type StrategicOutcomeChange,
+  type StrategicOutcomeExecutionStatus,
   type StrategicRecommendationDecision,
   type MemoryRightKind,
   type OnboardingSnapshot,
@@ -893,6 +897,39 @@ export function App() {
     }
   };
 
+  const recordStrategicOutcome = async (input: Readonly<{
+    reviewId: string;
+    executionStatus: StrategicOutcomeExecutionStatus;
+    satisfaction: number;
+    regret: number;
+    energy: number;
+    engagementQuality?: number;
+    interactionDepth?: number;
+    privateMessages: number;
+    opportunitiesCreated: number;
+    relationshipChange: StrategicOutcomeChange;
+    mediaOpportunities: number;
+    perceptionShift: StrategicOutcomeChange;
+    businessOutcome: StrategicBusinessOutcome;
+    note?: string;
+    outcomeOccurredAt: string;
+  }>) => {
+    if (feedbackViewState === 'mutating') return;
+    setFeedbackViewState('mutating');
+    setFeedbackViewError(null);
+    try {
+      setStrategicQualitySnapshot(await submitStrategicOutcome({
+        requestId: `strategic_outcome_${crypto.randomUUID()}`,
+        ...input,
+      }));
+      setFeedbackViewState('ready');
+      await refreshAudit();
+    } catch (caught: unknown) {
+      setFeedbackViewError(errorMessage(caught));
+      setFeedbackViewState('error');
+    }
+  };
+
   useEffect(() => {
     const controller = new AbortController();
     void refresh(controller.signal);
@@ -1377,6 +1414,7 @@ export function App() {
           <FeedbackLearningPanel
             error={feedbackViewError}
             onDecide={decidePreference}
+            onOutcome={recordStrategicOutcome}
             onRefresh={() => refreshFeedback()}
             onReview={reviewStrategicRecommendation}
             quality={strategicQualitySnapshot}
@@ -2202,6 +2240,7 @@ function DraftWorkspacePanel({
 function FeedbackLearningPanel({
   error,
   onDecide,
+  onOutcome,
   onRefresh,
   onReview,
   quality,
@@ -2211,6 +2250,23 @@ function FeedbackLearningPanel({
 }: Readonly<{
   error: string | null;
   onDecide: (proposalId: string, decision: 'applied' | 'rejected' | 'revoked') => Promise<void>;
+  onOutcome: (input: Readonly<{
+    reviewId: string;
+    executionStatus: StrategicOutcomeExecutionStatus;
+    satisfaction: number;
+    regret: number;
+    energy: number;
+    engagementQuality?: number;
+    interactionDepth?: number;
+    privateMessages: number;
+    opportunitiesCreated: number;
+    relationshipChange: StrategicOutcomeChange;
+    mediaOpportunities: number;
+    perceptionShift: StrategicOutcomeChange;
+    businessOutcome: StrategicBusinessOutcome;
+    note?: string;
+    outcomeOccurredAt: string;
+  }>) => Promise<void>;
   onRefresh: () => Promise<void>;
   onReview: (input: Readonly<{
     actionId: string;
@@ -2233,9 +2289,33 @@ function FeedbackLearningPanel({
   const [reviewTrust, setReviewTrust] = useState(3);
   const [reviewFriction, setReviewFriction] = useState(3);
   const [reviewNote, setReviewNote] = useState('');
+  const [outcomeReviewId, setOutcomeReviewId] = useState('');
+  const [outcomeExecution, setOutcomeExecution] = useState<StrategicOutcomeExecutionStatus>('completed');
+  const [outcomeSatisfaction, setOutcomeSatisfaction] = useState(3);
+  const [outcomeRegret, setOutcomeRegret] = useState(1);
+  const [outcomeEnergy, setOutcomeEnergy] = useState(3);
+  const [outcomeEngagement, setOutcomeEngagement] = useState<number | ''>('');
+  const [outcomeDepth, setOutcomeDepth] = useState<number | ''>('');
+  const [outcomePrivateMessages, setOutcomePrivateMessages] = useState(0);
+  const [outcomeOpportunities, setOutcomeOpportunities] = useState(0);
+  const [outcomeRelationship, setOutcomeRelationship] = useState<StrategicOutcomeChange>('unknown');
+  const [outcomeMedia, setOutcomeMedia] = useState(0);
+  const [outcomePerception, setOutcomePerception] = useState<StrategicOutcomeChange>('unknown');
+  const [outcomeBusiness, setOutcomeBusiness] = useState<StrategicBusinessOutcome>('unknown');
+  const [outcomeNote, setOutcomeNote] = useState('');
+  const [outcomeOccurredAt, setOutcomeOccurredAt] = useState(() => localDateTimeInput(new Date()));
   const reviewAction = workbench.actions.find((action) => action.id === reviewActionId) ?? workbench.actions[0];
   const acceptanceHasApproval = reviewDecision !== 'accepted' ||
     workbench.workflow.approvedActionId === reviewAction.id;
+  const supersededReviewIds = new Set(
+    quality?.recentReviews.flatMap((review) => review.supersedesReviewId
+      ? [review.supersedesReviewId]
+      : []) ?? [],
+  );
+  const acceptedReviews = quality?.recentReviews.filter(
+    (review) => review.decision === 'accepted' && !supersededReviewIds.has(review.id),
+  ) ?? [];
+  const selectedOutcomeReviewId = outcomeReviewId || acceptedReviews[0]?.id || '';
   if ((state === 'idle' || state === 'loading') && !snapshot) {
     return (
       <section className="memory-view-state" aria-live="polite">
@@ -2286,6 +2366,11 @@ function FeedbackLearningPanel({
               <span>Baseline مالک</span>
               <strong>{quality.ownerBaseline.sampleSize}/{quality.ownerBaseline.minimumSampleSize}</strong>
               <small>{quality.ownerBaseline.status === 'established' ? 'تثبیت‌شده' : `${String(quality.ownerBaseline.remainingSamples)} نمونه تا baseline`}</small>
+            </div>
+            <div className={`quality-status ${quality.outcomeBaseline.status}`}>
+              <span>پیامد واقعی</span>
+              <strong>{quality.outcomeBaseline.sampleSize}/{quality.outcomeBaseline.minimumSampleSize}</strong>
+              <small>{quality.outcomeBaseline.status === 'established' ? 'خط مبنای پیامد' : `${String(quality.outcomeBaseline.remainingSamples)} Follow-up باقی مانده`}</small>
             </div>
           </div>
           <div className="quality-body">
@@ -2367,6 +2452,140 @@ function FeedbackLearningPanel({
                     <span>{strategicReviewDecisionLabel(review.decision)} · {review.actionTitle}</span>
                     <time>{formatDate(review.reviewedAt)}</time>
                   </li>
+                ))}
+              </ol>
+            </aside>
+          </div>
+          <div className="outcome-followup">
+            <form
+              className="quality-outcome-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!selectedOutcomeReviewId || !outcomeOccurredAt) return;
+                void onOutcome({
+                  reviewId: selectedOutcomeReviewId,
+                  executionStatus: outcomeExecution,
+                  satisfaction: outcomeSatisfaction,
+                  regret: outcomeRegret,
+                  energy: outcomeEnergy,
+                  ...(outcomeEngagement !== '' ? { engagementQuality: outcomeEngagement } : {}),
+                  ...(outcomeDepth !== '' ? { interactionDepth: outcomeDepth } : {}),
+                  privateMessages: outcomePrivateMessages,
+                  opportunitiesCreated: outcomeOpportunities,
+                  relationshipChange: outcomeRelationship,
+                  mediaOpportunities: outcomeMedia,
+                  perceptionShift: outcomePerception,
+                  businessOutcome: outcomeBusiness,
+                  ...(outcomeNote.trim() ? { note: outcomeNote.trim() } : {}),
+                  outcomeOccurredAt: new Date(outcomeOccurredAt).toISOString(),
+                }).then(() => { setOutcomeNote(''); });
+              }}
+            >
+              <header>
+                <div><p className="overline">{quality.outcomeBaseline.policyVersion}</p><h4>بعد از تصمیم واقعاً چه اتفاقی افتاد؟</h4></div>
+                <span>Signal ≠ Identity</span>
+              </header>
+              {acceptedReviews.length === 0 ? (
+                <p className="quality-warning">ابتدا یک Action تأییدشده را در بازبینی بالا «می‌پذیرم» ثبت کنید؛ پیامد برای توصیه ردشده ساخته نمی‌شود.</p>
+              ) : null}
+              <div className="outcome-form-grid">
+                <label>
+                  توصیه پذیرفته‌شده
+                  <select
+                    disabled={acceptedReviews.length === 0}
+                    onChange={(event) => { setOutcomeReviewId(event.target.value); }}
+                    value={selectedOutcomeReviewId}
+                  >
+                    {acceptedReviews.map((review) => (
+                      <option key={review.id} value={review.id}>{review.actionTitle} · {formatDate(review.reviewedAt)}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  وضعیت اجرا
+                  <select onChange={(event) => { setOutcomeExecution(event.target.value as StrategicOutcomeExecutionStatus); }} value={outcomeExecution}>
+                    <option value="completed">کامل انجام شد</option>
+                    <option value="partial">بخشی انجام شد</option>
+                    <option value="not_executed">انجام نشد</option>
+                  </select>
+                </label>
+                <label>
+                  زمان پیامد
+                  <input
+                    max={localDateTimeInput(new Date(Date.now() + 5 * 60_000))}
+                    onChange={(event) => { setOutcomeOccurredAt(event.target.value); }}
+                    required
+                    type="datetime-local"
+                    value={outcomeOccurredAt}
+                  />
+                </label>
+              </div>
+              <div className="quality-ratings">
+                <RatingSelect label="رضایت" onChange={setOutcomeSatisfaction} value={outcomeSatisfaction} />
+                <RatingSelect label="پشیمانی" onChange={setOutcomeRegret} value={outcomeRegret} />
+                <RatingSelect label="انرژی بعد از اقدام" onChange={setOutcomeEnergy} value={outcomeEnergy} />
+              </div>
+              <div className="outcome-form-grid compact">
+                <label>
+                  کیفیت تعامل (اختیاری)
+                  <select onChange={(event) => { setOutcomeEngagement(event.target.value ? Number(event.target.value) : ''); }} value={outcomeEngagement}>
+                    <option value="">نامشخص</option>
+                    {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} از ۵</option>)}
+                  </select>
+                </label>
+                <label>
+                  عمق تعامل (اختیاری)
+                  <select onChange={(event) => { setOutcomeDepth(event.target.value ? Number(event.target.value) : ''); }} value={outcomeDepth}>
+                    <option value="">نامشخص</option>
+                    {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} از ۵</option>)}
+                  </select>
+                </label>
+                <label>پیام خصوصی<input max={10000} min={0} onChange={(event) => { setOutcomePrivateMessages(event.currentTarget.valueAsNumber || 0); }} type="number" value={outcomePrivateMessages} /></label>
+                <label>فرصت ایجادشده<input max={10000} min={0} onChange={(event) => { setOutcomeOpportunities(event.currentTarget.valueAsNumber || 0); }} type="number" value={outcomeOpportunities} /></label>
+                <label>فرصت رسانه‌ای<input max={10000} min={0} onChange={(event) => { setOutcomeMedia(event.currentTarget.valueAsNumber || 0); }} type="number" value={outcomeMedia} /></label>
+                <label>
+                  تغییر رابطه
+                  <select onChange={(event) => { setOutcomeRelationship(event.target.value as StrategicOutcomeChange); }} value={outcomeRelationship}>
+                    <option value="unknown">نامشخص</option><option value="positive">بهبود</option><option value="none">بدون تغییر</option><option value="negative">افت</option>
+                  </select>
+                </label>
+                <label>
+                  تغییر ادراک
+                  <select onChange={(event) => { setOutcomePerception(event.target.value as StrategicOutcomeChange); }} value={outcomePerception}>
+                    <option value="unknown">نامشخص</option><option value="positive">مثبت</option><option value="none">بدون تغییر</option><option value="negative">منفی</option>
+                  </select>
+                </label>
+                <label>
+                  نتیجه کسب‌وکار
+                  <select onChange={(event) => { setOutcomeBusiness(event.target.value as StrategicBusinessOutcome); }} value={outcomeBusiness}>
+                    <option value="unknown">نامشخص</option><option value="none">هنوز هیچ</option><option value="early_signal">سیگنال اولیه</option><option value="material">نتیجه ملموس</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                توضیح کیفی اختیاری
+                <textarea maxLength={2000} onChange={(event) => { setOutcomeNote(event.target.value); }} placeholder="چه کسی درگیر شد، عمق تعامل چه بود و چرا این نتیجه مهم است؟" rows={3} value={outcomeNote} />
+              </label>
+              <button disabled={state === 'mutating' || acceptedReviews.length === 0} type="submit">
+                {state === 'mutating' ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
+                ثبت Follow-up واقعی
+              </button>
+              <small>Like و View به‌تنهایی معیار موفقیت نیستند. این داده هویت یا استراتژی را خودکار تغییر نمی‌دهد و قابل بازبینی می‌ماند.</small>
+            </form>
+            <aside className="outcome-evidence">
+              <h4>خط مبنای پیامد</h4>
+              {quality.outcomeBaseline.observedMetrics ? (
+                <div className="quality-metrics">
+                  <div><span>Follow-through</span><strong>{Math.round(quality.outcomeBaseline.observedMetrics.followThroughRate * 100)}٪</strong></div>
+                  <div><span>رضایت</span><strong>{formatRating(quality.outcomeBaseline.observedMetrics.averageSatisfaction)}</strong></div>
+                  <div><span>پشیمانی</span><strong>{formatRating(quality.outcomeBaseline.observedMetrics.averageRegret)}</strong></div>
+                  <div><span>فرصت واقعی</span><strong>{quality.outcomeBaseline.observedMetrics.opportunitiesCreated}</strong></div>
+                </div>
+              ) : <p>هنوز برای Action پذیرفته‌شده Follow-up ثبت نشده است.</p>}
+              {quality.outcomeBaseline.status === 'collecting' && quality.outcomeBaseline.observedMetrics ? <small>مشاهدات فعلی موقت‌اند؛ تا پنج پیامد مستقل baseline ساخته نمی‌شود.</small> : null}
+              <ol>
+                {quality.recentOutcomes.slice(0, 5).map((outcome) => (
+                  <li key={outcome.id}><span>{strategicOutcomeExecutionLabel(outcome.executionStatus)} · {outcome.actionTitle}</span><time>{formatDate(outcome.outcomeOccurredAt)}</time></li>
                 ))}
               </ol>
             </aside>
@@ -2454,6 +2673,14 @@ function strategicReviewDecisionLabel(decision: StrategicRecommendationDecision)
     rejected: 'رد شد',
     needs_revision: 'نیازمند بازنگری',
   }[decision];
+}
+
+function strategicOutcomeExecutionLabel(status: StrategicOutcomeExecutionStatus): string {
+  return {
+    completed: 'کامل انجام شد',
+    partial: 'بخشی انجام شد',
+    not_executed: 'انجام نشد',
+  }[status];
 }
 
 function formatRating(value: number): string {
@@ -4476,6 +4703,11 @@ function formatDate(value: string): string {
   }).format(date);
 }
 
+function localDateTimeInput(date: Date): string {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
 function formatTimestamp(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'زمان نامشخص';
@@ -4594,9 +4826,13 @@ function errorMessage(error: unknown): string {
     feedback_unavailable: 'سرویس یادگیری از بازخورد در دسترس نیست.',
     strategic_quality_unavailable: 'Strategic Quality Gate در دسترس نیست و baseline به‌روزرسانی نشد.',
     invalid_strategic_review_input: 'تصمیم، امتیازها یا اتصال بازبینی به Context معتبر نیست.',
+    invalid_strategic_outcome_input: 'پیامد، زمان، امتیاز یا Signalهای Follow-up معتبر نیست.',
     strategic_quality_permission_denied: 'فقط مالک می‌تواند کیفیت توصیه‌های استراتژیک را بازبینی کند.',
     strategic_recommendation_not_found: 'این توصیه دیگر در Snapshot فعلی وجود ندارد.',
     acceptance_not_approved: 'پذیرش فقط برای Actionی ثبت می‌شود که قبلاً در بخش امروز Approve شده باشد.',
+    review_not_accepted: 'Follow-up فقط برای توصیه‌ای ثبت می‌شود که مالک آن را پذیرفته باشد.',
+    review_superseded: 'این بازبینی با تصمیم جدیدتری جایگزین شده است؛ نسخه تازه را انتخاب کنید.',
+    outcome_before_review: 'زمان پیامد نمی‌تواند قبل از زمان پذیرفتن توصیه باشد.',
     strategic_quality_failed: 'ثبت یا محاسبه کیفیت توصیه کامل نشد؛ دوباره تلاش کنید.',
     audit_trail_unavailable: 'ردپای حساب در دسترس نیست.',
     account_export_unavailable: 'خروجی کامل داده‌های حساب هنوز آماده نیست.',

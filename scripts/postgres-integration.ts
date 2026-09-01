@@ -184,7 +184,10 @@ async function verifyStrategicQualityPersistence(): Promise<void> {
       sourceTypes: ['text_asset'],
     },
     actions: [action],
-    workflow: { id: 'workbench_today', status: 'awaiting_approval', revision: 1 },
+    workflow: {
+      id: 'workbench_today', status: 'approved', revision: 1,
+      approvedActionId: action.id,
+    },
   };
   const service = new StrategicQualityService(
     new PostgresStrategicQualityRepository(runtime, { tenantId: tenantA, ownerUserId: userA }),
@@ -195,7 +198,7 @@ async function verifyStrategicQualityPersistence(): Promise<void> {
     actorId: owner,
     requestId: 'strategic_quality_integration_one',
     actionId: action.id,
-    decision: 'rejected' as const,
+    decision: 'accepted' as const,
     usefulness: 4,
     trust: 3,
     friction: 2,
@@ -220,14 +223,55 @@ async function verifyStrategicQualityPersistence(): Promise<void> {
       recorded.persistence !== 'postgres' || recorded.ownerBaseline.sampleSize !== 1 ||
       replayed.recentReviews.length !== 1 || !mismatchRejected
     ) throw new Error('Strategic quality persistence or idempotency contract failed.');
+    const review = recorded.recentReviews[0];
+    if (!review) throw new Error('Stored strategic review is missing.');
+    const outcomeAt = new Date(at.getTime() + 60_000);
+    const outcomeCommand = {
+      actorId: owner,
+      requestId: 'strategic_outcome_integration_one',
+      reviewId: review.id,
+      executionStatus: 'completed' as const,
+      satisfaction: 5,
+      regret: 1,
+      energy: 4,
+      engagementQuality: 5,
+      interactionDepth: 4,
+      privateMessages: 1,
+      opportunitiesCreated: 1,
+      relationshipChange: 'positive' as const,
+      mediaOpportunities: 0,
+      perceptionShift: 'positive' as const,
+      businessOutcome: 'early_signal' as const,
+      note: 'یک تعامل عمیق و یک فرصت واقعی ایجاد شد.',
+      outcomeOccurredAt: outcomeAt.toISOString(),
+      recordedAt: outcomeAt,
+    };
+    const outcome = await service.recordOutcome(outcomeCommand);
+    const replayedOutcome = await service.recordOutcome(outcomeCommand);
+    let outcomeMismatchRejected = false;
+    try {
+      await service.recordOutcome({ ...outcomeCommand, satisfaction: 4 });
+    } catch (error: unknown) {
+      outcomeMismatchRejected = error instanceof StrategicQualityConflictError &&
+        error.reason === 'idempotency_mismatch';
+    }
+    if (
+      outcome.outcomeBaseline.sampleSize !== 1 || outcome.recentOutcomes.length !== 1 ||
+      replayedOutcome.recentOutcomes.length !== 1 || !outcomeMismatchRejected
+    ) throw new Error('Strategic outcome persistence or idempotency contract failed.');
     await runtime.transaction(async (transaction) => {
       await transaction.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
       const stored = await transaction.query<Readonly<{
         reviews: string | number;
         requests: string | number;
         completed_requests: boolean;
+        outcomes: string | number;
+        outcome_requests: string | number;
+        completed_outcome_requests: boolean;
         audit_events: string | number;
+        outcome_audit_events: string | number;
         minimal_audit: boolean;
+        minimal_outcome_audit: boolean;
       }>>(
         `SELECT
            (SELECT count(*) FROM app.strategic_recommendation_reviews
@@ -236,18 +280,31 @@ async function verifyStrategicQualityPersistence(): Promise<void> {
              WHERE tenant_id = $1 AND owner_user_id = $2) AS requests,
            (SELECT bool_and(review_id IS NOT NULL) FROM app.strategic_review_requests
              WHERE tenant_id = $1 AND owner_user_id = $2) AS completed_requests,
+           (SELECT count(*) FROM app.strategic_action_outcomes
+             WHERE tenant_id = $1 AND owner_user_id = $2) AS outcomes,
+           (SELECT count(*) FROM app.strategic_outcome_requests
+             WHERE tenant_id = $1 AND owner_user_id = $2) AS outcome_requests,
+           (SELECT bool_and(outcome_id IS NOT NULL) FROM app.strategic_outcome_requests
+             WHERE tenant_id = $1 AND owner_user_id = $2) AS completed_outcome_requests,
            (SELECT count(*) FROM app.audit_events
-             WHERE tenant_id = $1 AND event_type = 'strategic_recommendation.rejected') AS audit_events,
+             WHERE tenant_id = $1 AND event_type = 'strategic_recommendation.accepted') AS audit_events,
+           (SELECT count(*) FROM app.audit_events
+             WHERE tenant_id = $1 AND event_type = 'strategic_action.outcome_recorded') AS outcome_audit_events,
            (SELECT bool_and(NOT (metadata ?| ARRAY['actionTitle', 'note'])) FROM app.audit_events
-             WHERE tenant_id = $1 AND event_type = 'strategic_recommendation.rejected') AS minimal_audit`,
+             WHERE tenant_id = $1 AND event_type = 'strategic_recommendation.accepted') AS minimal_audit,
+           (SELECT bool_and(NOT (metadata ?| ARRAY['actionTitle', 'note'])) FROM app.audit_events
+             WHERE tenant_id = $1 AND event_type = 'strategic_action.outcome_recorded') AS minimal_outcome_audit`,
         [tenantA, userA],
       );
       const row = stored.rows[0];
       if (!row) throw new Error('Stored strategic review verification row is missing.');
       if (
         Number(row.reviews) !== 1 || Number(row.requests) !== 1 || !row.completed_requests ||
-        Number(row.audit_events) !== 1 || !row.minimal_audit
-      ) throw new Error('Stored strategic review, request journal or audit trail is incomplete.');
+        Number(row.outcomes) !== 1 || Number(row.outcome_requests) !== 1 ||
+        !row.completed_outcome_requests || Number(row.audit_events) !== 1 ||
+        Number(row.outcome_audit_events) !== 1 || !row.minimal_audit ||
+        !row.minimal_outcome_audit
+      ) throw new Error('Stored strategic review/outcome, request journal or audit trail is incomplete.');
     });
   } finally {
     await runtime.close();

@@ -1524,6 +1524,7 @@ describe('operational endpoints', () => {
       policyVersion: 'strategic-quality-v1',
       rubric: { status: 'pass', criticalFailures: 0 },
       ownerBaseline: { status: 'collecting', sampleSize: 0, baselineMetrics: null },
+      outcomeBaseline: { status: 'collecting', sampleSize: 0, baselineMetrics: null },
     });
 
     const source = await workbench.snapshot();
@@ -1552,7 +1553,10 @@ describe('operational endpoints', () => {
       dependencies,
     );
     expect(reviewResponse.status).toBe(200);
-    await expect(reviewResponse.json()).resolves.toMatchObject({
+    const reviewPayload = await reviewResponse.json() as {
+      recentReviews: Array<{ id: string }>;
+    };
+    expect(reviewPayload).toMatchObject({
       ownerBaseline: {
         status: 'collecting',
         sampleSize: 1,
@@ -1561,6 +1565,46 @@ describe('operational endpoints', () => {
         baselineMetrics: null,
       },
       recentReviews: [{ actionId: 'essay', decision: 'accepted' }],
+    });
+    const reviewId = reviewPayload.recentReviews[0]?.id;
+    if (!reviewId) throw new Error('Expected an accepted review id.');
+    const outcomeResponse = await request(
+      '/api/strategic-quality/outcomes',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'strategic_outcome_http_one',
+          reviewId,
+          executionStatus: 'completed',
+          satisfaction: 5,
+          regret: 1,
+          energy: 4,
+          engagementQuality: 5,
+          interactionDepth: 4,
+          privateMessages: 1,
+          opportunitiesCreated: 1,
+          relationshipChange: 'positive',
+          mediaOpportunities: 0,
+          perceptionShift: 'positive',
+          businessOutcome: 'early_signal',
+          note: 'یک تعامل عمیق و یک فرصت قابل پیگیری ایجاد شد.',
+          outcomeOccurredAt: fixedTime.toISOString(),
+        }),
+      },
+      dependencies,
+    );
+    expect(outcomeResponse.status).toBe(200);
+    await expect(outcomeResponse.json()).resolves.toMatchObject({
+      outcomeBaseline: {
+        status: 'collecting', sampleSize: 1, completed: 1, baselineMetrics: null,
+        observedMetrics: {
+          completionRate: 1, averageSatisfaction: 5, averageRegret: 1,
+          opportunitiesCreated: 1,
+        },
+      },
+      recentOutcomes: [{ reviewId, actionId: 'essay', executionStatus: 'completed' }],
     });
   });
 

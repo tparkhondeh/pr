@@ -106,6 +106,10 @@ const strategicQualityMigrationPath = fileURLToPath(
   new URL('../db/migrations/0025_strategic_quality_baseline.sql', import.meta.url),
 );
 const strategicQualitySql = readFileSync(strategicQualityMigrationPath, 'utf8');
+const strategicOutcomeMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0026_strategic_action_outcomes.sql', import.meta.url),
+);
+const strategicOutcomeSql = readFileSync(strategicOutcomeMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -216,6 +220,21 @@ describe('foundation migration', () => {
     expect(strategicQualitySql).toContain('decision_context_sha256');
     expect(strategicQualitySql).toContain('supersedes_review_id');
     expect(strategicQualitySql).toContain('Baselines remain provisional until the policy minimum sample size is reached');
+  });
+
+  it('adds append-only meaningful outcomes without turning engagement into identity', () => {
+    defineMigration('0026_strategic_action_outcomes', strategicOutcomeSql);
+    for (const table of ['strategic_action_outcomes', 'strategic_outcome_requests']) {
+      expect(strategicOutcomeSql).toContain(`CREATE TABLE app.${table}`);
+      expect(strategicOutcomeSql).toContain(`ALTER TABLE app.${table} FORCE ROW LEVEL SECURITY`);
+      expect(strategicOutcomeSql).toContain(`CREATE POLICY ${table}_tenant_isolation`);
+    }
+    expect(strategicOutcomeSql).toContain("execution_status IN ('completed', 'partial', 'not_executed')");
+    expect(strategicOutcomeSql).toContain('satisfaction BETWEEN 1 AND 5');
+    expect(strategicOutcomeSql).toContain('regret BETWEEN 1 AND 5');
+    expect(strategicOutcomeSql).toContain('energy BETWEEN 1 AND 5');
+    expect(strategicOutcomeSql).toContain('private_messages BETWEEN 0 AND 10000');
+    expect(strategicOutcomeSql).toContain('Meaningful outcomes remain separate from identity');
   });
 
   it('defines the required tenant-owned tables', () => {
