@@ -46,6 +46,7 @@ import {
   InMemoryModelInvocationJournalRepository,
   ModelInvocationJournalService,
 } from '../src/providers/model-invocation-journal.js';
+import { ModelInputSafetyService } from '../src/providers/model-input-safety.js';
 import {
   InMemoryPerceptionWorkspaceRepository,
   PerceptionWorkspaceService,
@@ -133,6 +134,7 @@ describe('operational endpoints', () => {
         new InMemoryModelInvocationJournalRepository(),
         identity,
       ),
+      new ModelInputSafetyService(),
     );
     const response = await request(
       '/api/model-governance',
@@ -146,11 +148,17 @@ describe('operational endpoints', () => {
       generatedAt: string;
       executionEnabled: boolean;
       costGateRequired: boolean;
+      inputSafety: { policyVersion: string; failClosed: boolean; rawInputRetained: boolean };
       routes: Array<{ rollout: string }>;
     };
     expect(payload.generatedAt).toBe(fixedTime.toISOString());
     expect(payload.executionEnabled).toBe(false);
     expect(payload.costGateRequired).toBe(true);
+    expect(payload.inputSafety).toEqual(expect.objectContaining({
+      policyVersion: 'model-input-safety-v1',
+      failClosed: true,
+      rawInputRetained: false,
+    }));
     expect(payload.routes.every((route) => route.rollout === 'disabled')).toBe(true);
   });
 

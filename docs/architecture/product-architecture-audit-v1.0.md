@@ -268,6 +268,9 @@ PostgreSQL و Preview فعال‌اند. چون Runtime فعلی Provider بیر
 `model-invocation-journal-v1` اکنون اجرای started→terminal، Idempotency پایدار، Recovery
 صریح و نگهداری metadata/hash-only را در Memory/PostgreSQL پیاده کرده است. فعال‌شدن
 PostgreSQL در Production، Eval چندزبانه و Billing Reconciliation هنوز پیش‌شرط Provider هستند.
+`model-input-safety-v1` نیز ورودی Credential-bearing، Prompt Injection فارسی/انگلیسی،
+Payload opaque و Shape/Size غیرقابل‌اعتماد را پیش از Journal/Cost بدون نگهداری متن خام
+متوقف می‌کند. کیفیت Detection هنوز باید با مجموعه adversarial مستقل سنجیده شود.
 
 مسیر `postgres-commissioning-v1` نیز فعال‌سازی Source of Truth را fail-closed کرده است:
 Migration و Runtime باید Roleهای جدا باشند، Runtime حق superuser/BYPASSRLS/CREATE

@@ -973,6 +973,10 @@ function serializeModelGovernance(snapshot: ModelGovernanceSnapshot): Record<str
   return {
     ...snapshot,
     generatedAt: snapshot.generatedAt.toISOString(),
+    inputSafety: {
+      ...snapshot.inputSafety,
+      generatedAt: snapshot.inputSafety.generatedAt.toISOString(),
+    },
     invocationJournal: {
       ...snapshot.invocationJournal,
       generatedAt: snapshot.invocationJournal.generatedAt.toISOString(),

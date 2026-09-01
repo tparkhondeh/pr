@@ -280,6 +280,7 @@ async function verifyModelInvocationJournalPersistence(): Promise<void> {
       modelTier: 'economy' as const,
       dataClasses: ['internal'] as const,
       externalProcessingApproved: true,
+      inputSafetyPolicyVersion: 'model-input-safety-v1' as const,
       inputSha256: modelInvocationValueHash({ claim: 'hash-only integration input' }),
       startedAt: at,
     };
@@ -288,6 +289,7 @@ async function verifyModelInvocationJournalPersistence(): Promise<void> {
     const startedSnapshot = await journal.snapshot(owner, at);
     if (
       begun.replay || !replayedBegin.replay || replayedBegin.record.id !== begun.record.id ||
+      begun.record.inputSafetyPolicyVersion !== 'model-input-safety-v1' ||
       startedSnapshot.persistence !== 'postgres' || !startedSnapshot.durable ||
       startedSnapshot.summary.recoveryRequired < 1
     ) {

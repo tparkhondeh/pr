@@ -47,6 +47,8 @@ export type ModelResult<TOutput> = Readonly<{
     chargeId: string;
     invocationJournalId: string;
     invocationJournalPersistence: 'memory' | 'postgres';
+    inputSafetyPolicyVersion: 'model-input-safety-v1';
+    inputSafetyScanSha256: string;
     circuitOpened: boolean;
   }>;
 }>;

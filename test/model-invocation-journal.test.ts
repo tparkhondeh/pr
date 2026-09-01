@@ -36,6 +36,7 @@ function beginInput(overrides: Record<string, unknown> = {}) {
     modelTier: 'reasoning' as const,
     dataClasses: ['internal'] as const,
     externalProcessingApproved: true,
+    inputSafetyPolicyVersion: 'model-input-safety-v1' as const,
     inputSha256: modelInvocationValueHash({ goal: 'durable trust' }),
     startedAt: at,
     ...overrides,

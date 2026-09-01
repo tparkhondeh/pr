@@ -17,6 +17,7 @@ import {
 import type { CostEvidence } from '../observability/workflow-cost-control.js';
 import type { ModelDataClass, ModelTier } from '../providers/model-governance.js';
 import type { ModelPurpose } from '../providers/model-gateway.js';
+import type { modelInputSafetyPolicyVersion } from '../providers/model-input-safety.js';
 
 type ModelInvocationRow = Readonly<{
   id: string;
@@ -33,6 +34,7 @@ type ModelInvocationRow = Readonly<{
   model_tier: ModelTier;
   data_classes: readonly ModelDataClass[];
   external_processing_approved: boolean;
+  input_safety_policy_version: typeof modelInputSafetyPolicyVersion | null;
   input_sha256: string;
   status: ModelInvocationStatus;
   status_reason: string | null;
@@ -95,17 +97,19 @@ export class PostgresModelInvocationJournalRepository implements ModelInvocation
           id, tenant_id, owner_user_id, request_id, request_sha256,
           workflow_id, invocation_id, purpose, schema_name, registry_entry_id,
           prompt_version, provider, model, model_tier, data_classes,
-          external_processing_approved, input_sha256, status, started_at
+          external_processing_approved, input_safety_policy_version,
+          input_sha256, status, started_at
         ) VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-          $11, $12, $13, $14, $15, $16, $17, 'started', $18
+          $11, $12, $13, $14, $15, $16, $17, $18, 'started', $19
         )`,
         [
           id, this.context.tenantId, this.context.ownerUserId, command.requestId, fingerprint,
           command.workflowId, command.invocationId, command.purpose, command.schemaName,
           command.registryEntryId, command.promptVersion, command.provider, command.model,
           command.modelTier, [...new Set(command.dataClasses)].sort(),
-          command.externalProcessingApproved, command.inputSha256, command.startedAt,
+          command.externalProcessingApproved, command.inputSafetyPolicyVersion,
+          command.inputSha256, command.startedAt,
         ],
       );
       await appendAudit(transaction, this.context, {
@@ -126,6 +130,7 @@ export class PostgresModelInvocationJournalRepository implements ModelInvocation
           modelTier: command.modelTier,
           dataClasses: [...new Set(command.dataClasses)].sort(),
           externalProcessingApproved: command.externalProcessingApproved,
+          inputSafetyPolicyVersion: command.inputSafetyPolicyVersion,
           inputSha256: command.inputSha256,
         },
       });
@@ -145,6 +150,7 @@ export class PostgresModelInvocationJournalRepository implements ModelInvocation
           modelTier: command.modelTier,
           dataClasses: [...new Set(command.dataClasses)].sort(),
           externalProcessingApproved: command.externalProcessingApproved,
+          inputSafetyPolicyVersion: command.inputSafetyPolicyVersion,
           inputSha256: command.inputSha256,
           status: 'started',
           startedAt: command.startedAt,
@@ -265,7 +271,7 @@ export class PostgresModelInvocationJournalRepository implements ModelInvocation
 const modelInvocationColumns = `id, request_id, request_sha256, workflow_id,
   invocation_id, purpose, schema_name, registry_entry_id, prompt_version,
   provider, model, model_tier, data_classes, external_processing_approved,
-  input_sha256, status, status_reason, reservation_id, charge_id,
+  input_safety_policy_version, input_sha256, status, status_reason, reservation_id, charge_id,
   provider_trace_id, input_tokens, output_tokens, cached_input_tokens,
   cost_minor_units, cost_evidence, output_sha256, completion_sha256,
   started_at, completed_at`;
@@ -349,6 +355,9 @@ function rowToModelInvocation(row: ModelInvocationRow): ModelInvocationRecord {
     modelTier: row.model_tier,
     dataClasses: row.data_classes,
     externalProcessingApproved: row.external_processing_approved,
+    ...(row.input_safety_policy_version
+      ? { inputSafetyPolicyVersion: row.input_safety_policy_version }
+      : {}),
     inputSha256: row.input_sha256,
     status: row.status,
     ...(row.status_reason ? { statusReason: row.status_reason } : {}),

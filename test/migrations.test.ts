@@ -118,6 +118,10 @@ const modelInvocationJournalMigrationPath = fileURLToPath(
   new URL('../db/migrations/0028_model_invocation_journal.sql', import.meta.url),
 );
 const modelInvocationJournalSql = readFileSync(modelInvocationJournalMigrationPath, 'utf8');
+const modelInputSafetyMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0029_model_input_safety.sql', import.meta.url),
+);
+const modelInputSafetySql = readFileSync(modelInputSafetyMigrationPath, 'utf8');
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -274,6 +278,17 @@ describe('foundation migration', () => {
     expect(modelInvocationJournalSql).toContain('model invocation journal permits one terminal transition only');
     expect(modelInvocationJournalSql).toContain('raw prompt, input, and output content are intentionally excluded');
     expect(modelInvocationJournalSql).not.toMatch(/\b(prompt_text|input_text|output_text|raw_prompt|raw_output)\b/u);
+  });
+
+  it('adds truthful immutable input-safety provenance without rewriting historical rows', () => {
+    defineMigration('0029_model_input_safety', modelInputSafetySql);
+    expect(modelInputSafetySql).toContain('ADD COLUMN input_safety_policy_version text');
+    expect(modelInputSafetySql).toContain("input_safety_policy_version = 'model-input-safety-v1'");
+    expect(modelInputSafetySql).toContain('NULL means a historical invocation predates this gate');
+    expect(modelInputSafetySql).toContain(
+      'NEW.input_safety_policy_version IS DISTINCT FROM OLD.input_safety_policy_version',
+    );
+    expect(modelInputSafetySql).not.toContain('UPDATE app.model_invocations');
   });
 
   it('defines the required tenant-owned tables', () => {

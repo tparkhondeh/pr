@@ -891,6 +891,12 @@ describe('private preview worker draft runtime', () => {
       executionEnabled: false,
       costGateRequired: true,
       durableInvocationJournal: false,
+      inputSafety: {
+        policyVersion: 'model-input-safety-v1',
+        required: true,
+        failClosed: true,
+        rawInputRetained: false,
+      },
       invocationJournal: {
         policyVersion: 'model-invocation-journal-v1',
         persistence: 'memory',

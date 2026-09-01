@@ -15,6 +15,7 @@ Journal فقط Metadata حکمرانی و Trace را نگه می‌دارد:
 - Request، Workflow و Invocation ID؛
 - Purpose، Schema، Registry Entry، Prompt Version، Provider/Model/Tier؛
 - Data Class و وضعیت تأیید پردازش بیرونی؛
+- نسخه Model Input Safety برای اجرای جدید؛
 - SHA-256 ورودی و در صورت وجود خروجی؛
 - Reservation/Charge ID، Token، Cost Evidence و Provider Trace ID؛
 - زمان شروع/پایان و وضعیت نهایی.
@@ -58,4 +59,6 @@ PostgreSQL باشد. Production فعلی به‌علت نبود Role/Credential 
 
 Migration `0028_model_invocation_journal` جدول `app.model_invocations` را با RLS اجباری،
 Foreign Key به Membership و Cost Ledger، Audit/Outbox metadata-only و Transition Guard
-می‌سازد. دسترسی فقط در Context Tenant و مالک فعال ممکن است.
+می‌سازد. Migration الحاقی `0029_model_input_safety` نسخه Safety را immutable ثبت می‌کند؛
+رکورد تاریخی بدون Evidence با مقدار ساختگی Backfill نمی‌شود. دسترسی فقط در Context Tenant
+و مالک فعال ممکن است.

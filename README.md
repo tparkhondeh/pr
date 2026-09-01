@@ -13,7 +13,9 @@ Goal، Audience، Timing، Quality و Conflict می‌سنجد. Workflow Cost Ga
 اجرای Metered بودجه رزرو می‌کند و مصرف واقعی/اندازه‌گیری‌نشده را بدون عددسازی ثبت می‌کند.
 Prompt/Model Registry نیز نسخه، Tier، Eval، Rollout، Data Class و Timeout هر مسیر مدل
 را ثبت کرده و Durable Invocation Journal اجرای هر فراخوانی را فقط با Metadata و Hash
-قابل‌بازیابی می‌کند. تا بستن Gateها Provider بیرونی Fail-closed می‌ماند.
+قابل‌بازیابی می‌کند. Model Input Safety نیز Credential، Prompt Injection و ورودی
+غیرقابل‌اسکن را پیش از هر Side Effect متوقف می‌کند. تا بستن Gateها Provider بیرونی
+Fail-closed می‌ماند.
 
 ## اسناد فعلی
 
@@ -30,6 +32,7 @@ Prompt/Model Registry نیز نسخه، Tier، Eval، Rollout، Data Class و Ti
 - [Workflow Cost & Budget Gate](docs/architecture/workflow-cost-budget-v1.0.md)
 - [Prompt & Model Governance](docs/architecture/prompt-model-governance-v1.0.md)
 - [Durable Model Invocation Journal](docs/architecture/model-invocation-journal-v1.0.md)
+- [Model Input Safety Gate](docs/architecture/model-input-safety-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
@@ -318,6 +321,9 @@ Schema Validator، Data Class مجاز، رضایت صریح پردازش بیر
 Memory/PostgreSQL، RLS، Idempotency و وضعیت Recovery دارد و فقط Hash/Metadata را نگه
 می‌دارد. چون Production هنوز PostgreSQL امن و Provider واقعی ندارد، Journal روی دامنه
 Memory و اجرای بیرونی خاموش است؛ بنابراین هیچ دادهٔ شخصی از این مسیر به بیرون ارسال نمی‌شود.
+پیش از Journal نیز `model-input-safety-v1` ورودی را با سقف قطعی و Ruleهای Credential،
+Prompt Injection و Payload opaque اسکن می‌کند. Deny هیچ Reservation یا Provider call
+نمی‌سازد و API فقط Policy/Count/Finding/Hash را بدون متن خام نمایش می‌دهد.
 
 نمای «داده و شفافیت» ردپای owner-scoped تصمیم‌ها، تأییدها، حقوق حافظه و Exportها را
 از `GET /api/account/activity` نمایش می‌دهد. کاربر از `GET /api/account/export` یک

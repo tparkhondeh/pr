@@ -3,6 +3,7 @@ import type { TenantId, UserId } from '../kernel/identity.js';
 import type { CostEvidence } from '../observability/workflow-cost-control.js';
 import type { ModelDataClass, ModelTier } from './model-governance.js';
 import type { ModelPurpose } from './model-gateway.js';
+import { modelInputSafetyPolicyVersion } from './model-input-safety.js';
 
 export const modelInvocationJournalPolicyVersion = 'model-invocation-journal-v1' as const;
 
@@ -34,6 +35,7 @@ export type ModelInvocationRecord = Readonly<{
   modelTier: ModelTier;
   dataClasses: readonly ModelDataClass[];
   externalProcessingApproved: boolean;
+  inputSafetyPolicyVersion?: typeof modelInputSafetyPolicyVersion;
   inputSha256: string;
   status: ModelInvocationStatus;
   statusReason?: string;
@@ -65,6 +67,7 @@ export type BeginModelInvocationCommand = Readonly<{
   modelTier: ModelTier;
   dataClasses: readonly ModelDataClass[];
   externalProcessingApproved: boolean;
+  inputSafetyPolicyVersion: typeof modelInputSafetyPolicyVersion;
   inputSha256: string;
   startedAt: Date;
 }>;
@@ -207,6 +210,7 @@ export class InMemoryModelInvocationJournalRepository implements ModelInvocation
       modelTier: command.modelTier,
       dataClasses: [...new Set(command.dataClasses)].sort(),
       externalProcessingApproved: command.externalProcessingApproved,
+      inputSafetyPolicyVersion: command.inputSafetyPolicyVersion,
       inputSha256: command.inputSha256,
       status: 'started',
       startedAt: command.startedAt,
@@ -287,6 +291,7 @@ export function modelInvocationBeginFingerprint(command: BeginModelInvocationCom
     modelTier: command.modelTier,
     dataClasses: [...new Set(command.dataClasses)].sort(),
     externalProcessingApproved: command.externalProcessingApproved,
+    inputSafetyPolicyVersion: command.inputSafetyPolicyVersion,
     inputSha256: command.inputSha256,
   }));
 }
@@ -341,6 +346,10 @@ function validateBegin(input: Omit<BeginModelInvocationCommand, 'tenantId' | 'ac
   if (input.dataClasses.length === 0 || input.dataClasses.some((value) =>
     !['public', 'internal', 'confidential', 'restricted'].includes(value))) {
     throw new ModelInvocationValidationError('Data classes are invalid.');
+  }
+  const inputSafetyPolicyVersion: unknown = input.inputSafetyPolicyVersion;
+  if (inputSafetyPolicyVersion !== modelInputSafetyPolicyVersion) {
+    throw new ModelInvocationValidationError('Input safety policy version is invalid.');
   }
   validateSha256(input.inputSha256, 'Input hash');
   validateDate(input.startedAt, 'Start time');

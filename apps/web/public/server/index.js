@@ -3509,6 +3509,21 @@ function modelGovernanceSnapshot(generatedAt = new Date()) {
     executionEnabled: false,
     costGateRequired: true,
     durableInvocationJournal: false,
+    inputSafety: {
+      policyVersion: 'model-input-safety-v1',
+      generatedAt: generatedAt.toISOString(),
+      required: true,
+      failClosed: true,
+      rawInputRetained: false,
+      rules: [
+        'credential_material', 'prompt_injection', 'opaque_encoded_payload',
+        'scan_limit_exceeded', 'unsupported_input_shape',
+      ].map((id) => ({ id, action: 'deny' })),
+      limits: {
+        maximumDepth: 20, maximumNodes: 10000,
+        maximumStrings: 2000, maximumCharacters: 2000000,
+      },
+    },
     invocationJournal: {
       policyVersion: 'model-invocation-journal-v1',
       generatedAt: generatedAt.toISOString(),

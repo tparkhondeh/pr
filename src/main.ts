@@ -61,6 +61,7 @@ import {
   InMemoryModelInvocationJournalRepository,
   ModelInvocationJournalService,
 } from './providers/model-invocation-journal.js';
+import { ModelInputSafetyService } from './providers/model-input-safety.js';
 import {
   InMemoryPerceptionWorkspaceRepository,
   PerceptionWorkspaceService,
@@ -231,11 +232,13 @@ const modelInvocationJournal = new ModelInvocationJournalService(
     : new InMemoryModelInvocationJournalRepository(),
   { tenantId: activeTenant, ownerUserId: owner },
 );
+const modelInputSafety = new ModelInputSafetyService();
 const modelGovernance = new ModelGovernanceService(
   defaultPromptModelRegistry,
   { tenantId: activeTenant, ownerUserId: owner },
   false,
   modelInvocationJournal,
+  modelInputSafety,
 );
 const expression = new AuthenticExpressionService(
   { tenantId: activeTenant, ownerUserId: owner },

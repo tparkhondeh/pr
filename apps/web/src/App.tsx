@@ -2398,6 +2398,10 @@ function FeedbackLearningPanel({
               <span>نیازمند بازیابی</span>
               <strong>{modelGovernance.invocationJournal.summary.recoveryRequired.toLocaleString('fa-IR')}</strong>
             </div>
+            <div>
+              <span>Input Safety</span>
+              <strong>فعال</strong>
+            </div>
           </div>
           <div className="model-route-list" role="list" aria-label="نسخه‌های Prompt و Model">
             {modelGovernance.routes.map((route) => (
@@ -2413,10 +2417,10 @@ function FeedbackLearningPanel({
           </div>
           <div className="workflow-cost-truth">
             <LockKeyhole size={17} />
-            <p>در وضعیت فعلی هیچ دادهٔ شخصی برای مدل بیرونی ارسال نمی‌شود.</p>
+            <p>Credential و Prompt Injection پیش از Journal، هزینه و Provider به‌صورت Fail-closed متوقف می‌شوند.</p>
             <small>{modelGovernance.durableInvocationJournal
-              ? 'Journal فراخوانی پایدار است؛ فعال‌سازی Provider همچنان به قبولی Evalها و تأیید صریح شما نیاز دارد.'
-              : 'Journal فراخوانی هنوز حافظه‌ای است؛ فعال‌سازی Provider تا Durable شدن آن، قبولی Evalها و تأیید صریح شما مسدود می‌ماند.'}</small>
+              ? 'Journal فراخوانی پایدار و Safety Gate فعال است؛ Provider همچنان به قبولی Evalها و تأیید صریح شما نیاز دارد.'
+              : 'Safety Gate فعال است اما Journal روی این محیط هنوز حافظه‌ای است؛ Provider تا Durable شدن آن، قبولی Evalها و تأیید صریح شما مسدود می‌ماند.'}</small>
           </div>
         </section>
       ) : null}

@@ -19,6 +19,11 @@ import {
   type ModelInvocationJournalSnapshot,
   modelInvocationValueHash,
 } from './model-invocation-journal.js';
+import type {
+  ModelInputSafetyResult,
+  ModelInputSafetyService,
+  ModelInputSafetySnapshot,
+} from './model-input-safety.js';
 
 export const modelGovernancePolicyVersion = 'prompt-model-governance-v1' as const;
 
@@ -54,6 +59,7 @@ export type ModelGovernanceSnapshot = Readonly<{
   costGateRequired: true;
   durableInvocationJournal: boolean;
   invocationJournal: ModelInvocationJournalSnapshot;
+  inputSafety: ModelInputSafetySnapshot;
   routes: readonly PromptModelRegistryEntry[];
 }>;
 
@@ -94,6 +100,7 @@ export class ModelGovernanceService {
     private readonly identity: Readonly<{ tenantId: TenantId; ownerUserId: UserId }>,
     private readonly providerConfigured: boolean,
     private readonly invocationJournal: ModelInvocationJournalService,
+    private readonly inputSafety: ModelInputSafetyService,
   ) {}
 
   public async snapshot(actorId: UserId, at: Date): Promise<ModelGovernanceSnapshot> {
@@ -102,6 +109,7 @@ export class ModelGovernanceService {
     }
     const routes = this.registry.list();
     const invocationJournal = await this.invocationJournal.snapshot(actorId, at);
+    const inputSafety = this.inputSafety.snapshot(at);
     return {
       policyVersion: modelGovernancePolicyVersion,
       generatedAt: at,
@@ -111,6 +119,7 @@ export class ModelGovernanceService {
       costGateRequired: true,
       durableInvocationJournal: invocationJournal.durable,
       invocationJournal,
+      inputSafety,
       routes,
     };
   }
@@ -147,6 +156,7 @@ export class GovernedModelGateway implements ModelGateway {
     private readonly registry: PromptModelRegistry,
     private readonly costs: Pick<WorkflowCostControlService, 'reserve' | 'charge'>,
     private readonly invocationJournal: Pick<ModelInvocationJournalService, 'begin' | 'complete' | 'persistence'>,
+    private readonly inputSafety: Pick<ModelInputSafetyService, 'evaluate'>,
     private readonly provider: ExternalModelProvider,
     private readonly identity: Readonly<{ tenantId: TenantId; ownerUserId: UserId }>,
     private readonly validators: ReadonlyMap<string, SchemaValidator>,
@@ -155,7 +165,20 @@ export class GovernedModelGateway implements ModelGateway {
   public generateStructured<TInput, TOutput>(
     request: ModelRequest<TInput>,
   ): Promise<ModelResult<TOutput>> {
-    const fingerprint = requestFingerprint(request);
+    let inputSafety: ModelInputSafetyResult;
+    try {
+      this.assertIdentity(request);
+      inputSafety = this.inputSafety.evaluate(request.input, request.at);
+    } catch (error) {
+      if (error instanceof ModelGovernancePermissionError) return Promise.reject(error);
+      return Promise.reject(new ModelGovernanceDeniedError('input_safety:scan_failed', { cause: error }));
+    }
+    if (inputSafety.disposition !== 'allow') {
+      return Promise.reject(new ModelGovernanceDeniedError(
+        `input_safety:${inputSafety.findings[0]?.code ?? 'denied'}`,
+      ));
+    }
+    const fingerprint = requestFingerprint(request, inputSafety.scanSha256);
     const existing = this.#requests.get(request.requestId);
     if (existing) {
       if (existing.fingerprint !== fingerprint) {
@@ -163,15 +186,15 @@ export class GovernedModelGateway implements ModelGateway {
       }
       return existing.promise as Promise<ModelResult<TOutput>>;
     }
-    const promise = this.execute<TInput, TOutput>(request);
+    const promise = this.execute<TInput, TOutput>(request, inputSafety);
     this.#requests.set(request.requestId, { fingerprint, promise });
     return promise;
   }
 
   private async execute<TInput, TOutput>(
     request: ModelRequest<TInput>,
+    inputSafety: ModelInputSafetyResult,
   ): Promise<ModelResult<TOutput>> {
-    this.assertIdentity(request);
     const route = this.registry.resolve(request.purpose, request.schemaName);
     if (!route) throw new ModelGovernanceDeniedError('route_not_registered');
     if (route.rollout !== 'active') throw new ModelGovernanceDeniedError('route_not_active');
@@ -203,7 +226,8 @@ export class GovernedModelGateway implements ModelGateway {
         modelTier: route.modelTier,
         dataClasses: request.dataClasses,
         externalProcessingApproved: request.externalProcessingApproved,
-        inputSha256: modelInvocationValueHash(request.input),
+        inputSafetyPolicyVersion: inputSafety.policyVersion,
+        inputSha256: inputSafety.scanSha256,
         startedAt: request.at,
       });
     } catch (error) {
@@ -361,6 +385,8 @@ export class GovernedModelGateway implements ModelGateway {
         chargeId: charge.id,
         invocationJournalId: journalBegin.record.id,
         invocationJournalPersistence: this.invocationJournal.persistence,
+        inputSafetyPolicyVersion: inputSafety.policyVersion,
+        inputSafetyScanSha256: inputSafety.scanSha256,
         circuitOpened: charge.circuitOpened,
       },
     };
@@ -401,7 +427,11 @@ export class ModelGovernanceConflictError extends Error {
     super(`Model governance conflict: ${reason}`);
   }
 }
-export class ModelGovernanceDeniedError extends Error {}
+export class ModelGovernanceDeniedError extends Error {
+  public constructor(public readonly reason: string, options?: ErrorOptions) {
+    super(reason, options);
+  }
+}
 export class ModelProviderExecutionError extends Error {
   public constructor(public readonly reason: 'provider_failure', options?: ErrorOptions) {
     super(`Model provider execution failed: ${reason}`, options);
@@ -502,10 +532,20 @@ function zeroComponents(modelMinorUnits: number) {
   };
 }
 
-function requestFingerprint<TInput>(request: ModelRequest<TInput>): string {
+function requestFingerprint<TInput>(request: ModelRequest<TInput>, inputScanSha256: string): string {
   return createHash('sha256').update(JSON.stringify({
-    ...request,
+    requestId: request.requestId,
+    workflowId: request.workflowId,
+    invocationId: request.invocationId,
+    tenantId: request.tenantId,
+    actorId: request.actorId,
+    purpose: request.purpose,
+    dataClasses: [...request.dataClasses].sort(),
+    externalProcessingApproved: request.externalProcessingApproved,
+    schemaName: request.schemaName,
+    maxOutputTokens: request.maxOutputTokens,
     at: request.at.toISOString(),
+    inputScanSha256,
   })).digest('hex');
 }
 

@@ -983,6 +983,24 @@ export type ModelGovernanceSnapshot = Readonly<{
   executionEnabled: boolean;
   costGateRequired: true;
   durableInvocationJournal: boolean;
+  inputSafety: Readonly<{
+    policyVersion: 'model-input-safety-v1';
+    generatedAt: string;
+    required: true;
+    failClosed: true;
+    rawInputRetained: false;
+    rules: readonly Readonly<{
+      id: 'credential_material' | 'prompt_injection' | 'opaque_encoded_payload' |
+        'scan_limit_exceeded' | 'unsupported_input_shape';
+      action: 'deny';
+    }>[];
+    limits: Readonly<{
+      maximumDepth: number;
+      maximumNodes: number;
+      maximumStrings: number;
+      maximumCharacters: number;
+    }>;
+  }>;
   invocationJournal: Readonly<{
     policyVersion: 'model-invocation-journal-v1';
     generatedAt: string;
@@ -1012,6 +1030,7 @@ export type ModelGovernanceSnapshot = Readonly<{
       modelTier: 'economy' | 'balanced' | 'reasoning';
       dataClasses: readonly ('public' | 'internal' | 'confidential' | 'restricted')[];
       externalProcessingApproved: boolean;
+      inputSafetyPolicyVersion?: 'model-input-safety-v1';
       inputSha256: string;
       status: 'started' | 'succeeded' | 'cost_blocked' | 'provider_failed' |
         'timed_out' | 'usage_invalid' | 'output_invalid';
@@ -3115,6 +3134,7 @@ function isModelGovernanceSnapshot(payload: unknown): payload is ModelGovernance
     typeof payload['generatedAt'] !== 'string' || typeof payload['providerConfigured'] !== 'boolean' ||
     typeof payload['executionEnabled'] !== 'boolean' || payload['costGateRequired'] !== true ||
     typeof payload['durableInvocationJournal'] !== 'boolean' ||
+    !isModelInputSafetySnapshot(payload['inputSafety']) ||
     !isModelInvocationJournal(payload['invocationJournal']) || !Array.isArray(payload['routes'])
   ) return false;
   return payload['routes'].every((route) => isRecord(route) &&
@@ -3131,6 +3151,23 @@ function isModelGovernanceSnapshot(payload: unknown): payload is ModelGovernance
     ['disabled', 'shadow', 'canary', 'active'].includes(String(route['rollout'])) &&
     typeof route['evalSuite'] === 'string' &&
     ['not_run', 'failed', 'passed'].includes(String(route['evalStatus'])));
+}
+
+function isModelInputSafetySnapshot(value: unknown): boolean {
+  if (!isRecord(value) || value['policyVersion'] !== 'model-input-safety-v1' ||
+    typeof value['generatedAt'] !== 'string' || value['required'] !== true ||
+    value['failClosed'] !== true || value['rawInputRetained'] !== false ||
+    !Array.isArray(value['rules']) || !isRecord(value['limits'])) return false;
+  const findingCodes = [
+    'credential_material', 'prompt_injection', 'opaque_encoded_payload',
+    'scan_limit_exceeded', 'unsupported_input_shape',
+  ];
+  if (!value['rules'].every((rule) => isRecord(rule) &&
+    findingCodes.includes(String(rule['id'])) && rule['action'] === 'deny')) return false;
+  const limits = value['limits'];
+  if (!isRecord(limits)) return false;
+  return ['maximumDepth', 'maximumNodes', 'maximumStrings', 'maximumCharacters']
+    .every((key) => typeof limits[key] === 'number');
 }
 
 function isModelInvocationJournal(value: unknown): boolean {
@@ -3153,6 +3190,8 @@ function isModelInvocationJournal(value: unknown): boolean {
     Array.isArray(entry['dataClasses']) && entry['dataClasses'].every((dataClass) =>
       ['public', 'internal', 'confidential', 'restricted'].includes(String(dataClass))) &&
     typeof entry['externalProcessingApproved'] === 'boolean' &&
+    (entry['inputSafetyPolicyVersion'] === undefined ||
+      entry['inputSafetyPolicyVersion'] === 'model-input-safety-v1') &&
     typeof entry['inputSha256'] === 'string' &&
     ['started', 'succeeded', 'cost_blocked', 'provider_failed', 'timed_out',
       'usage_invalid', 'output_invalid'].includes(String(entry['status'])) &&
