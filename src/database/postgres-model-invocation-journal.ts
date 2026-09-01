@@ -6,6 +6,7 @@ import {
   ModelInvocationValidationError,
   modelInvocationBeginFingerprint,
   modelInvocationCompletionFingerprint,
+  type modelInvocationReconciliationPolicyVersion,
   type BeginModelInvocationCommand,
   type CompleteModelInvocationCommand,
   type ModelInvocationBeginResult,
@@ -47,6 +48,9 @@ type ModelInvocationRow = Readonly<{
   cost_minor_units: number | null;
   cost_evidence: CostEvidence | null;
   output_sha256: string | null;
+  reconciliation_policy_version: typeof modelInvocationReconciliationPolicyVersion | null;
+  reconciliation_request_id: string | null;
+  reconciliation_evidence_sha256: string | null;
   completion_sha256: string | null;
   started_at: Date | string;
   completed_at: Date | string | null;
@@ -59,6 +63,18 @@ export class PostgresModelInvocationJournalRepository implements ModelInvocation
     private readonly runner: SqlTransactionRunner,
     private readonly context: Readonly<{ tenantId: string; ownerUserId: string }>,
   ) {}
+
+  public get(id: string): Promise<ModelInvocationRecord | undefined> {
+    return this.runner.transaction(async (transaction) => {
+      await setTenantContext(transaction, this.context.tenantId);
+      const result = await transaction.query<ModelInvocationRow>(
+        `${modelInvocationSelect}
+          WHERE tenant_id = $1 AND owner_user_id = $2 AND id = $3`,
+        [this.context.tenantId, this.context.ownerUserId, id],
+      );
+      return result.rows[0] ? rowToModelInvocation(result.rows[0]) : undefined;
+    });
+  }
 
   public begin(command: BeginModelInvocationCommand): Promise<ModelInvocationBeginResult> {
     return this.runner.transaction(async (transaction) => {
@@ -187,7 +203,9 @@ export class PostgresModelInvocationJournalRepository implements ModelInvocation
           status = $5, status_reason = $6, reservation_id = $7, charge_id = $8,
           provider_trace_id = $9, input_tokens = $10, output_tokens = $11,
           cached_input_tokens = $12, cost_minor_units = $13, cost_evidence = $14,
-          output_sha256 = $15, completion_sha256 = $16, completed_at = $17
+          output_sha256 = $15, completion_sha256 = $16,
+          reconciliation_policy_version = $17, reconciliation_request_id = $18,
+          reconciliation_evidence_sha256 = $19, completed_at = $20
          WHERE tenant_id = $1 AND owner_user_id = $2 AND id = $3 AND request_id = $4
          RETURNING ${modelInvocationColumns}`,
         [
@@ -197,7 +215,11 @@ export class PostgresModelInvocationJournalRepository implements ModelInvocation
           command.providerTraceId ?? null, command.inputTokens ?? null,
           command.outputTokens ?? null, command.cachedInputTokens ?? null,
           command.costMinorUnits ?? null, command.costEvidence ?? null,
-          command.outputSha256 ?? null, fingerprint, command.completedAt,
+          command.outputSha256 ?? null, fingerprint,
+          command.reconciliationPolicyVersion ?? null,
+          command.reconciliationRequestId ?? null,
+          command.reconciliationEvidenceSha256 ?? null,
+          command.completedAt,
         ],
       );
       const row = updated.rows[0];
@@ -235,6 +257,7 @@ export class PostgresModelInvocationJournalRepository implements ModelInvocation
         succeeded: string | number;
         blocked: string | number;
         failed: string | number;
+        reconciled: string | number;
       }>>(
         `SELECT
           count(*) AS total,
@@ -242,8 +265,12 @@ export class PostgresModelInvocationJournalRepository implements ModelInvocation
           count(*) FILTER (WHERE status = 'succeeded') AS succeeded,
           count(*) FILTER (WHERE status = 'cost_blocked') AS blocked,
           count(*) FILTER (WHERE status IN (
-            'provider_failed', 'timed_out', 'usage_invalid', 'output_invalid'
-          )) AS failed
+            'provider_failed', 'timed_out', 'usage_invalid', 'output_invalid',
+            'reconciled_billed_output_unavailable'
+          )) AS failed,
+          count(*) FILTER (WHERE status IN (
+            'reconciled_not_executed', 'reconciled_billed_output_unavailable'
+          )) AS reconciled
          FROM app.model_invocations
          WHERE tenant_id = $1 AND owner_user_id = $2`,
         [this.context.tenantId, this.context.ownerUserId],
@@ -257,6 +284,7 @@ export class PostgresModelInvocationJournalRepository implements ModelInvocation
         succeeded: Number(row?.succeeded ?? 0),
         blocked: Number(row?.blocked ?? 0),
         failed: Number(row?.failed ?? 0),
+        reconciled: Number(row?.reconciled ?? 0),
       };
     });
   }
@@ -274,6 +302,8 @@ const modelInvocationColumns = `id, request_id, request_sha256, workflow_id,
   input_safety_policy_version, input_sha256, status, status_reason, reservation_id, charge_id,
   provider_trace_id, input_tokens, output_tokens, cached_input_tokens,
   cost_minor_units, cost_evidence, output_sha256, completion_sha256,
+  reconciliation_policy_version, reconciliation_request_id,
+  reconciliation_evidence_sha256,
   started_at, completed_at`;
 const modelInvocationSelect = `SELECT ${modelInvocationColumns} FROM app.model_invocations`;
 
@@ -336,6 +366,9 @@ function completionAuditMetadata(command: CompleteModelInvocationCommand): Reado
     costMinorUnits: command.costMinorUnits ?? null,
     costEvidence: command.costEvidence ?? null,
     outputSha256: command.outputSha256 ?? null,
+    reconciliationPolicyVersion: command.reconciliationPolicyVersion ?? null,
+    reconciliationRequestId: command.reconciliationRequestId ?? null,
+    reconciliationEvidenceSha256: command.reconciliationEvidenceSha256 ?? null,
   };
 }
 
@@ -370,6 +403,13 @@ function rowToModelInvocation(row: ModelInvocationRow): ModelInvocationRecord {
     ...(row.cost_minor_units !== null ? { costMinorUnits: row.cost_minor_units } : {}),
     ...(row.cost_evidence ? { costEvidence: row.cost_evidence } : {}),
     ...(row.output_sha256 ? { outputSha256: row.output_sha256 } : {}),
+    ...(row.reconciliation_policy_version
+      ? { reconciliationPolicyVersion: row.reconciliation_policy_version }
+      : {}),
+    ...(row.reconciliation_request_id ? { reconciliationRequestId: row.reconciliation_request_id } : {}),
+    ...(row.reconciliation_evidence_sha256
+      ? { reconciliationEvidenceSha256: row.reconciliation_evidence_sha256 }
+      : {}),
     startedAt: toDate(row.started_at),
     ...(row.completed_at ? { completedAt: toDate(row.completed_at) } : {}),
   };

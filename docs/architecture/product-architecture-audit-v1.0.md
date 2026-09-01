@@ -273,6 +273,10 @@ Payload opaque و Shape/Size غیرقابل‌اعتماد را پیش از Jour
 متوقف می‌کند. `model-input-safety-eval-v1` اکنون ۲۱ Case adversarial مستقل فارسی/انگلیسی
 را در CI با شرط صفر False Positive/False Negative و عدم نشت Raw Marker اجرا می‌کند؛
 اندازه‌گیری آماری روی Corpus واقعی ناشناس‌شده هنوز پیش‌شرط فعال‌سازی Provider است.
+`model-invocation-reconciliation-v1` نیز Recovery انسانی Journal معلق را با دو Outcome
+صادقانه، Evidence SHA-256، Charge idempotent و منع Retry خودکار پیاده می‌کند. Crash میان
+Charge و terminal transition در تست مستقل و PostgreSQL integration drill پوشش داده می‌شود؛
+اتصال Evidence به API واقعی Provider همچنان باز است.
 
 مسیر `postgres-commissioning-v1` نیز فعال‌سازی Source of Truth را fail-closed کرده است:
 Migration و Runtime باید Roleهای جدا باشند، Runtime حق superuser/BYPASSRLS/CREATE

@@ -31,6 +31,7 @@ import {
   ModelInvocationJournalService,
   modelInvocationValueHash,
 } from '../src/providers/model-invocation-journal.js';
+import { ModelInvocationReconciliationService } from '../src/providers/model-invocation-reconciliation.js';
 import {
   DecisionContextService,
   PostgresDecisionContextRepository,
@@ -326,6 +327,71 @@ async function verifyModelInvocationJournalPersistence(): Promise<void> {
       snapshot.summary.recoveryRequired !== 0 || snapshot.summary.blocked < 1
     ) {
       throw new Error('Durable model invocation completion or conflict contract failed.');
+    }
+
+    const recoveryBegin = await journal.begin(owner, {
+      ...beginInput,
+      requestId: 'model_invocation_recovery_integration',
+      workflowId: 'workflow:model:recovery:integration',
+      invocationId: 'invocation:model:recovery:integration:1',
+      inputSha256: modelInvocationValueHash({ claim: 'hash-only recovery input' }),
+    });
+    const recoveryReservation = await costs.reserve(owner, {
+      requestId: 'cost_recovery_integration',
+      workflowId: 'workflow:model:recovery:integration',
+      invocationId: 'invocation:model:recovery:integration:1',
+      kind: 'evaluation',
+      estimatedCostMinorUnits: 25,
+      plannedSteps: 1,
+      reservedAt: at,
+    });
+    if (recoveryReservation.decision !== 'allowed') {
+      throw new Error('Recovery integration reservation must be allowed.');
+    }
+    const preCrashCharge = await costs.charge(owner, {
+      requestId: 'gateway_charge_recovery_integration',
+      reservationId: recoveryReservation.id,
+      provider: 'integration-provider',
+      model: 'integration-model',
+      inputTokens: 50,
+      outputTokens: 10,
+      cachedInputTokens: 5,
+      components: {
+        modelMinorUnits: 10,
+        embeddingMinorUnits: 0,
+        storageMinorUnits: 0,
+        searchMinorUnits: 0,
+        toolApiMinorUnits: 0,
+        computeMinorUnits: 0,
+      },
+      actualSteps: 1,
+      humanReviewSeconds: 0,
+      costEvidence: 'provider_reported',
+      chargedAt: new Date(at.getTime() + 500),
+    });
+    const reconciliation = new ModelInvocationReconciliationService(journal, costs, identity);
+    const reconciliationCommand = {
+      requestId: 'reconcile_integration_1',
+      invocationRecordId: recoveryBegin.record.id,
+      disposition: 'billed_output_unavailable' as const,
+      evidenceSha256: modelInvocationValueHash({ providerInvoice: 'external-hash-reference-only' }),
+      providerTraceId: 'integration-provider-trace-recovery',
+      usage: { inputTokens: 50, outputTokens: 10, cachedInputTokens: 5, costMinorUnits: 10 },
+      reconciledAt: new Date(at.getTime() + 1_000),
+    };
+    const reconciled = await reconciliation.reconcile(owner, reconciliationCommand);
+    const reconciliationReplay = await reconciliation.reconcile(owner, reconciliationCommand);
+    const recoverySnapshot = await journal.snapshot(owner, new Date(at.getTime() + 2_000));
+    const reconciledCharge = reconciled.charge;
+    if (
+      reconciled.outcome !== 'reconciled' || reconciliationReplay.outcome !== 'already_reconciled' ||
+      reconciled.record.status !== 'reconciled_billed_output_unavailable' ||
+      reconciled.record.reconciliationPolicyVersion !== 'model-invocation-reconciliation-v1' ||
+      reconciled.record.outputSha256 !== undefined || !reconciledCharge ||
+      reconciledCharge.actualCostMinorUnits !== 10 || reconciledCharge.id !== preCrashCharge.id ||
+      recoverySnapshot.summary.recoveryRequired !== 0 || recoverySnapshot.summary.reconciled < 1
+    ) {
+      throw new Error('Durable model invocation reconciliation or billing replay failed.');
     }
   } finally {
     await runtime.close();

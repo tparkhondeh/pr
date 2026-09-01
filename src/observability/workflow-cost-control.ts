@@ -163,6 +163,8 @@ export type WorkflowCostSnapshot = Readonly<{
 
 export interface WorkflowCostRepository {
   readonly persistence: WorkflowCostPersistence;
+  findReservation(workflowId: string, invocationId: string): Promise<WorkflowCostReservation | undefined>;
+  findCharge(reservationId: string): Promise<WorkflowCostCharge | undefined>;
   listReservations(dayStart: Date): Promise<readonly WorkflowCostReservation[]>;
   listCharges(dayStart: Date): Promise<readonly WorkflowCostCharge[]>;
   reserve(
@@ -205,6 +207,26 @@ export class WorkflowCostControlService {
     return makeSnapshot(at, this.repository.persistence, this.policy, reservations, charges);
   }
 
+  public async reservationForInvocation(
+    actorId: UserId,
+    workflowId: string,
+    invocationId: string,
+  ): Promise<WorkflowCostReservation | undefined> {
+    this.assertOwner(actorId);
+    validateScopedCostId(workflowId, 'Workflow id');
+    validateScopedCostId(invocationId, 'Invocation id');
+    return await this.repository.findReservation(workflowId, invocationId);
+  }
+
+  public async chargeForReservation(
+    actorId: UserId,
+    reservationId: string,
+  ): Promise<WorkflowCostCharge | undefined> {
+    this.assertOwner(actorId);
+    if (!isUuid(reservationId)) throw new WorkflowCostValidationError('Reservation id is invalid.');
+    return await this.repository.findCharge(reservationId);
+  }
+
   public async reserve(
     actorId: UserId,
     input: Omit<WorkflowCostReservationCommand, 'tenantId' | 'actorId'>,
@@ -236,6 +258,18 @@ export class InMemoryWorkflowCostRepository implements WorkflowCostRepository {
   readonly #charges: WorkflowCostCharge[] = [];
   readonly #reservationFingerprints = new Map<string, string>();
   readonly #chargeFingerprints = new Map<string, string>();
+
+  public findReservation(
+    workflowId: string,
+    invocationId: string,
+  ): Promise<WorkflowCostReservation | undefined> {
+    return Promise.resolve(this.#reservations.find((entry) =>
+      entry.workflowId === workflowId && entry.invocationId === invocationId));
+  }
+
+  public findCharge(reservationId: string): Promise<WorkflowCostCharge | undefined> {
+    return Promise.resolve(this.#charges.find((entry) => entry.reservationId === reservationId));
+  }
 
   public listReservations(dayStart: Date): Promise<readonly WorkflowCostReservation[]> {
     const dayEnd = nextUtcDay(dayStart);
@@ -546,16 +580,18 @@ function makeSnapshot(
 
 function validateReservation(input: Omit<WorkflowCostReservationCommand, 'tenantId' | 'actorId'>): void {
   validateRequestId(input.requestId);
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9:_-]{2,119}$/u.test(input.workflowId)) {
-    throw new WorkflowCostValidationError('Workflow id is invalid.');
-  }
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9:_-]{2,119}$/u.test(input.invocationId)) {
-    throw new WorkflowCostValidationError('Invocation id is invalid.');
-  }
+  validateScopedCostId(input.workflowId, 'Workflow id');
+  validateScopedCostId(input.invocationId, 'Invocation id');
   if (!workflowCostKinds.includes(input.kind)) throw new WorkflowCostValidationError('Workflow kind is invalid.');
   validateSafeCount(input.estimatedCostMinorUnits, 'Estimated cost', 1_000_000);
   validateSafeCount(input.plannedSteps, 'Planned steps', 1_000);
   validateDate(input.reservedAt, 'Reservation time');
+}
+
+function validateScopedCostId(value: string, label: string): void {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9:_-]{2,119}$/u.test(value)) {
+    throw new WorkflowCostValidationError(`${label} is invalid.`);
+  }
 }
 
 function validateCharge(input: Omit<WorkflowCostChargeCommand, 'tenantId' | 'actorId'>): void {

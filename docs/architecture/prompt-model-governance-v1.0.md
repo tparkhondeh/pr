@@ -75,6 +75,6 @@ Export نیز همین Metadata حکمرانی را بدون Prompt Content یا
 4. Eval چندزبانه و Adversarial برای هر Route؛
 5. گسترش Safety Eval فعلی از Golden regression set به Corpus ناشناس‌شده و Eval مستقل
    Data Processing Approval؛
-6. Cost reconciliation و Crash/Timeout/Retry drill؛
+6. اتصال Reconciliation و Crash drill فعلی به Evidence API واقعی Provider و Billing؛
 7. Canaried rollout و rollback اثبات‌شده؛
 8. تأیید صریح مالک.

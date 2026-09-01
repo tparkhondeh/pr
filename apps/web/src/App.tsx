@@ -2402,6 +2402,14 @@ function FeedbackLearningPanel({
               <span>Input Safety</span>
               <strong>فعال</strong>
             </div>
+            <div>
+              <span>Recovery Reconciliation</span>
+              <strong>{modelGovernance.reconciliation.available ? 'آماده' : 'در انتظار DB'}</strong>
+            </div>
+            <div>
+              <span>تطبیق‌شده</span>
+              <strong>{modelGovernance.invocationJournal.summary.reconciled.toLocaleString('fa-IR')}</strong>
+            </div>
           </div>
           <div className="model-route-list" role="list" aria-label="نسخه‌های Prompt و Model">
             {modelGovernance.routes.map((route) => (
@@ -2417,10 +2425,10 @@ function FeedbackLearningPanel({
           </div>
           <div className="workflow-cost-truth">
             <LockKeyhole size={17} />
-            <p>Credential و Prompt Injection پیش از Journal، هزینه و Provider به‌صورت Fail-closed متوقف می‌شوند.</p>
+            <p>Credential و Prompt Injection پیش از Provider متوقف می‌شوند؛ اجرای معلق نیز هرگز خودکار Retry نمی‌شود.</p>
             <small>{modelGovernance.durableInvocationJournal
-              ? 'Journal فراخوانی پایدار و Safety Gate فعال است؛ Provider همچنان به قبولی Evalها و تأیید صریح شما نیاز دارد.'
-              : 'Safety Gate فعال است اما Journal روی این محیط هنوز حافظه‌ای است؛ Provider تا Durable شدن آن، قبولی Evalها و تأیید صریح شما مسدود می‌ماند.'}</small>
+              ? 'Journal پایدار است؛ Recovery فقط با Evidence Hash، تطبیق Billing و تأیید انسانی انجام می‌شود.'
+              : 'Journal این محیط حافظه‌ای است؛ Recovery و Provider تا PostgreSQL پایدار، Eval موفق و تأیید صریح شما مسدود می‌مانند.'}</small>
           </div>
         </section>
       ) : null}
@@ -5000,6 +5008,16 @@ function errorMessage(error: unknown): string {
     workflow_cost_permission_denied: 'فقط مالک می‌تواند Ledger و Budget Workflow را ببیند.',
     invalid_workflow_cost_input: 'Reservation یا Charge با قرارداد هزینه هم‌خوان نیست.',
     workflow_cost_failed: 'محاسبه یا ثبت هزینه کامل نشد؛ اجرای Metered جدید متوقف بماند.',
+    model_reconciliation_unavailable: 'سرویس تطبیق اجرای مدل در دسترس نیست.',
+    invalid_model_reconciliation_input: 'Evidence Hash، وضعیت Recovery یا Usage معتبر نیست.',
+    model_reconciliation_permission_denied: 'فقط مالک می‌تواند Invocation معلق را تطبیق دهد.',
+    model_invocation_not_found: 'Invocation موردنظر در Journal مالک پیدا نشد.',
+    durable_journal_required: 'Recovery فقط با Journal پایدار PostgreSQL مجاز است.',
+    allowed_reservation_required: 'ثبت Billing به Reservation مجاز و قابل‌ردگیری نیاز دارد.',
+    invocation_already_terminal: 'این Invocation قبلاً به وضعیت نهایی رسیده است.',
+    reconciliation_mismatch: 'Recovery قبلی با Evidence یا Usage متفاوت ثبت شده است.',
+    existing_charge_mismatch: 'Charge موجود با Provider Evidence این Recovery هم‌خوان نیست.',
+    model_reconciliation_failed: 'تطبیق Billing و Journal کامل نشد؛ Retry خودکار مدل مجاز نیست.',
     audit_trail_unavailable: 'ردپای حساب در دسترس نیست.',
     account_export_unavailable: 'خروجی کامل داده‌های حساب هنوز آماده نیست.',
     account_permission_denied: 'این ردپا فقط برای مالک حساب قابل مشاهده است.',

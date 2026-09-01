@@ -122,6 +122,13 @@ const modelInputSafetyMigrationPath = fileURLToPath(
   new URL('../db/migrations/0029_model_input_safety.sql', import.meta.url),
 );
 const modelInputSafetySql = readFileSync(modelInputSafetyMigrationPath, 'utf8');
+const modelInvocationReconciliationMigrationPath = fileURLToPath(
+  new URL('../db/migrations/0030_model_invocation_reconciliation.sql', import.meta.url),
+);
+const modelInvocationReconciliationSql = readFileSync(
+  modelInvocationReconciliationMigrationPath,
+  'utf8',
+);
 
 describe('foundation migration', () => {
   it('is transactional and receives a stable checksum', () => {
@@ -289,6 +296,29 @@ describe('foundation migration', () => {
       'NEW.input_safety_policy_version IS DISTINCT FROM OLD.input_safety_policy_version',
     );
     expect(modelInputSafetySql).not.toContain('UPDATE app.model_invocations');
+  });
+
+  it('adds hash-only human reconciliation states without permitting automatic retry', () => {
+    defineMigration('0030_model_invocation_reconciliation', modelInvocationReconciliationSql);
+    expect(modelInvocationReconciliationSql).toContain(
+      'ADD COLUMN reconciliation_policy_version text',
+    );
+    expect(modelInvocationReconciliationSql).toContain(
+      'ADD COLUMN reconciliation_evidence_sha256 text',
+    );
+    expect(modelInvocationReconciliationSql).toContain("'reconciled_not_executed'");
+    expect(modelInvocationReconciliationSql).toContain(
+      "'reconciled_billed_output_unavailable'",
+    );
+    expect(modelInvocationReconciliationSql).toContain(
+      "cost_evidence = 'provider_reported' AND output_sha256 IS NULL",
+    );
+    expect(modelInvocationReconciliationSql).toContain(
+      'Raw evidence is intentionally excluded',
+    );
+    expect(modelInvocationReconciliationSql).not.toMatch(
+      /\b(raw_evidence|evidence_text|provider_response|output_text)\b/u,
+    );
   });
 
   it('defines the required tenant-owned tables', () => {

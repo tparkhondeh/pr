@@ -77,3 +77,9 @@ Migration `0027_workflow_cost_budget` سه جدول RLS-protected می‌ساز�
 ## مرز MVP
 
 Runtime فعلی مدل بیرونی را فراخوانی نمی‌کند؛ بنابراین UI به‌درستی `no_usage` را نمایش می‌دهد و مبلغی جعل نمی‌کند. هر Provider Adapter آینده موظف است قبل از فراخوانی Reservation بگیرد و بعد از دریافت Usage قطعی Charge ثبت کند. عبور مستقیم از این Gate نقض قرارداد معماری است.
+
+Recovery نیز Gate را دور نمی‌زند. `model-invocation-reconciliation-v1` ابتدا Reservation
+owner-scoped را پیدا می‌کند، سپس Charge idempotent می‌سازد و در پایان Journal را terminal
+می‌کند. Crash میان Charge و Journal با replay همان Charge بازیابی می‌شود. تأیید
+`not_executed` هزینه صفر و Evidence `none` دارد؛ Billing واقعی فقط با
+`provider_reported` پذیرفته می‌شود.

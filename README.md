@@ -16,7 +16,8 @@ Prompt/Model Registry نیز نسخه، Tier، Eval، Rollout، Data Class و Ti
 قابل‌بازیابی می‌کند. Model Input Safety نیز Credential، Prompt Injection و ورودی
 غیرقابل‌اسکن را پیش از هر Side Effect متوقف می‌کند و Golden adversarial set فارسی/انگلیسی
 آن در CI Release را با شرط صفر False Positive/False Negative می‌بندد. تا بستن Gateها
-Provider بیرونی Fail-closed می‌ماند.
+Provider بیرونی Fail-closed می‌ماند. Recovery Invocationهای معلق نیز فقط روی Journal
+پایدار، با Evidence Hash و تأیید انسانی انجام می‌شود و هرگز Retry خودکار ندارد.
 
 ## اسناد فعلی
 
@@ -34,6 +35,7 @@ Provider بیرونی Fail-closed می‌ماند.
 - [Prompt & Model Governance](docs/architecture/prompt-model-governance-v1.0.md)
 - [Durable Model Invocation Journal](docs/architecture/model-invocation-journal-v1.0.md)
 - [Model Input Safety Gate](docs/architecture/model-input-safety-v1.0.md)
+- [Model Invocation Reconciliation](docs/architecture/model-invocation-reconciliation-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
@@ -332,6 +334,12 @@ Memory و اجرای بیرونی خاموش است؛ بنابراین هیچ د
 پیش از Journal نیز `model-input-safety-v1` ورودی را با سقف قطعی و Ruleهای Credential،
 Prompt Injection و Payload opaque اسکن می‌کند. Deny هیچ Reservation یا Provider call
 نمی‌سازد و API فقط Policy/Count/Finding/Hash را بدون متن خام نمایش می‌دهد.
+
+`model-invocation-reconciliation-v1` اجرای `started` باقی‌مانده پس از Crash را فقط با
+PostgreSQL پایدار و تصمیم مالک می‌بندد. `not_executed` Reservation را بدون جعل هزینه
+تسویه می‌کند و `billed_output_unavailable` Usage گزارش‌شده Provider را بدون جعل Output
+ثبت می‌کند. API آن `POST /api/model-governance/reconciliations` است؛ Raw Evidence ذخیره
+نمی‌شود و Retry خودکار همیشه ممنوع است.
 
 نمای «داده و شفافیت» ردپای owner-scoped تصمیم‌ها، تأییدها، حقوق حافظه و Exportها را
 از `GET /api/account/activity` نمایش می‌دهد. کاربر از `GET /api/account/export` یک

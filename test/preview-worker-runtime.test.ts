@@ -897,11 +897,20 @@ describe('private preview worker draft runtime', () => {
         failClosed: true,
         rawInputRetained: false,
       },
+      reconciliation: {
+        policyVersion: 'model-invocation-reconciliation-v1',
+        available: false,
+        durableJournalRequired: true,
+        humanConfirmationRequired: true,
+        automaticRetryAllowed: false,
+        rawEvidenceRetained: false,
+        pendingRecoveryCount: 0,
+      },
       invocationJournal: {
         policyVersion: 'model-invocation-journal-v1',
         persistence: 'memory',
         durable: false,
-        summary: { total: 0, recoveryRequired: 0 },
+        summary: { total: 0, recoveryRequired: 0, reconciled: 0 },
       },
     });
     expect(accountExport.data.modelGovernance.routes).toHaveLength(5);

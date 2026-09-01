@@ -3524,6 +3524,17 @@ function modelGovernanceSnapshot(generatedAt = new Date()) {
         maximumStrings: 2000, maximumCharacters: 2000000,
       },
     },
+    reconciliation: {
+      policyVersion: 'model-invocation-reconciliation-v1',
+      generatedAt: generatedAt.toISOString(),
+      available: false,
+      durableJournalRequired: true,
+      humanConfirmationRequired: true,
+      automaticRetryAllowed: false,
+      rawEvidenceRetained: false,
+      pendingRecoveryCount: 0,
+      dispositions: ['not_executed', 'billed_output_unavailable'],
+    },
     invocationJournal: {
       policyVersion: 'model-invocation-journal-v1',
       generatedAt: generatedAt.toISOString(),
@@ -3531,7 +3542,7 @@ function modelGovernanceSnapshot(generatedAt = new Date()) {
       durable: false,
       summary: {
         total: 0, started: 0, recoveryRequired: 0,
-        succeeded: 0, blocked: 0, failed: 0,
+        succeeded: 0, blocked: 0, failed: 0, reconciled: 0,
       },
       recentInvocations: [],
     },

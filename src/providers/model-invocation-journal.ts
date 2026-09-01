@@ -6,6 +6,7 @@ import type { ModelPurpose } from './model-gateway.js';
 import { modelInputSafetyPolicyVersion } from './model-input-safety.js';
 
 export const modelInvocationJournalPolicyVersion = 'model-invocation-journal-v1' as const;
+export const modelInvocationReconciliationPolicyVersion = 'model-invocation-reconciliation-v1' as const;
 
 export const modelInvocationTerminalStatuses = [
   'succeeded',
@@ -14,6 +15,8 @@ export const modelInvocationTerminalStatuses = [
   'timed_out',
   'usage_invalid',
   'output_invalid',
+  'reconciled_not_executed',
+  'reconciled_billed_output_unavailable',
 ] as const;
 
 export type ModelInvocationTerminalStatus = (typeof modelInvocationTerminalStatuses)[number];
@@ -48,6 +51,9 @@ export type ModelInvocationRecord = Readonly<{
   costMinorUnits?: number;
   costEvidence?: CostEvidence;
   outputSha256?: string;
+  reconciliationPolicyVersion?: typeof modelInvocationReconciliationPolicyVersion;
+  reconciliationRequestId?: string;
+  reconciliationEvidenceSha256?: string;
   startedAt: Date;
   completedAt?: Date;
 }>;
@@ -88,6 +94,9 @@ export type CompleteModelInvocationCommand = Readonly<{
   costMinorUnits?: number;
   costEvidence?: CostEvidence;
   outputSha256?: string;
+  reconciliationPolicyVersion?: typeof modelInvocationReconciliationPolicyVersion;
+  reconciliationRequestId?: string;
+  reconciliationEvidenceSha256?: string;
   completedAt: Date;
 }>;
 
@@ -103,6 +112,7 @@ export type ModelInvocationSummary = Readonly<{
   succeeded: number;
   blocked: number;
   failed: number;
+  reconciled: number;
 }>;
 
 export type ModelInvocationJournalSnapshot = Readonly<{
@@ -118,6 +128,7 @@ export interface ModelInvocationJournalRepository {
   readonly persistence: ModelInvocationPersistence;
   begin(command: BeginModelInvocationCommand): Promise<ModelInvocationBeginResult>;
   complete(command: CompleteModelInvocationCommand): Promise<ModelInvocationRecord>;
+  get(id: string): Promise<ModelInvocationRecord | undefined>;
   summarize(): Promise<ModelInvocationSummary>;
   list(limit: number): Promise<readonly ModelInvocationRecord[]>;
 }
@@ -150,6 +161,12 @@ export class ModelInvocationJournalService {
     return await this.repository.complete({ ...input, tenantId: this.identity.tenantId, actorId });
   }
 
+  public async get(actorId: UserId, id: string): Promise<ModelInvocationRecord | undefined> {
+    this.assertOwner(actorId);
+    if (!isUuid(id)) throw new ModelInvocationValidationError('Invocation record id is invalid.');
+    return await this.repository.get(id);
+  }
+
   public async snapshot(actorId: UserId, at: Date): Promise<ModelInvocationJournalSnapshot> {
     this.assertOwner(actorId);
     validateDate(at, 'Snapshot time');
@@ -179,6 +196,10 @@ export class InMemoryModelInvocationJournalRepository implements ModelInvocation
   readonly #records: ModelInvocationRecord[] = [];
   readonly #beginFingerprints = new Map<string, string>();
   readonly #completionFingerprints = new Map<string, string>();
+
+  public get(id: string): Promise<ModelInvocationRecord | undefined> {
+    return Promise.resolve(this.#records.find((record) => record.id === id));
+  }
 
   public begin(command: BeginModelInvocationCommand): Promise<ModelInvocationBeginResult> {
     const fingerprint = modelInvocationBeginFingerprint(command);
@@ -257,7 +278,12 @@ export class InMemoryModelInvocationJournalRepository implements ModelInvocation
       succeeded: this.#records.filter((record) => record.status === 'succeeded').length,
       blocked: this.#records.filter((record) => record.status === 'cost_blocked').length,
       failed: this.#records.filter((record) =>
-        ['provider_failed', 'timed_out', 'usage_invalid', 'output_invalid'].includes(record.status)).length,
+        [
+          'provider_failed', 'timed_out', 'usage_invalid', 'output_invalid',
+          'reconciled_billed_output_unavailable',
+        ].includes(record.status)).length,
+      reconciled: this.#records.filter((record) =>
+        ['reconciled_not_executed', 'reconciled_billed_output_unavailable'].includes(record.status)).length,
     });
   }
 }
@@ -310,6 +336,9 @@ export function modelInvocationCompletionFingerprint(command: CompleteModelInvoc
     costMinorUnits: command.costMinorUnits ?? null,
     costEvidence: command.costEvidence ?? null,
     outputSha256: command.outputSha256 ?? null,
+    reconciliationPolicyVersion: command.reconciliationPolicyVersion ?? null,
+    reconciliationRequestId: command.reconciliationRequestId ?? null,
+    reconciliationEvidenceSha256: command.reconciliationEvidenceSha256 ?? null,
   }));
 }
 
@@ -330,6 +359,13 @@ function completeRecord(
     ...(command.costMinorUnits !== undefined ? { costMinorUnits: command.costMinorUnits } : {}),
     ...(command.costEvidence ? { costEvidence: command.costEvidence } : {}),
     ...(command.outputSha256 ? { outputSha256: command.outputSha256 } : {}),
+    ...(command.reconciliationPolicyVersion
+      ? { reconciliationPolicyVersion: command.reconciliationPolicyVersion }
+      : {}),
+    ...(command.reconciliationRequestId ? { reconciliationRequestId: command.reconciliationRequestId } : {}),
+    ...(command.reconciliationEvidenceSha256
+      ? { reconciliationEvidenceSha256: command.reconciliationEvidenceSha256 }
+      : {}),
     completedAt: command.completedAt,
   };
 }
@@ -388,11 +424,38 @@ function validateCompletion(
   if (input.costEvidence === 'none' && input.costMinorUnits !== 0) {
     throw new ModelInvocationValidationError('Unmetered invocation must not invent cost.');
   }
+  if (
+    input.costEvidence !== undefined &&
+    !['provider_reported', 'estimated', 'none'].includes(input.costEvidence)
+  ) {
+    throw new ModelInvocationValidationError('Cost evidence is invalid.');
+  }
   if (input.outputSha256 !== undefined) validateSha256(input.outputSha256, 'Output hash');
-  if (!input.reservationId) {
-    throw new ModelInvocationValidationError('Terminal invocation requires a reservation id.');
+  const isReconciliation = input.status === 'reconciled_not_executed' ||
+    input.status === 'reconciled_billed_output_unavailable';
+  if (isReconciliation) {
+    if (input.reconciliationPolicyVersion !== modelInvocationReconciliationPolicyVersion) {
+      throw new ModelInvocationValidationError('Reconciliation policy version is invalid.');
+    }
+    if (!input.reconciliationRequestId) {
+      throw new ModelInvocationValidationError('Reconciliation request id is required.');
+    }
+    validateRequestId(input.reconciliationRequestId);
+    if (!input.reconciliationEvidenceSha256) {
+      throw new ModelInvocationValidationError('Reconciliation evidence hash is required.');
+    }
+    validateSha256(input.reconciliationEvidenceSha256, 'Reconciliation evidence hash');
+  } else if (
+    input.reconciliationPolicyVersion !== undefined ||
+    input.reconciliationRequestId !== undefined ||
+    input.reconciliationEvidenceSha256 !== undefined
+  ) {
+    throw new ModelInvocationValidationError('Non-reconciliation status cannot claim reconciliation evidence.');
   }
   if (input.status === 'cost_blocked') {
+    if (!input.reservationId) {
+      throw new ModelInvocationValidationError('Cost-blocked invocation requires a reservation id.');
+    }
     if (
       input.chargeId !== undefined || input.providerTraceId !== undefined ||
       input.inputTokens !== undefined || input.outputTokens !== undefined ||
@@ -401,9 +464,39 @@ function validateCompletion(
     ) {
       throw new ModelInvocationValidationError('Cost-blocked invocation cannot claim provider usage.');
     }
+  } else if (input.status === 'reconciled_not_executed') {
+    if (input.providerTraceId !== undefined || input.outputSha256 !== undefined) {
+      throw new ModelInvocationValidationError('Not-executed reconciliation cannot claim provider output.');
+    }
+    if (input.chargeId) {
+      if (
+        !input.reservationId || input.inputTokens !== 0 || input.outputTokens !== 0 ||
+        input.cachedInputTokens !== 0 || input.costMinorUnits !== 0 || input.costEvidence !== 'none'
+      ) {
+        throw new ModelInvocationValidationError('Settled not-executed reconciliation must be zero and unmetered.');
+      }
+    } else if (
+      input.inputTokens !== undefined || input.outputTokens !== undefined ||
+      input.cachedInputTokens !== undefined || input.costMinorUnits !== undefined ||
+      input.costEvidence !== undefined
+    ) {
+      throw new ModelInvocationValidationError('Uncharged not-executed reconciliation cannot claim usage.');
+    }
+  } else if (input.status === 'reconciled_billed_output_unavailable') {
+    if (
+      !input.reservationId || !input.chargeId || !input.providerTraceId ||
+      input.inputTokens === undefined || input.outputTokens === undefined ||
+      input.cachedInputTokens === undefined || input.costMinorUnits === undefined ||
+      input.costEvidence !== 'provider_reported' || input.outputSha256 !== undefined
+    ) {
+      throw new ModelInvocationValidationError(
+        'Billed reconciliation requires provider-reported usage without a recoverable output.',
+      );
+    }
   } else {
     if (
-      !input.chargeId || input.inputTokens === undefined || input.outputTokens === undefined ||
+      !input.reservationId || !input.chargeId ||
+      input.inputTokens === undefined || input.outputTokens === undefined ||
       input.cachedInputTokens === undefined || input.costMinorUnits === undefined ||
       input.costEvidence === undefined
     ) {

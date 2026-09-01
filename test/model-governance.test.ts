@@ -27,6 +27,7 @@ import {
   ModelInvocationJournalService,
 } from '../src/providers/model-invocation-journal.js';
 import { ModelInputSafetyService } from '../src/providers/model-input-safety.js';
+import { ModelInvocationReconciliationService } from '../src/providers/model-invocation-reconciliation.js';
 
 const tenant = tenantId('tenant-model-governance');
 const owner = userId('owner-model-governance');
@@ -140,12 +141,21 @@ describe('prompt and model governance', () => {
       new InMemoryModelInvocationJournalRepository(),
       { tenantId: tenant, ownerUserId: owner },
     );
+    const costs = new WorkflowCostControlService(
+      new InMemoryWorkflowCostRepository(),
+      { tenantId: tenant, ownerUserId: owner },
+    );
     const service = new ModelGovernanceService(
       defaultPromptModelRegistry,
       { tenantId: tenant, ownerUserId: owner },
       false,
       invocationJournal,
       new ModelInputSafetyService(),
+      new ModelInvocationReconciliationService(
+        invocationJournal,
+        costs,
+        { tenantId: tenant, ownerUserId: owner },
+      ),
     );
 
     const snapshot = await service.snapshot(owner, at);
@@ -155,6 +165,11 @@ describe('prompt and model governance', () => {
     expect(snapshot.invocationJournal.persistence).toBe('memory');
     expect(snapshot.inputSafety).toMatchObject({
       policyVersion: 'model-input-safety-v1', required: true, failClosed: true,
+    });
+    expect(snapshot.reconciliation).toMatchObject({
+      policyVersion: 'model-invocation-reconciliation-v1',
+      available: false,
+      automaticRetryAllowed: false,
     });
     expect(snapshot.routes).toHaveLength(5);
     expect(snapshot.routes.every((route) => route.rollout === 'disabled')).toBe(true);

@@ -62,6 +62,7 @@ import {
   ModelInvocationJournalService,
 } from './providers/model-invocation-journal.js';
 import { ModelInputSafetyService } from './providers/model-input-safety.js';
+import { ModelInvocationReconciliationService } from './providers/model-invocation-reconciliation.js';
 import {
   InMemoryPerceptionWorkspaceRepository,
   PerceptionWorkspaceService,
@@ -233,12 +234,18 @@ const modelInvocationJournal = new ModelInvocationJournalService(
   { tenantId: activeTenant, ownerUserId: owner },
 );
 const modelInputSafety = new ModelInputSafetyService();
+const modelInvocationReconciliation = new ModelInvocationReconciliationService(
+  modelInvocationJournal,
+  workflowCosts,
+  { tenantId: activeTenant, ownerUserId: owner },
+);
 const modelGovernance = new ModelGovernanceService(
   defaultPromptModelRegistry,
   { tenantId: activeTenant, ownerUserId: owner },
   false,
   modelInvocationJournal,
   modelInputSafety,
+  modelInvocationReconciliation,
 );
 const expression = new AuthenticExpressionService(
   { tenantId: activeTenant, ownerUserId: owner },
@@ -342,6 +349,7 @@ const requestHandler = createRequestHandler(
     strategicQuality,
     workflowCosts,
     modelGovernance,
+    modelInvocationReconciliation,
     conversation,
     auditTrail,
     assets,

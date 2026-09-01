@@ -67,6 +67,34 @@ export class PostgresWorkflowCostRepository implements WorkflowCostRepository {
     private readonly context: Readonly<{ tenantId: string; ownerUserId: string }>,
   ) {}
 
+  public findReservation(
+    workflowId: string,
+    invocationId: string,
+  ): Promise<WorkflowCostReservation | undefined> {
+    return this.runner.transaction(async (transaction) => {
+      await setTenantContext(transaction, this.context.tenantId);
+      const result = await transaction.query<ReservationRow>(
+        `${reservationSelect}
+           WHERE tenant_id = $1 AND owner_user_id = $2
+             AND workflow_id = $3 AND invocation_id = $4`,
+        [this.context.tenantId, this.context.ownerUserId, workflowId, invocationId],
+      );
+      return result.rows[0] ? rowToReservation(result.rows[0]) : undefined;
+    });
+  }
+
+  public findCharge(reservationId: string): Promise<WorkflowCostCharge | undefined> {
+    return this.runner.transaction(async (transaction) => {
+      await setTenantContext(transaction, this.context.tenantId);
+      const result = await transaction.query<ChargeRow>(
+        `${chargeSelect}
+           WHERE tenant_id = $1 AND owner_user_id = $2 AND reservation_id = $3`,
+        [this.context.tenantId, this.context.ownerUserId, reservationId],
+      );
+      return result.rows[0] ? rowToCharge(result.rows[0]) : undefined;
+    });
+  }
+
   public listReservations(dayStart: Date): Promise<readonly WorkflowCostReservation[]> {
     return this.runner.transaction(async (transaction) => {
       await setTenantContext(transaction, this.context.tenantId);

@@ -105,6 +105,16 @@ import {
   type ModelGovernanceSnapshot,
 } from '../providers/model-governance.js';
 import {
+  ModelInvocationReconciliationConflictError,
+  ModelInvocationReconciliationDeniedError,
+  ModelInvocationReconciliationNotFoundError,
+  ModelInvocationReconciliationPermissionError,
+  ModelInvocationReconciliationValidationError,
+  modelInvocationReconciliationDispositions,
+  type ModelInvocationReconciliationDisposition,
+  type ModelInvocationReconciliationService,
+} from '../providers/model-invocation-reconciliation.js';
+import {
   PerceptionConflictError,
   PerceptionNotFoundError,
   PerceptionPermissionError,
@@ -224,6 +234,7 @@ export type ApplicationDependencies = Readonly<{
   opportunities?: Pick<OpportunityRadarService, 'snapshot'>;
   workflowCosts?: Pick<WorkflowCostControlService, 'snapshot' | 'reserve' | 'charge'>;
   modelGovernance?: Pick<ModelGovernanceService, 'snapshot'>;
+  modelInvocationReconciliation?: Pick<ModelInvocationReconciliationService, 'reconcile'>;
   auditTrail?: Pick<AuditTrailService, 'snapshot' | 'record'>;
   assets?: Pick<TextAssetIntakeService, 'snapshot' | 'importText' | 'applyRight'>;
   mutationAuditTrail?: Pick<AuditTrailService, 'record'>;
@@ -325,6 +336,11 @@ export function createRequestHandler(
 
     if (request.method === 'GET' && path === '/api/model-governance') {
       await handleModelGovernanceSnapshot(request, response, dependencies);
+      return;
+    }
+
+    if (request.method === 'POST' && path === '/api/model-governance/reconciliations') {
+      await handleModelInvocationReconciliation(request, response, dependencies);
       return;
     }
 
@@ -977,6 +993,10 @@ function serializeModelGovernance(snapshot: ModelGovernanceSnapshot): Record<str
       ...snapshot.inputSafety,
       generatedAt: snapshot.inputSafety.generatedAt.toISOString(),
     },
+    reconciliation: {
+      ...snapshot.reconciliation,
+      generatedAt: snapshot.reconciliation.generatedAt.toISOString(),
+    },
     invocationJournal: {
       ...snapshot.invocationJournal,
       generatedAt: snapshot.invocationJournal.generatedAt.toISOString(),
@@ -987,6 +1007,84 @@ function serializeModelGovernance(snapshot: ModelGovernanceSnapshot): Record<str
       })),
     },
   };
+}
+
+async function handleModelInvocationReconciliation(
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: ApplicationDependencies,
+): Promise<void> {
+  const actorId = dependencies.resolveActor?.(request);
+  if (!actorId) {
+    sendJson(response, 401, { error: 'authentication_required' });
+    return;
+  }
+  if (!dependencies.modelInvocationReconciliation) {
+    sendJson(response, 503, { error: 'model_reconciliation_unavailable' });
+    return;
+  }
+  try {
+    const body = await readJsonObject(request);
+    const requestId = body['requestId'];
+    const invocationRecordId = body['invocationRecordId'];
+    const disposition = body['disposition'];
+    const evidenceSha256 = body['evidenceSha256'];
+    const providerTraceId = body['providerTraceId'];
+    const usage = body['usage'];
+    if (
+      typeof requestId !== 'string' || typeof invocationRecordId !== 'string' ||
+      !isModelInvocationReconciliationDisposition(disposition) ||
+      typeof evidenceSha256 !== 'string' ||
+      (providerTraceId !== undefined && typeof providerTraceId !== 'string') ||
+      (usage !== undefined && (!isRecord(usage) ||
+        !['inputTokens', 'outputTokens', 'cachedInputTokens', 'costMinorUnits']
+          .every((key) => typeof usage[key] === 'number')))
+    ) {
+      sendJson(response, 400, { error: 'invalid_model_reconciliation_input' });
+      return;
+    }
+    const result = await dependencies.modelInvocationReconciliation.reconcile(actorId, {
+      requestId,
+      invocationRecordId,
+      disposition,
+      evidenceSha256,
+      ...(providerTraceId ? { providerTraceId } : {}),
+      ...(isRecord(usage) ? {
+        usage: {
+          inputTokens: usage['inputTokens'] as number,
+          outputTokens: usage['outputTokens'] as number,
+          cachedInputTokens: usage['cachedInputTokens'] as number,
+          costMinorUnits: usage['costMinorUnits'] as number,
+        },
+      } : {}),
+      reconciledAt: now(dependencies),
+    });
+    sendJson(response, result.outcome === 'reconciled' ? 201 : 200, {
+      ...result,
+      record: serializeModelInvocationRecord(result.record),
+      ...(result.charge ? {
+        charge: { ...result.charge, chargedAt: result.charge.chargedAt.toISOString() },
+      } : {}),
+    });
+  } catch (error: unknown) {
+    sendModelInvocationReconciliationError(response, error);
+  }
+}
+
+function serializeModelInvocationRecord(entry: ModelGovernanceSnapshot['invocationJournal']['recentInvocations'][number]) {
+  return {
+    ...entry,
+    startedAt: entry.startedAt.toISOString(),
+    ...(entry.completedAt ? { completedAt: entry.completedAt.toISOString() } : {}),
+  };
+}
+
+function isModelInvocationReconciliationDisposition(
+  value: unknown,
+): value is ModelInvocationReconciliationDisposition {
+  return typeof value === 'string' && modelInvocationReconciliationDispositions.some(
+    (disposition) => disposition === value,
+  );
 }
 
 function isWorkflowCostKind(value: unknown): value is WorkflowCostKind {
@@ -2869,6 +2967,34 @@ function sendWorkflowCostError(response: ServerResponse, error: unknown): void {
     return;
   }
   sendJson(response, 500, { error: 'workflow_cost_failed' });
+}
+
+function sendModelInvocationReconciliationError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InvalidJsonBodyError || error instanceof ModelInvocationReconciliationValidationError) {
+    sendJson(response, 400, {
+      error: error instanceof InvalidJsonBodyError ? error.code : 'invalid_model_reconciliation_input',
+    });
+    return;
+  }
+  if (error instanceof ModelInvocationReconciliationPermissionError) {
+    sendJson(response, 403, { error: 'model_reconciliation_permission_denied' });
+    return;
+  }
+  if (error instanceof ModelInvocationReconciliationNotFoundError) {
+    sendJson(response, 404, { error: 'model_invocation_not_found' });
+    return;
+  }
+  if (error instanceof ModelInvocationReconciliationDeniedError) {
+    sendJson(response, error.reason === 'durable_journal_required' ? 503 : 409, {
+      error: error.reason,
+    });
+    return;
+  }
+  if (error instanceof ModelInvocationReconciliationConflictError) {
+    sendJson(response, 409, { error: error.reason });
+    return;
+  }
+  sendJson(response, 500, { error: 'model_reconciliation_failed' });
 }
 
 function isStrategicRecommendationDecision(

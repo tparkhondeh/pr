@@ -24,6 +24,10 @@ import type {
   ModelInputSafetyService,
   ModelInputSafetySnapshot,
 } from './model-input-safety.js';
+import type {
+  ModelInvocationReconciliationService,
+  ModelInvocationReconciliationSnapshot,
+} from './model-invocation-reconciliation.js';
 
 export const modelGovernancePolicyVersion = 'prompt-model-governance-v1' as const;
 
@@ -59,6 +63,7 @@ export type ModelGovernanceSnapshot = Readonly<{
   costGateRequired: true;
   durableInvocationJournal: boolean;
   invocationJournal: ModelInvocationJournalSnapshot;
+  reconciliation: ModelInvocationReconciliationSnapshot;
   inputSafety: ModelInputSafetySnapshot;
   routes: readonly PromptModelRegistryEntry[];
 }>;
@@ -101,6 +106,7 @@ export class ModelGovernanceService {
     private readonly providerConfigured: boolean,
     private readonly invocationJournal: ModelInvocationJournalService,
     private readonly inputSafety: ModelInputSafetyService,
+    private readonly reconciliation: Pick<ModelInvocationReconciliationService, 'snapshot'>,
   ) {}
 
   public async snapshot(actorId: UserId, at: Date): Promise<ModelGovernanceSnapshot> {
@@ -119,6 +125,7 @@ export class ModelGovernanceService {
       costGateRequired: true,
       durableInvocationJournal: invocationJournal.durable,
       invocationJournal,
+      reconciliation: this.reconciliation.snapshot(at, invocationJournal.summary.recoveryRequired),
       inputSafety,
       routes,
     };

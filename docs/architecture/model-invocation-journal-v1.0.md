@@ -32,7 +32,9 @@ started
   ├─ provider_failed
   ├─ timed_out
   ├─ usage_invalid
-  └─ output_invalid
+  ├─ output_invalid
+  ├─ reconciled_not_executed
+  └─ reconciled_billed_output_unavailable
 ```
 
 در PostgreSQL یک Trigger حذف، ویرایش Metadata و Transition دوم را رد می‌کند. Unique
@@ -45,7 +47,8 @@ Constraint روی `tenant + owner + requestId` و `tenant + owner + workflowId +
 - Replay با Metadata متفاوت Conflict است؛
 - Gateway پس از Restart با دیدن رکورد قبلی Provider را دوباره فراخوانی نمی‌کند؛
 - رکورد `started` به‌طور خودکار موفق یا ناموفق فرض نمی‌شود؛
-- Reconciliation آینده باید با Evidence Provider/Billing و تصمیم انسانی انجام شود.
+- Reconciliation فقط با `model-invocation-reconciliation-v1`، Evidence Hash و تصمیم
+  انسانی انجام می‌شود؛ Raw Evidence ذخیره و Provider خودکار Retry نمی‌شود.
 
 ## Persistence و مرز فعال‌سازی
 
@@ -61,4 +64,5 @@ Migration `0028_model_invocation_journal` جدول `app.model_invocations` را 
 Foreign Key به Membership و Cost Ledger، Audit/Outbox metadata-only و Transition Guard
 می‌سازد. Migration الحاقی `0029_model_input_safety` نسخه Safety را immutable ثبت می‌کند؛
 رکورد تاریخی بدون Evidence با مقدار ساختگی Backfill نمی‌شود. دسترسی فقط در Context Tenant
-و مالک فعال ممکن است.
+و مالک فعال ممکن است. Migration `0030_model_invocation_reconciliation` وضعیت‌های Recovery،
+Policy/Request ID و Evidence SHA-256 را بدون Raw Provider Response اضافه می‌کند.

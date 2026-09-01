@@ -47,6 +47,7 @@ import {
   ModelInvocationJournalService,
 } from '../src/providers/model-invocation-journal.js';
 import { ModelInputSafetyService } from '../src/providers/model-input-safety.js';
+import { ModelInvocationReconciliationService } from '../src/providers/model-invocation-reconciliation.js';
 import {
   InMemoryPerceptionWorkspaceRepository,
   PerceptionWorkspaceService,
@@ -126,15 +127,26 @@ describe('operational endpoints', () => {
     const fixedTime = new Date('2026-09-01T12:00:00.000Z');
     const owner = userId('owner_primary');
     const identity = { tenantId: tenantId('tenant_primary'), ownerUserId: owner };
+    const invocationJournal = new ModelInvocationJournalService(
+      new InMemoryModelInvocationJournalRepository(),
+      identity,
+    );
+    const workflowCosts = new WorkflowCostControlService(
+      new InMemoryWorkflowCostRepository(),
+      identity,
+    );
+    const reconciliation = new ModelInvocationReconciliationService(
+      invocationJournal,
+      workflowCosts,
+      identity,
+    );
     const modelGovernance = new ModelGovernanceService(
       defaultPromptModelRegistry,
       identity,
       false,
-      new ModelInvocationJournalService(
-        new InMemoryModelInvocationJournalRepository(),
-        identity,
-      ),
+      invocationJournal,
       new ModelInputSafetyService(),
+      reconciliation,
     );
     const response = await request(
       '/api/model-governance',
@@ -149,6 +161,7 @@ describe('operational endpoints', () => {
       executionEnabled: boolean;
       costGateRequired: boolean;
       inputSafety: { policyVersion: string; failClosed: boolean; rawInputRetained: boolean };
+      reconciliation: { policyVersion: string; available: boolean; automaticRetryAllowed: boolean };
       routes: Array<{ rollout: string }>;
     };
     expect(payload.generatedAt).toBe(fixedTime.toISOString());
@@ -159,7 +172,71 @@ describe('operational endpoints', () => {
       failClosed: true,
       rawInputRetained: false,
     }));
+    expect(payload.reconciliation).toEqual(expect.objectContaining({
+      policyVersion: 'model-invocation-reconciliation-v1',
+      available: false,
+      automaticRetryAllowed: false,
+    }));
     expect(payload.routes.every((route) => route.rollout === 'disabled')).toBe(true);
+  });
+
+  it('rejects recovery mutation when the invocation journal is ephemeral', async () => {
+    const fixedTime = new Date('2026-09-01T12:00:00.000Z');
+    const owner = userId('owner_reconciliation_http');
+    const identity = { tenantId: tenantId('tenant_reconciliation_http'), ownerUserId: owner };
+    const invocationJournal = new ModelInvocationJournalService(
+      new InMemoryModelInvocationJournalRepository(),
+      identity,
+    );
+    const workflowCosts = new WorkflowCostControlService(
+      new InMemoryWorkflowCostRepository(),
+      identity,
+    );
+    const reconciliation = new ModelInvocationReconciliationService(
+      invocationJournal,
+      workflowCosts,
+      identity,
+    );
+    const invocation = await invocationJournal.begin(owner, {
+      requestId: 'model_reconciliation_http_1',
+      workflowId: 'workflow:model:reconciliation:http',
+      invocationId: 'invocation:model:reconciliation:http:1',
+      purpose: 'strategy_options',
+      schemaName: 'strategic-options-v1',
+      registryEntryId: 'strategy-options-live-v1',
+      promptVersion: 'strategy-options-prompt-v1.0',
+      provider: 'provider-test',
+      model: 'model-test',
+      modelTier: 'reasoning',
+      dataClasses: ['internal'],
+      externalProcessingApproved: true,
+      inputSafetyPolicyVersion: 'model-input-safety-v1',
+      inputSha256: 'd'.repeat(64),
+      startedAt: fixedTime,
+    });
+    const response = await request(
+      '/api/model-governance/reconciliations',
+      () => ({ ready: true }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'reconcile_http_1',
+          invocationRecordId: invocation.record.id,
+          disposition: 'not_executed',
+          evidenceSha256: 'e'.repeat(64),
+        }),
+      },
+      {
+        modelInvocationReconciliation: reconciliation,
+        resolveActor: () => owner,
+        clock: () => fixedTime,
+      },
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: 'durable_journal_required' });
+    expect((await invocationJournal.get(owner, invocation.record.id))?.status).toBe('started');
   });
 
   it('reports liveness without testing dependencies', async () => {

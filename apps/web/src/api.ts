@@ -1001,6 +1001,17 @@ export type ModelGovernanceSnapshot = Readonly<{
       maximumCharacters: number;
     }>;
   }>;
+  reconciliation: Readonly<{
+    policyVersion: 'model-invocation-reconciliation-v1';
+    generatedAt: string;
+    available: boolean;
+    durableJournalRequired: true;
+    humanConfirmationRequired: true;
+    automaticRetryAllowed: false;
+    rawEvidenceRetained: false;
+    pendingRecoveryCount: number;
+    dispositions: readonly ('not_executed' | 'billed_output_unavailable')[];
+  }>;
   invocationJournal: Readonly<{
     policyVersion: 'model-invocation-journal-v1';
     generatedAt: string;
@@ -1013,6 +1024,7 @@ export type ModelGovernanceSnapshot = Readonly<{
       succeeded: number;
       blocked: number;
       failed: number;
+      reconciled: number;
     }>;
     recentInvocations: readonly Readonly<{
       id: string;
@@ -1033,7 +1045,11 @@ export type ModelGovernanceSnapshot = Readonly<{
       inputSafetyPolicyVersion?: 'model-input-safety-v1';
       inputSha256: string;
       status: 'started' | 'succeeded' | 'cost_blocked' | 'provider_failed' |
-        'timed_out' | 'usage_invalid' | 'output_invalid';
+        'timed_out' | 'usage_invalid' | 'output_invalid' | 'reconciled_not_executed' |
+        'reconciled_billed_output_unavailable';
+      reconciliationPolicyVersion?: 'model-invocation-reconciliation-v1';
+      reconciliationRequestId?: string;
+      reconciliationEvidenceSha256?: string;
       startedAt: string;
       completedAt?: string;
     }>[];
@@ -3135,6 +3151,7 @@ function isModelGovernanceSnapshot(payload: unknown): payload is ModelGovernance
     typeof payload['executionEnabled'] !== 'boolean' || payload['costGateRequired'] !== true ||
     typeof payload['durableInvocationJournal'] !== 'boolean' ||
     !isModelInputSafetySnapshot(payload['inputSafety']) ||
+    !isModelInvocationReconciliationSnapshot(payload['reconciliation']) ||
     !isModelInvocationJournal(payload['invocationJournal']) || !Array.isArray(payload['routes'])
   ) return false;
   return payload['routes'].every((route) => isRecord(route) &&
@@ -3151,6 +3168,17 @@ function isModelGovernanceSnapshot(payload: unknown): payload is ModelGovernance
     ['disabled', 'shadow', 'canary', 'active'].includes(String(route['rollout'])) &&
     typeof route['evalSuite'] === 'string' &&
     ['not_run', 'failed', 'passed'].includes(String(route['evalStatus'])));
+}
+
+function isModelInvocationReconciliationSnapshot(value: unknown): boolean {
+  return isRecord(value) &&
+    value['policyVersion'] === 'model-invocation-reconciliation-v1' &&
+    typeof value['generatedAt'] === 'string' && typeof value['available'] === 'boolean' &&
+    value['durableJournalRequired'] === true && value['humanConfirmationRequired'] === true &&
+    value['automaticRetryAllowed'] === false && value['rawEvidenceRetained'] === false &&
+    typeof value['pendingRecoveryCount'] === 'number' && Array.isArray(value['dispositions']) &&
+    value['dispositions'].every((item) =>
+      item === 'not_executed' || item === 'billed_output_unavailable');
 }
 
 function isModelInputSafetySnapshot(value: unknown): boolean {
@@ -3177,7 +3205,7 @@ function isModelInvocationJournal(value: unknown): boolean {
     typeof value['durable'] !== 'boolean' || !isRecord(value['summary']) ||
     !Array.isArray(value['recentInvocations'])) return false;
   const summary = value['summary'];
-  if (!['total', 'started', 'recoveryRequired', 'succeeded', 'blocked', 'failed']
+  if (!['total', 'started', 'recoveryRequired', 'succeeded', 'blocked', 'failed', 'reconciled']
     .every((key) => typeof summary[key] === 'number')) return false;
   return value['recentInvocations'].every((entry) => isRecord(entry) &&
     typeof entry['id'] === 'string' && typeof entry['requestId'] === 'string' &&
@@ -3194,7 +3222,14 @@ function isModelInvocationJournal(value: unknown): boolean {
       entry['inputSafetyPolicyVersion'] === 'model-input-safety-v1') &&
     typeof entry['inputSha256'] === 'string' &&
     ['started', 'succeeded', 'cost_blocked', 'provider_failed', 'timed_out',
-      'usage_invalid', 'output_invalid'].includes(String(entry['status'])) &&
+      'usage_invalid', 'output_invalid', 'reconciled_not_executed',
+      'reconciled_billed_output_unavailable'].includes(String(entry['status'])) &&
+    (entry['reconciliationPolicyVersion'] === undefined ||
+      entry['reconciliationPolicyVersion'] === 'model-invocation-reconciliation-v1') &&
+    (entry['reconciliationRequestId'] === undefined ||
+      typeof entry['reconciliationRequestId'] === 'string') &&
+    (entry['reconciliationEvidenceSha256'] === undefined ||
+      typeof entry['reconciliationEvidenceSha256'] === 'string') &&
     typeof entry['startedAt'] === 'string' &&
     (entry['completedAt'] === undefined || typeof entry['completedAt'] === 'string'));
 }
