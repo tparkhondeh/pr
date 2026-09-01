@@ -226,9 +226,26 @@ export type ResearchImportResult = Readonly<{
   record: ResearchSourceRecord;
 }>;
 
+export type ResearchSourceSafetySnapshot = Readonly<{
+  policyVersion: 'research-source-safety-v1';
+  automaticFetchEnabled: false;
+  failClosed: true;
+  addressPinningRequired: true;
+  redirectRevalidationRequired: true;
+  credentialsForwardingAllowed: false;
+  cookiesAllowed: false;
+  rawResponseRetained: false;
+  maximumRedirects: number;
+  maximumResponseBytes: number;
+  timeoutMs: number;
+  allowedMethods: readonly ['GET', 'HEAD'];
+  allowedContentTypes: readonly string[];
+}>;
+
 export type ResearchWorkspaceSnapshot = Readonly<{
   generatedAt: string;
   persistence: 'memory' | 'postgres' | 'ephemeral';
+  sourceSafety: ResearchSourceSafetySnapshot;
   summary: Readonly<{
     totalSources: number;
     citationReady: number;
@@ -2388,13 +2405,32 @@ function isStrategyContextSnapshot(payload: unknown): payload is StrategyContext
 }
 
 function isResearchWorkspaceSnapshot(payload: unknown): payload is ResearchWorkspaceSnapshot {
-  if (!isRecord(payload) || !isRecord(payload['summary']) || !Array.isArray(payload['sources'])) return false;
+  if (
+    !isRecord(payload) || !isRecord(payload['summary']) ||
+    !isResearchSourceSafetySnapshot(payload['sourceSafety']) || !Array.isArray(payload['sources'])
+  ) return false;
   const summary = payload['summary'];
   return (
     typeof payload['generatedAt'] === 'string' && isPersistence(payload['persistence']) &&
     typeof summary['totalSources'] === 'number' && typeof summary['citationReady'] === 'number' &&
     typeof summary['stale'] === 'number' && typeof summary['conflicts'] === 'number' &&
     typeof summary['unverified'] === 'number' && payload['sources'].every(isResearchSource)
+  );
+}
+
+function isResearchSourceSafetySnapshot(value: unknown): value is ResearchSourceSafetySnapshot {
+  if (!isRecord(value)) return false;
+  return (
+    value['policyVersion'] === 'research-source-safety-v1' &&
+    value['automaticFetchEnabled'] === false && value['failClosed'] === true &&
+    value['addressPinningRequired'] === true && value['redirectRevalidationRequired'] === true &&
+    value['credentialsForwardingAllowed'] === false && value['cookiesAllowed'] === false &&
+    value['rawResponseRetained'] === false && typeof value['maximumRedirects'] === 'number' &&
+    typeof value['maximumResponseBytes'] === 'number' && typeof value['timeoutMs'] === 'number' &&
+    Array.isArray(value['allowedMethods']) && value['allowedMethods'].every((item) => (
+      item === 'GET' || item === 'HEAD'
+    )) && Array.isArray(value['allowedContentTypes']) &&
+    value['allowedContentTypes'].every((item) => typeof item === 'string')
   );
 }
 

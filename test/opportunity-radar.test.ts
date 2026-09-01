@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { tenantId, userId } from '../src/kernel/identity.js';
 import { OpportunityRadarPermissionError, OpportunityRadarService } from '../src/opportunities/radar.js';
+import { researchSourceSafetyPolicy } from '../src/research/source-safety.js';
 import type { ResearchWorkspaceSnapshot } from '../src/research/workspace.js';
 import type { StrategyContextSnapshot } from '../src/strategy/context.js';
 
@@ -29,6 +30,7 @@ function source(input: Partial<ResearchWorkspaceSnapshot['sources'][number]> & P
 function radar(sources: ResearchWorkspaceSnapshot['sources']): OpportunityRadarService {
   const research: ResearchWorkspaceSnapshot = {
     generatedAt: now, persistence: 'memory',
+    sourceSafety: researchSourceSafetyPolicy.snapshot(),
     summary: { totalSources: sources.length, citationReady: sources.length, stale: 0, conflicts: 0, unverified: 0 },
     sources,
   };

@@ -311,6 +311,13 @@ research، bounded opportunity radar و connectorهای منتخب.
 
 Gate: citation coverage/freshness؛ privacy review؛ connector revocation test.
 
+وضعیت اجرا: `external-intelligence-eval-v1` اکنون ۳۰ Case نسخه‌دار فارسی/انگلیسی را
+در CI اجرا می‌کند: ۱۵ حمله SSRF/DNS rebinding، چهار Payload ناامن و پنج Case حاکمیت
+Citation/Freshness/Conflict. `research-source-safety-v1` URL، DNS، Address Pinning،
+Redirect، Content-Type، Size و Credential forwarding را Fail-closed تعریف می‌کند و
+Fetch خودکار همچنان خاموش است. Citation-ready هیچ Claimی را Verified/Public نمی‌کند.
+اتصال واقعی Connector و Revocation drill تا انتخاب Provider و دریافت Scope مستقل باز است.
+
 ### Phase 5 — Relationships & Controlled Automation
 
 stakeholders، relationship context، 360 با consent مستقل، publishing محدود و crisis assist.

@@ -910,6 +910,13 @@ describe('operational endpoints', () => {
       sources: Array<{ factCheckStatus: string; usableForPublicClaim: boolean; citation: string }>;
     };
     expect(researchSnapshot).toMatchObject({
+      sourceSafety: {
+        policyVersion: 'research-source-safety-v1',
+        automaticFetchEnabled: false,
+        failClosed: true,
+        addressPinningRequired: true,
+        redirectRevalidationRequired: true,
+      },
       summary: { totalSources: 1, citationReady: 1, conflicts: 0 },
       sources: [{
         factCheckStatus: 'citation_ready',

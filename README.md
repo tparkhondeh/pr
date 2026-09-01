@@ -18,6 +18,8 @@ Prompt/Model Registry نیز نسخه، Tier، Eval، Rollout، Data Class و Ti
 آن در CI Release را با شرط صفر False Positive/False Negative می‌بندد. تا بستن Gateها
 Provider بیرونی Fail-closed می‌ماند. Recovery Invocationهای معلق نیز فقط روی Journal
 پایدار، با Evidence Hash و تأیید انسانی انجام می‌شود و هرگز Retry خودکار ندارد.
+Research Source Safety نیز URLهای Local/Private/Credential-bearing، DNS rebinding،
+Redirect و Response ناامن را پیش از Connector متوقف می‌کند؛ Fetch خودکار همچنان خاموش است.
 
 ## اسناد فعلی
 
@@ -38,6 +40,8 @@ Provider بیرونی Fail-closed می‌ماند. Recovery Invocationهای م�
 - [Model Invocation Reconciliation](docs/architecture/model-invocation-reconciliation-v1.0.md)
 - [Authentic Expression Gate](docs/architecture/authentic-expression-v1.0.md)
 - [Authentic Execution Evaluation](docs/architecture/authentic-execution-evaluation-v1.0.md)
+- [Research Layer](docs/architecture/research-layer-v1.0.md)
+- [External Intelligence Evaluation](docs/architecture/external-intelligence-evaluation-v1.0.md)
 - [Opportunity Radar](docs/architecture/opportunity-radar-v1.0.md)
 - [Strategic Decision Contract](docs/architecture/strategic-decision-contract-v1.0.md)
 - [Master Implementation Prompt مرحله Foundation](docs/implementation/foundation-master-prompt-v1.0.md)
@@ -73,14 +77,16 @@ pnpm check
 pnpm dev
 ```
 
-`pnpm check` علاوه بر lint، typecheck و test، سه ارزیابی نسخه‌دار
+`pnpm check` علاوه بر lint، typecheck و test، چهار ارزیابی نسخه‌دار
 `model-input-safety-eval-v1`، `memory-retrieval-eval-v1` و
-`authentic-execution-eval-v1` را نیز اجرا می‌کند. اجرای مستقل آنها:
+`authentic-execution-eval-v1` و `external-intelligence-eval-v1` را نیز اجرا می‌کند.
+اجرای مستقل آنها:
 
 ```bash
 pnpm eval:model-input-safety
 pnpm eval:memory-retrieval
 pnpm eval:authentic-execution
+pnpm eval:external-intelligence
 ```
 
 Gate حافظه با ۱۶ Case فارسی/انگلیسی، `precision@k` و `recall@k` کامل، نشت Permission
@@ -94,6 +100,12 @@ Gate اجرای اصیل ۳۱ Case نسخه‌دار Claim، Platform، Authenti
 Platform باید Statement ثبت‌شده را دقیقاً حفظ کنند و هیچ Raw Asset یا Side Effect بیرونی
 در Report مجاز نیست. جزئیات در
 [`docs/architecture/authentic-execution-evaluation-v1.0.md`](docs/architecture/authentic-execution-evaluation-v1.0.md)
+ثبت شده است.
+
+Gate اطلاعات بیرونی ۳۰ Case نسخه‌دار دارد: ۱۵ حمله SSRF/DNS rebinding، چهار Payload
+ناامن و پنج سناریوی Citation/Freshness/Conflict را با Auto-verify، Fetch خودکار،
+Public Action، Memory write و Raw response leakage صفر الزام می‌کند. جزئیات در
+[`docs/architecture/external-intelligence-evaluation-v1.0.md`](docs/architecture/external-intelligence-evaluation-v1.0.md)
 ثبت شده است.
 
 Health endpoint پس از اجرا: `GET /health`
@@ -282,8 +294,10 @@ Quality و پنجره Freshness را ثبت می‌کند. سیستم Citation �
 Conflict باز نشان می‌دهد. ثبت منبع هرگز Claim را خودکار Verified نمی‌کند؛ در PostgreSQL
 یک `external_fact` با وضعیت `proposed`، Evidence و رابطه Claim/Evidence ساخته می‌شود.
 داده Research در `app.research_sources` و APIهای `GET /api/research` و
-`POST /api/research/sources` جدا از حافظه شخصی است. Fetch خودکار وب در این نسخه وجود
-ندارد و Adapter آینده در
+`POST /api/research/sources` جدا از حافظه شخصی است. Policy نسخه‌دار
+`research-source-safety-v1` URL خصوصی/محلی، Credential/Token Query، پورت سفارشی و
+مرزهای DNS/Redirect/Response را Fail-closed تعریف می‌کند. Fetch خودکار وب در این نسخه
+وجود ندارد و Adapter آینده در
 [`docs/architecture/research-layer-v1.0.md`](docs/architecture/research-layer-v1.0.md)
 تعریف شده است.
 

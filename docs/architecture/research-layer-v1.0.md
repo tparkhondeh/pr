@@ -42,7 +42,9 @@
 
 ## Security و Traceability
 
-- فقط URL بدون Credential و با پروتکل HTTPS پذیرفته می‌شود.
+- `research-source-safety-v1` فقط URL عمومی بدون Credential/Token Query، با پروتکل
+  HTTPS و پورت استاندارد را برای ثبت Metadata می‌پذیرد؛ Local/Internal، IP Literal و
+  Control Character رد می‌شوند.
 - Import با Request ID و Fingerprint idempotent است.
 - Repository با RLS به Tenant و Owner محدود است.
 - Evidence، Claim پیشنهادی، Source، Audit و Outbox در یک Transaction ثبت می‌شوند.
@@ -60,6 +62,10 @@
 5. Claim/stance پیشنهادی؛
 6. نتیجه Fetch، Redirect و خطای دسترسی.
 
-Web fetch آینده باید SSRF protection، محدودیت Redirect/Size/Content-Type، timeout،
-allow/deny policy و نگه‌داری provenance داشته باشد. Fact Check و Human approval پس از
-Adapter همچنان اجباری می‌مانند.
+Web fetch آینده باید از همان Policy استفاده کند: DNS عمومی برای همه Addressها، رد
+Mixed public/private، Address pinning، اجرای دوباره Policy در هر Redirect، سقف سه
+Redirect، محدودیت ۲MB و Content-Type، timeout ده‌ثانیه‌ای و عدم Forward کردن
+Credential/Cookie. این قرارداد در
+[`external-intelligence-evaluation-v1.0.md`](external-intelligence-evaluation-v1.0.md)
+با Golden Set فارسی/انگلیسی آزموده می‌شود. Fetch خودکار همچنان خاموش است و Fact Check
+و Human approval پس از Adapter اجباری می‌مانند.

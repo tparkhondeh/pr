@@ -50,6 +50,11 @@ describe('research workspace', () => {
 
     expect(imported).toMatchObject({ outcome: 'applied', persistence: 'memory' });
     expect(snapshot).toMatchObject({
+      sourceSafety: {
+        policyVersion: 'research-source-safety-v1',
+        automaticFetchEnabled: false,
+        failClosed: true,
+      },
       summary: { totalSources: 1, citationReady: 1, stale: 0, conflicts: 0 },
       sources: [{
         qualityScore: 1,
@@ -106,6 +111,14 @@ describe('research workspace', () => {
     await expect(service().importSource(sourceInput({
       url: 'http://research.example.org/insecure',
     }))).rejects.toBeInstanceOf(ResearchValidationError);
+    for (const url of [
+      'https://127.0.0.1/metadata',
+      'https://metadata.internal/latest',
+      'https://research.example.org/report?access_token=synthetic',
+      'https://research.example.org:8443/report',
+    ]) {
+      await expect(service().importSource(sourceInput({ url }))).rejects.toBeInstanceOf(ResearchValidationError);
+    }
   });
 });
 

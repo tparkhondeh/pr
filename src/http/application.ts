@@ -1332,6 +1332,7 @@ function serializeResearchSnapshot(snapshot: ResearchWorkspaceSnapshot): Record<
   return {
     generatedAt: snapshot.generatedAt.toISOString(),
     persistence: snapshot.persistence,
+    sourceSafety: snapshot.sourceSafety,
     summary: snapshot.summary,
     sources: snapshot.sources.map((source) => ({
       ...serializeResearchRecord(source),

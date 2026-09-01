@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { SqlTransaction, SqlTransactionRunner } from '../database/sql.js';
 import type { TenantId, UserId } from '../kernel/identity.js';
+import {
+  researchSourceSafetyPolicy,
+  type ResearchSourceSafetySnapshot,
+} from './source-safety.js';
 
 export type ResearchSourceQuality =
   | 'primary'
@@ -46,6 +50,7 @@ export type ResearchSourceSnapshot = ResearchSourceRecord & Readonly<{
 export type ResearchWorkspaceSnapshot = Readonly<{
   generatedAt: Date;
   persistence: 'memory' | 'postgres';
+  sourceSafety: ResearchSourceSafetySnapshot;
   summary: Readonly<{
     totalSources: number;
     citationReady: number;
@@ -117,7 +122,12 @@ export class ResearchWorkspaceService {
     validateText(input.publisher, 2, 200, 'Research publisher');
     validateText(input.excerpt, 20, 4_000, 'Research excerpt');
     validateText(input.statement, 3, 4_000, 'Research statement');
-    validateSourceUrl(input.url);
+    const sourceUrlAssessment = researchSourceSafetyPolicy.assessSourceUrl(input.url);
+    if (!sourceUrlAssessment.metadataImportPermitted || !sourceUrlAssessment.normalizedUrl) {
+      throw new ResearchValidationError(
+        `Research URL is denied by ${sourceUrlAssessment.policyVersion}: ${sourceUrlAssessment.findingCodes.join(',')}`,
+      );
+    }
     if (!researchQualities.includes(input.quality)) throw new ResearchValidationError('Research quality is invalid.');
     if (!researchStances.includes(input.stance)) throw new ResearchValidationError('Research stance is invalid.');
     if (!Number.isSafeInteger(input.maxAgeDays) || input.maxAgeDays < 1 || input.maxAgeDays > 3_650) {
@@ -135,7 +145,7 @@ export class ResearchWorkspaceService {
       evidenceId: deterministicUuid(`research-evidence:${this.identity.tenantId}:${input.requestId}`),
       title: input.title.trim(),
       publisher: input.publisher.trim(),
-      url: normalizeSourceUrl(input.url),
+      url: sourceUrlAssessment.normalizedUrl,
       excerpt: input.excerpt.trim(),
       statement: input.statement.trim(),
       quality: input.quality,
@@ -155,6 +165,7 @@ export class ResearchWorkspaceService {
     return {
       generatedAt: at,
       persistence: this.repository.persistence,
+      sourceSafety: researchSourceSafetyPolicy.snapshot(),
       summary: {
         totalSources: sources.length,
         citationReady: sources.filter((source) => source.factCheckStatus === 'citation_ready').length,
@@ -516,24 +527,6 @@ function deterministicUuid(seed: string): string {
 
 function normalizeStatement(value: string): string {
   return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('fa-IR');
-}
-
-function normalizeSourceUrl(value: string): string {
-  const url = new URL(value.trim());
-  url.hash = '';
-  return url.toString();
-}
-
-function validateSourceUrl(value: string): void {
-  try {
-    const url = new URL(value.trim());
-    if (url.protocol !== 'https:' || url.username || url.password || value.length > 2_048) {
-      throw new ResearchValidationError('Research URL must be a credential-free HTTPS URL.');
-    }
-  } catch (error: unknown) {
-    if (error instanceof ResearchValidationError) throw error;
-    throw new ResearchValidationError('Research URL is invalid.');
-  }
 }
 
 function validateRequestId(value: string): void {

@@ -2917,6 +2917,7 @@ function ResearchWorkspacePanel({
           <p className="overline">External Research · Source Provenance</p>
           <h2>منبع بیرونی، نه حافظه شخصی</h2>
           <p>ثبت منبع به‌معنی تأیید Fact نیست. Quality، Freshness، Citation و تعارض منابع پیش از هر استفاده عمومی جداگانه بررسی می‌شوند.</p>
+          <small>{snapshot.sourceSafety.policyVersion} · Fetch خودکار خاموش · URL عمومی و بازبینی هر Redirect اجباری</small>
         </div>
         <button disabled={state === 'loading'} onClick={() => void onRefresh()} type="button">
           <RefreshCw className={state === 'loading' ? 'spin' : undefined} size={16} /> به‌روزرسانی

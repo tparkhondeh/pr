@@ -258,6 +258,20 @@ describe('private preview worker draft runtime', () => {
     };
     expect((await post('/api/research/sources', {
       ...researchBase,
+      requestId: 'research_runtime_private_url',
+      title: 'منبع شبکه خصوصی',
+      url: 'https://metadata.internal/latest',
+      stance: 'supports',
+    })).status).toBe(400);
+    expect((await post('/api/research/sources', {
+      ...researchBase,
+      requestId: 'research_runtime_query_secret',
+      title: 'منبع دارای توکن',
+      url: 'https://research.example.org/report?access_token=synthetic',
+      stance: 'supports',
+    })).status).toBe(400);
+    expect((await post('/api/research/sources', {
+      ...researchBase,
       requestId: 'research_runtime_support',
       title: 'گزارش رسمی درباره اعتماد سازمانی',
       url: 'https://research.example.org/report',
@@ -276,6 +290,13 @@ describe('private preview worker draft runtime', () => {
     );
     await expect(researchResponse.json()).resolves.toMatchObject({
       persistence: 'ephemeral',
+      sourceSafety: {
+        policyVersion: 'research-source-safety-v1',
+        automaticFetchEnabled: false,
+        failClosed: true,
+        addressPinningRequired: true,
+        redirectRevalidationRequired: true,
+      },
       summary: { totalSources: 2, conflicts: 1, citationReady: 0 },
       sources: [
         { factCheckStatus: 'conflicted', usableForPublicClaim: false },

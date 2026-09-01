@@ -2824,6 +2824,21 @@ const researchStances = ['supports', 'contradicts'];
 const researchQualityScores = {
   primary: 1, authoritative_secondary: .85, secondary: .65, unverified: .25,
 };
+const researchSourceSafety = {
+  policyVersion: 'research-source-safety-v1', automaticFetchEnabled: false, failClosed: true,
+  addressPinningRequired: true, redirectRevalidationRequired: true,
+  credentialsForwardingAllowed: false, cookiesAllowed: false, rawResponseRetained: false,
+  maximumRedirects: 3, maximumResponseBytes: 2000000, timeoutMs: 10000,
+  allowedMethods: ['GET', 'HEAD'],
+  allowedContentTypes: ['text/html', 'application/xhtml+xml', 'application/pdf', 'text/plain'],
+};
+const credentialResearchQueryNames = new Set([
+  'apikey', 'authorization', 'authtoken', 'password', 'signature', 'token',
+  'accesstoken', 'refreshtoken', 'xamzcredential', 'xamzsignature',
+]);
+const privateResearchHostnameSuffixes = [
+  '.localhost', '.local', '.internal', '.lan', '.home', '.test', '.invalid', '.onion',
+];
 
 function validResearchSource(body) {
   if (
@@ -2838,10 +2853,26 @@ function validResearchSource(body) {
   if (Number.isNaN(publishedAt.getTime()) || publishedAt > new Date()) return false;
   try {
     const sourceUrl = new URL(body.url);
-    return body.url.length <= 2048 && sourceUrl.protocol === 'https:' && !sourceUrl.username && !sourceUrl.password;
+    return validPublicResearchUrl(body.url, sourceUrl);
   } catch {
     return false;
   }
+}
+
+function validPublicResearchUrl(value, sourceUrl) {
+  if (
+    typeof value !== 'string' || value.length > 2048 || /[\u0000-\u001F\u007F]/u.test(value.trim()) ||
+    sourceUrl.protocol !== 'https:' || sourceUrl.username || sourceUrl.password ||
+    (sourceUrl.port && sourceUrl.port !== '443')
+  ) return false;
+  const hostname = sourceUrl.hostname.toLocaleLowerCase('en-US').replace(/^\[|\]$/gu, '').replace(/\.$/u, '');
+  if (
+    !hostname.includes('.') || hostname === 'localhost' || /^[0-9.]+$/u.test(hostname) || hostname.includes(':') ||
+    privateResearchHostnameSuffixes.some((suffix) => hostname.endsWith(suffix))
+  ) return false;
+  return [...sourceUrl.searchParams.keys()].every((key) => (
+    !credentialResearchQueryNames.has(key.normalize('NFKC').toLocaleLowerCase('en-US').replace(/[^a-z0-9]/gu, ''))
+  ));
 }
 
 function normalizeResearchUrl(value) {
@@ -2890,6 +2921,7 @@ function researchSnapshot() {
   }).sort((left, right) => right.accessedAt.localeCompare(left.accessedAt));
   return {
     generatedAt: now.toISOString(), persistence: 'ephemeral',
+    sourceSafety: researchSourceSafety,
     summary: {
       totalSources: sources.length,
       citationReady: sources.filter((source) => source.factCheckStatus === 'citation_ready').length,
