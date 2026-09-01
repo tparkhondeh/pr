@@ -314,6 +314,12 @@ describe('foundation migration', () => {
       "cost_evidence = 'provider_reported' AND output_sha256 IS NULL",
     );
     expect(modelInvocationReconciliationSql).toContain(
+      "position('reservation_id' IN pg_get_constraintdef(constraint_definition.oid)) > 0",
+    );
+    expect(modelInvocationReconciliationSql).not.toMatch(
+      /DROP CONSTRAINT model_invocations_check\d+/,
+    );
+    expect(modelInvocationReconciliationSql).toContain(
       'Raw evidence is intentionally excluded',
     );
     expect(modelInvocationReconciliationSql).not.toMatch(

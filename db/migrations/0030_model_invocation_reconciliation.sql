@@ -25,8 +25,42 @@ ALTER TABLE app.model_invocations
     'reconciled_not_executed', 'reconciled_billed_output_unavailable'
   ));
 
+DO $migration$
+DECLARE
+  terminal_shape_constraint record;
+  matched_constraint_count integer := 0;
+BEGIN
+  FOR terminal_shape_constraint IN
+    SELECT constraint_definition.conname
+    FROM pg_constraint AS constraint_definition
+    JOIN pg_class AS constrained_table
+      ON constrained_table.oid = constraint_definition.conrelid
+    JOIN pg_namespace AS constrained_schema
+      ON constrained_schema.oid = constrained_table.relnamespace
+    WHERE constrained_schema.nspname = 'app'
+      AND constrained_table.relname = 'model_invocations'
+      AND constraint_definition.contype = 'c'
+      AND position('cost_blocked' IN pg_get_constraintdef(constraint_definition.oid)) > 0
+      AND position('provider_failed' IN pg_get_constraintdef(constraint_definition.oid)) > 0
+      AND position('output_invalid' IN pg_get_constraintdef(constraint_definition.oid)) > 0
+      AND position('reservation_id' IN pg_get_constraintdef(constraint_definition.oid)) > 0
+  LOOP
+    matched_constraint_count := matched_constraint_count + 1;
+    EXECUTE format(
+      'ALTER TABLE app.model_invocations DROP CONSTRAINT %I',
+      terminal_shape_constraint.conname
+    );
+  END LOOP;
+
+  IF matched_constraint_count <> 1 THEN
+    RAISE EXCEPTION
+      'expected exactly one legacy model invocation terminal-shape constraint, found %',
+      matched_constraint_count;
+  END IF;
+END;
+$migration$;
+
 ALTER TABLE app.model_invocations
-  DROP CONSTRAINT model_invocations_check3,
   ADD CONSTRAINT model_invocations_terminal_shape_check CHECK (
     (status = 'started' AND
       reconciliation_policy_version IS NULL AND
