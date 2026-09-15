@@ -6,6 +6,13 @@ coverage/
 !.env.example
 *.log
 *.tsbuildinfo
+# Dedicated server state and generated deployment artifacts are never source files.
+.private/
+.infrastructure/
+.deploy-*/
+.deploy-incoming-*.tar.gz
+runtime/
+SOURCE_COMMIT
 .DS_Store
 .idea/
 .vscode/

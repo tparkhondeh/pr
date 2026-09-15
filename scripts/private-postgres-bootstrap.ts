@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { Client } from 'pg';
 
 const root = '/home/wealthos/apps/pr';
@@ -15,6 +15,9 @@ async function main(): Promise<void> {
     throw new Error('This bootstrap is restricted to the PR server account.');
   }
   mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
+  // Existing cPanel directories can retain inherited ACLs despite mkdir's mode option.
+  execFileSync('setfacl', ['-b', '-k', privateRoot], { stdio: 'ignore' });
+  chmodSync(privateRoot, 0o700);
   mkdirSync(socket, { recursive: true, mode: 0o700 });
   const secretPath = `${privateRoot}/postgres-provision.json`;
   if (!existsSync(secretPath)) {
