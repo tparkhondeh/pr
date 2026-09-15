@@ -2472,6 +2472,9 @@ function FeedbackLearningPanel({
               <p className="overline">Cost Gate · {workflowCosts.policyVersion}</p>
               <h3>بودجه قبل از اجرا رزرو می‌شود</h3>
               <p>هزینهٔ مدل، Embedding، Storage، Search، Tool/API و Compute جدا ثبت می‌شود؛ زمان بازبینی انسانی نیز مستقل می‌ماند.</p>
+              {!modelGovernance?.executionEnabled ? (
+                <p>اجرای بیرونی خاموش است. اعداد سقف، تنظیمات آزمایشی سیستم‌اند؛ اعتبار خریداری‌شده یا بودجهٔ تأییدشدهٔ شما نیستند.</p>
+              ) : null}
             </div>
             <div className={`quality-status ${workflowCosts.day.status}`}>
               <span>وضعیت امروز</span>

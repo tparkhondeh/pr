@@ -44,7 +44,10 @@ else
   test -f "$root/.private/runtime-candidate.json"
 fi
 
-cp -a "$stage/." "$root/"
+# Root is ACL-writable but owned by cPanel; do not try to preserve its timestamps.
+while IFS= read -r -d '' item; do
+  cp -a "$item" "$root/"
+done < <(find "$stage" -mindepth 1 -maxdepth 1 -print0)
 if ! test -f "$root/.private/runtime.json"; then
   cp "$root/.private/runtime-candidate.json" "$root/.private/runtime.json"
   chmod 600 "$root/.private/runtime.json"
