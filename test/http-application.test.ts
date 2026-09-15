@@ -1103,7 +1103,7 @@ describe('operational endpoints', () => {
     const response = await request(
       '/api/workbench/approval',
       () => ({ ready: true }),
-      { method: 'POST', body: '{' },
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' },
       dependencies,
     );
 

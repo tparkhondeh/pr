@@ -346,6 +346,10 @@ const requestHandler = createRequestHandler(
     durability: environment.runtime.durability,
   }),
   {
+    trustedBrowserOrigins: environment.nodeEnv === 'production'
+      ? ['https://pr.wealthos.ir']
+      : ['http://127.0.0.1:5173', 'http://localhost:5173', 'http://127.0.0.1:4173',
+        'http://localhost:4173', `http://127.0.0.1:${String(environment.port)}`],
     workbench,
     strategy,
     decisionContext,

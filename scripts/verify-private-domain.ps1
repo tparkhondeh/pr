@@ -1,4 +1,4 @@
-# Authenticated, read-only HTTPS checks. No passwords, tokens, or response data emitted.
+# Authenticated HTTPS reads and non-mutating security probes. No secrets/data emitted.
 $ErrorActionPreference='Stop'
 $directory=Join-Path $env:USERPROFILE '.ssh\pr-preview'
 $file=Get-ChildItem -LiteralPath $directory -Filter 'login-*.clixml' | Sort-Object Name -Descending | Select-Object -First 1
@@ -30,5 +30,18 @@ try {
         }
         $results+=@{ Path=$path; Status=200 }
     }
-    [pscustomobject]@{ AnonymousStatus=401; AuthenticatedChecks=$results; Persistence='postgres'; Durability='persistent'; TLSValidation='system-default'; Asset=$asset } | ConvertTo-Json -Depth 4 -Compress
+    foreach ($probe in @(
+        @{Origin='https://attacker.invalid'; Type='application/json'; Expected=403},
+        @{Origin='https://pr.wealthos.ir'; Type='text/plain'; Expected=415},
+        @{Origin='https://pr.wealthos.ir'; Type='application/json'; Expected=404}
+    )) {
+        # This deliberately nonexistent route cannot change owner data.
+        $request=[Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Post,'https://pr.wealthos.ir/api/security-probe')
+        $request.Headers.Add('Origin',$probe.Origin)
+        $request.Content=[Net.Http.StringContent]::new('{}',[Text.Encoding]::UTF8,$probe.Type)
+        $response=$client.SendAsync($request).GetAwaiter().GetResult()
+        if ([int]$response.StatusCode -ne $probe.Expected) { throw 'Browser request security boundary failed.' }
+        $request.Dispose()
+    }
+    [pscustomobject]@{ AnonymousStatus=401; AuthenticatedChecks=$results; Persistence='postgres'; Durability='persistent'; TLSValidation='system-default'; Asset=$asset; CSRFSecurityProbes='403/415/404 passed' } | ConvertTo-Json -Depth 4 -Compress
 } finally { $client.Dispose(); $credential=$null; $token=$null; $body=$null }

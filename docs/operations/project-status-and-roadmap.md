@@ -1,5 +1,35 @@
 # PR — وضعیت احرازشده و مسیر پایان
 
+## تکمیل محافظ مرورگر — مرحلهٔ پس از انتشار دوم
+
+انتشار دوم `91606863d264ed88c3f1198acbfeb49ab11fe825` با CI موفق `34960046848`
+و artifact SHA256 `4A403045D31365ED8FCCC01FE535DF5E0037DCAB6624A77830CEEBF71FACFA1F`
+در ۱۵ سپتامبر حدود ۱۴:۲۳ تهران مستقر شد؛ بسته‌بندی bash و مالکیت root اصلاح و
+متن آزمایشی‌بودن سقف هزینه در رابط اضافه شد. backup پیش از آن
+`pr-20260915105232479.dump.enc` با SHA256 `e8e82bc99704bda88be4782613383313a5bfc3c5adf24910d11a6dd80116edfb`
+و restore برابر ۵۳ جدول/journal موفق بود.
+
+دوام PostgreSQL علاوه بر restart وب، با restart **فقط سرویس PostgreSQL PR** سنجیده شد:
+fingerprint هر ۵۳ جدول/journal در backupهای `pr-20260915105049284.dump.enc.json` و
+`pr-20260915105051263.dump.enc.json` یکسان؛ readiness پایدار بازگشت. هیچ پروژهٔ دیگر restart نشد.
+TCP probe از کامپیوتر روی پورت‌های سرویس و حتی یک پورت استفاده‌نشده handshake نشان داد،
+ولی HTTP مستقیم روی هر سه timeout/صفر بایت بود؛ بنابراین «بسته‌بودن قطعی پورت از همهٔ شبکه‌ها»
+از این probe استنتاج نمی‌شود. شاهد سمت سرور `ss`: هر دو listener فقط 127.0.0.1 و canary بسته است.
+
+بررسی پایانی کد نشان داد API قبلاً Content-Type/Origin را برای mutation محدود نمی‌کرد؛
+Basic Auth به‌تنهایی محافظ CSRF نیست. محافظ جدید پیش از تمام routeهای API، Origin را با
+فهرست صریح مقایسه می‌کند (نه Host یا X-Forwarded-* مورد اعتماد کاربر)، Fetch Metadata
+cross-site/same-site را رد و برای mutation فقط application/json را می‌پذیرد؛ CORS باز نمی‌شود.
+Production فقط `https://pr.wealthos.ir` و development فقط originهای loopback مشخص دارد.
+درخواست JSON غیرمرورگری بدون Origin همچنان پشت احراز هویت قابل استفاده است.
+GET صفحهٔ اصلی و دانلودِ مستقیم خود مالک حفظ می‌شود. مبنای طراحی:
+https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
+
+این محافظ تا CI/استقرار بعدی «منتشرشده» نیست. معیار تکمیل: تست‌های Origin/Content-Type و
+regression API، سپس probe بی‌اثر روی دامنه (403 مبدا خارجی، 415 متن ساده، 404 درخواست
+مجاز به route ناموجود). این probe هیچ دادهٔ مالک را تغییر نمی‌دهد. محدودیت‌ها و راهنمای
+امتحان در رسید زیر معتبرند؛ پذیرش واقعی مالک همچنان باز است.
+
 ## رسید تحویل فنی پایلوت — ۱۵ سپتامبر ۲۰۲۶، ساعت ۱۴:۱۷ تهران
 
 **ملاک شروع نوبت بعد این بخش است.** بخش‌های بعدی شواهد مراحل قبلی‌اند، نه وضعیت زندهٔ امروز آینده.

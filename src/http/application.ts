@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { browserRequestRejection } from './browser-request-policy.js';
 import {
   ArbitrationConflictError,
   ArbitrationNotFoundError,
@@ -219,6 +220,7 @@ export type ReadinessStatus = Readonly<{
 }>;
 
 export type ApplicationDependencies = Readonly<{
+  trustedBrowserOrigins?: readonly string[];
   workbench?: Pick<WorkbenchService, 'snapshot' | 'approve'>;
   strategy?: Pick<StrategyContextService, 'snapshot' | 'save'>;
   decisionContext?: Pick<DecisionContextService, 'snapshot' | 'save'>;
@@ -262,6 +264,14 @@ export function createRequestHandler(
     response: ServerResponse,
   ): Promise<void> => {
     const path = request.url ? new URL(request.url, 'http://localhost').pathname : '/';
+
+    if (path.startsWith('/api/')) {
+      const rejection = browserRequestRejection(request.method, request.headers, dependencies.trustedBrowserOrigins ?? []);
+      if (rejection) {
+        sendJson(response, rejection.status, { error: rejection.error });
+        return;
+      }
+    }
 
     if (request.method === 'GET' && path === '/health') {
       sendJson(response, 200, { status: 'alive' });
