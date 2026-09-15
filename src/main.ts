@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { createCpanelOwnerAuthenticator } from './http/owner-authentication.js';
 import {
   DecisionArbitrationService,
   InMemoryArbitrationRepository,
@@ -382,16 +383,32 @@ const requestHandler = createRequestHandler(
 const staticRequestHandler = environment.staticRoot
   ? createStaticRequestHandler(environment.staticRoot)
   : undefined;
+const authenticateOwner = environment.nodeEnv === 'production' ? createCpanelOwnerAuthenticator() : undefined;
 const server = createServer((request, response) => {
   const path = request.url ? new URL(request.url, 'http://localhost').pathname : '/';
-  const isApplicationRequest = path === '/health' || path === '/ready' || path.startsWith('/api/');
-  if (!staticRequestHandler || isApplicationRequest) {
-    void requestHandler(request, response);
+  const routeRequest = () => {
+    const isApplicationRequest = path === '/health' || path === '/ready' || path.startsWith('/api/');
+    if (!staticRequestHandler || isApplicationRequest) {
+      void requestHandler(request, response);
+      return;
+    }
+    void staticRequestHandler(request, response).then((handled) => {
+      if (!handled) void requestHandler(request, response);
+    });
+  };
+  if (authenticateOwner && path.startsWith('/api/')) {
+    void authenticateOwner(request.headers, request.method).then((authorized) => {
+      if (!authorized) {
+        response.writeHead(401, { 'content-type': 'application/json', 'cache-control': 'no-store',
+          'www-authenticate': 'Basic realm="WealthOS PR Private Preview"', 'x-content-type-options': 'nosniff' });
+        response.end(JSON.stringify({ error: 'authentication_required' }));
+        return;
+      }
+      routeRequest();
+    });
     return;
   }
-  void staticRequestHandler(request, response).then((handled) => {
-    if (!handled) void requestHandler(request, response);
-  });
+  routeRequest();
 });
 
 server.listen(environment.port, environment.bindHost, () => {

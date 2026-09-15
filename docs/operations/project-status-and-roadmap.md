@@ -1,6 +1,6 @@
 # PR — آخرین وضعیت و قدم بعد
 
-آخرین بررسی: ۲۰۲۶-۰۹-۱۵، حدود ۱۴:۳۸ تهران. زمان/شناسهٔ انتشار بعد از ثبت سند در رسید ماشین درج می‌شود. این گزارش، وضعیت تاریخی چت را مبنا فرض نمی‌کند.
+آخرین بررسی: ۲۰۲۶-۰۹-۱۵؛ پس از افزودن ورود داخلی و آزمون canary. زمان/شناسهٔ انتشار بعد از ثبت سند در رسید ماشین درج می‌شود. این گزارش، وضعیت تاریخی چت را مبنا فرض نمی‌کند.
 **تحویل فنی: پایلوت تک‌مالک قابل‌آزمایش. پذیرش واقعی مالک: باز.**
 
 ## نسخه و شواهد جاری
@@ -8,23 +8,24 @@
 | محور | نتیجهٔ احرازشده |
 |---|---|
 | checkout | `C:\Users\pc\Desktop\project\pr`، main، یک worktree؛ rollback یا نسخهٔ گمشده مشاهده نشد؛ فایل‌های نامرتبط Tailscale دست‌نخورده |
-| آخرین تغییر اجرایی محصول | `f695606a6f1f8ce5fa7385f30c6aef7e570872e1`؛ محافظ CSRF پس از دو انتشار PostgreSQL/بسته‌بندی |
-| CI همان کد | run `34960781552`، completed/success؛ verify و PostgreSQL integration/restore موفق |
-| بستهٔ محصول آزموده‌شده | artifact SHA256 `BB64AC0898A866FE85E0DFCDD66B75158F47C00A3A44248117F7B4DC521FE664`؛ runtime/main.cjs SHA256 `3C2DFAFF0DBDB5C7D9FFF14D7FEE0E5673D85014E5887394DDFE887A6C99028A` |
-| شناسهٔ نهایی بستهٔ حاوی همین رسید | از `SOURCE_COMMIT` سرور و `C:\Users\pc\.ssh\pr-preview\latest-release.json` بخوانید؛ این رسید پس از انتشار با SHA بسته/CI/smoke ثبت می‌شود. تغییر بعد از f695606 فقط راهنما، ignore و سخت‌سازی bootstrap/حساب آزمون است؛ کد اجرایی وب تغییر نکرده |
+| انتشار قبل از محافظ ورود داخلی | `4be186eafbba52162a891b299002833b6ee5e9dd`؛ PostgreSQL، CSRF، ignore و سخت‌سازی حساب آزمون؛ روی دامنه احراز شد |
+| CI انتشار قبلی | run `34961741865`، completed/success؛ verify و PostgreSQL integration/restore موفق |
+| نامزد ورود داخلی آزموده‌شده | runtime/main.cjs SHA256 `1BE59A9DF5CA96200FB53D409E4EC849A6FC908CBBCFCFC63D53818583E60944`؛ canary: API بدون credential برابر 401، خواندن با token خصوصی برابر 200 و mutation با همان token برابر 401؛ Basic Auth واقعی مالک نیز در canary با verifier بومی آزموده شد |
+| شناسهٔ نهایی کد/بسته/CI | از `SOURCE_COMMIT` سرور و `C:\Users\pc\.ssh\pr-preview\latest-release.json` بخوانید؛ نسخهٔ همان رسید روی سرور `.private/latest-release.json` است. این رسید بعد از انتشار با SHA بسته، CI همان SHA، hash باینری، smoke و backup ثبت می‌شود تا خودارجاعی SHA در commit سند ایجاد نشود |
 | دامنه | https://pr.wealthos.ir؛ ورود ناشناس 401؛ ورود جدید، shell/asset و ۱۷ مسیر اصلی خواندنی 200؛ `/ready` برابر ready/postgres/persistent |
 | امنیت مرورگر | probe بی‌اثر روی دامنه: Origin خارجی 403، text/plain برای mutation برابر 415، JSON از Origin مجاز به route ناموجود 404؛ CORS باز نشده |
 | Basic Auth | تعویض bcrypt انجام و ورود جدید تأیید شد؛ verifier قبلی جایگزین شد، رمز قبلی از تاریخچه استخراج/آزموده نشد؛ بررسی forensic کامل دسترسی قبلی ادعا نمی‌شود |
+| ورود داخلی برنامه | اعتماد صرف به loopback حذف شد: تمام APIهای Production هم credential مالک را با همان verifier Apache کنترل می‌کنند؛ رمز تنها از stdin به htpasswd می‌رود، نه argv/env/log. cache با تغییر verifier بی‌اعتبار می‌شود؛ اعتبارسنجی‌های هم‌زمان محدودند. token مستقل نگهداری در فایل 0600 زیر پوشهٔ 0700 فقط خواندن را مجاز می‌کند، نه mutation/تأیید انسانی؛ مقدار آن جایی گزارش نمی‌شود |
 | محل ورود امن | `C:\Users\pc\.ssh\pr-preview\Open-PR-Login.cmd`؛ login با DPAPI، ACL فقط حساب مالک، خارج Git/چت |
 | PostgreSQL | 16.15 اختصاصی PR، ۳۰ migration، pr_migrate/pr_runtime جدا؛ runtime بدون superuser/BYPASSRLS/CREATE؛ migration credential در PM2 وب نیست؛ Journal پایدار |
 | مرز دسترسی | listenerهای API/PG فقط 127.0.0.1:31056/31556؛ `.private` اکنون 0700 بدون ACL ارثی، secrets 0600. ACL پوشهٔ ازقبل‌موجود قبل از اصلاح حفظ شد؛ secretها پیش از اصلاح نیز 0600 بودند |
 | Provider | providerConfigured=false، executionEnabled=false؛ شبکهٔ اتصال‌ها و انتشار بیرونی خاموش؛ بودجه/رضایت بیرونی از پیش‌فرض‌ها استنتاج نشده |
 
-CI: https://github.com/tparkhondeh/pr/actions/runs/34960781552
+CI انتشار قبلی: https://github.com/tparkhondeh/pr/actions/runs/34961741865؛ CI و نسخهٔ نهایی در رسید ماشین پیوند دارند.
 
 ## آزمون و داده
 
-- مبنای محلی: ۳۴۹ تست + ۱۲۲ case ارزیابی موفق؛ محافظ مرورگر ۱۴ تست تازهٔ موفق دارد و regression هر ۳۲ تست HTTP هم موفق است. CI جدید کل suite، build و security scan/audit را اجرا و تأیید کرده است.
+- آخرین `pnpm check`: ۳۶۸ تست در ۶۳ فایل و ۱۲۲ case ارزیابی موفق، صفر شکست؛ شامل ۱۴ تست محافظ مرورگر، ۵ تست ورود داخلی و ۳۲ تست HTTP. کانری مستقل روی PostgreSQL واقعی با credential فعلی مالک و ابزار نگهداری نیز موفق است. CI کل suite، build و security scan/audit برای SHA نهایی باید مطابق رسید success باشد؛ آمار تست با پذیرش واقعی یکی نیست.
 - integration واقعی PostgreSQL روی DB جدا `pr_acceptance_1789467922576`: ۳۰ migration و RLS enforced. پس از اصلاح cleanup، دوباره روی `pr_acceptance_1789470497911` موفق و `pr_app_test` به NOLOGIN تبدیل شد؛ دادهٔ آزمون حفظ می‌شود ولی credential ثابت آزمون، login فعال باقی نمی‌گذارد. هیچ سناریوی ساختگی در حساب Production مالک ساخته نشد.
 - UI محلی: رضایت → asset/evidence → سه پیشنهاد شامل عدم اقدام → بررسی ریسک → draft مستند → تأیید آزمایشی → export؛ ویرایش بعدی تأیید را باطل و سیگنال یادگیری ثبت کرد. بعد از محافظ مرورگر، ذخیرهٔ هدف از UI نیز موفق بود. این تأییدها پذیرش مالک نیستند.
 - پیش از انتقال، export کامل memory خصوصی ذخیره شد: `pre-postgres-1789469106950.json` زیر `.private`؛ صفر memory/asset/evidence و فقط audit خروجی‌گیری عامل. دادهٔ واقعی حذف یا جایگزین نشد.
@@ -58,6 +59,7 @@ RPO خرابی کامل سرور از آخرین انتقال خارج سرور 
 PITR، HA، حذف خودکار retention، RTO بازیابی کامل و reboot واقعی میزبان احراز نشده‌اند؛ بازیابی snapshot تنها برابری داده/ساختار را اثبات می‌کند.
 زیر ۱GiB فضای آزاد، backup برای حفاظت دیسک fail و خطا ثبت می‌کند. حذف/retention خودکار دادهٔ واقعی بدون تصمیم تازه اجرا نمی‌شود.
 TCP probe از این شبکه حتی برای پورت استفاده‌نشده handshake نشان داد، ولی HTTP مستقیم صفر بایت/timeout بود؛ اثبات firewall عمومی از آن استنتاج نشده است. شاهد binding محلی مستقل تأیید شده است.
+محافظ داخلی جایگزین جداسازی حساب سیستم‌عامل نیست: پردازش‌های دارای همان حساب `wealthos_dev` یا root همچنان به فایل‌های خصوصی آن حساب دسترسی دارند. ایزوله‌سازی سیستم‌عاملی کامل PR از سایر برنامه‌ها به حساب/اختیار مدیریتی جدا نیاز دارد؛ چنین اختیاری در این نوبت موجود نبود و سرویس‌های دیگر دستکاری نشدند.
 
 **تعریف پایان:** تحویل فنی این پایلوت با پذیرش واقعی مالک و تکمیل کل Master Context یکی نیست. کار مستقلِ ضروری این تحویل انجام شده؛ اولین اقدام مفید بعد، آزمون واقعی مالک و سپس رفع یافته‌هاست. مجوز کلی ادامه دوباره درخواست نمی‌شود.
 

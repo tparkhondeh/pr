@@ -29,6 +29,14 @@ grantهای runtime و commissioning در مقصد ایزوله برقرار و 
 این نصب تک‌مالک با Basic Auth است. حساب مشترک را به دیگران ندهید؛ multi-user login و
 SIWC/session قبل از onboarding اشخاص دیگر لازم‌اند. Provider بدون بودجه/رضایت/secret فعال نمی‌شود.
 
+APIهای Production علاوه بر Apache، داخل Node هم همان Basic Auth را با فایل verifier
+کنترل می‌کنند؛ localhost هویت مالک محسوب نمی‌شود. Password با stdin به `/usr/bin/htpasswd`
+می‌رود و هیچ‌وقت در argv/env/log نیست؛ cache با تغییر فایل verifier منقضی می‌شود.
+Apache باید Authorization اصلی را حفظ کند؛ smoke معتبر دامنه این موضوع را می‌سنجد.
+ابزارهای اختصاصی PR token تصادفی نگهداری را از `.private/maintenance.token` با 0600
+می‌خوانند؛ این token فقط GET/HEAD را مجاز می‌کند، نه mutation یا تأیید انسانی، و در Git یا پاسخ HTTP قرار نمی‌گیرد. `/health` و `/ready` داخلی بدون
+دادهٔ شخصی برای بررسی سرویس قابل‌خواندن‌اند. API داخلی ناشناس باید 401 بدهد.
+
 ## پیکربندی تاریخی Preview و قواعد پایه
 
 این پیکربندی برای استقرار آزمایشی `pr.wealthos.ir` روی ساختار فعلی cPanel است:

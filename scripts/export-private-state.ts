@@ -1,8 +1,10 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 async function main(): Promise<void> {
 const directory = '/home/wealthos/apps/pr/.private';
 mkdirSync(directory, { recursive: true, mode: 0o700 });
-const response = await fetch('http://127.0.0.1:31056/api/account/export');
+const tokenPath = `${directory}/maintenance.token`;
+const response = await fetch('http://127.0.0.1:31056/api/account/export', { headers: existsSync(tokenPath)
+  ? { 'x-pr-maintenance-token': readFileSync(tokenPath, 'utf8').trim() } : {} });
 if (!response.ok) throw new Error(`Export failed: ${String(response.status)}`);
 const content = await response.text();
 const snapshot = JSON.parse(content) as { data: {

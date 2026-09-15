@@ -15,7 +15,7 @@ foreach ($rule in $acl.Access) {
 }
 $start = [Diagnostics.ProcessStartInfo]::new('ssh')
 # All returned content is captured internally, then DPAPI-encrypted. Never echo it.
-$remote = 'node -e ''const fs=require("fs");const p="/home/wealthos/apps/pr/.private/";process.stdout.write(JSON.stringify({backupKey:fs.readFileSync(p+"backup.key").toString("base64"),provision:JSON.parse(fs.readFileSync(p+"postgres-provision.json","utf8")),runtime:JSON.parse(fs.readFileSync(p+"runtime.json","utf8")),commissioning:JSON.parse(fs.readFileSync(p+"commissioning.json","utf8"))}))'''
+$remote = 'node -e ''const fs=require("fs");const p="/home/wealthos/apps/pr/.private/";process.stdout.write(JSON.stringify({backupKey:fs.readFileSync(p+"backup.key").toString("base64"),maintenanceToken:fs.existsSync(p+"maintenance.token")?fs.readFileSync(p+"maintenance.token","utf8"):null,provision:JSON.parse(fs.readFileSync(p+"postgres-provision.json","utf8")),runtime:JSON.parse(fs.readFileSync(p+"runtime.json","utf8")),commissioning:JSON.parse(fs.readFileSync(p+"commissioning.json","utf8"))}))'''
 foreach ($arg in @('-o','BatchMode=yes','-o','ConnectTimeout=10','-p','2490','-i',
     (Join-Path $env:USERPROFILE '.ssh\wealthos_dev'),'wealthos_dev@62.204.61.18',$remote)) { $start.ArgumentList.Add($arg) }
 $start.UseShellExecute=$false; $start.CreateNoWindow=$true

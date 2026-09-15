@@ -18,6 +18,8 @@ async function main(): Promise<void> {
   // Existing cPanel directories can retain inherited ACLs despite mkdir's mode option.
   execFileSync('setfacl', ['-b', '-k', privateRoot], { stdio: 'ignore' });
   chmodSync(privateRoot, 0o700);
+  const maintenancePath = `${privateRoot}/maintenance.token`;
+  if (!existsSync(maintenancePath)) writeFileSync(maintenancePath, randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' });
   mkdirSync(socket, { recursive: true, mode: 0o700 });
   const secretPath = `${privateRoot}/postgres-provision.json`;
   if (!existsSync(secretPath)) {
