@@ -2,6 +2,12 @@
 
 ## وضعیت فعلی
 
+به‌روزرسانی ۱۵ سپتامبر ۲۰۲۶: PostgreSQL اختصاصی PR provision شده و restore محتوای
+۵۳ جدول/journal روی همان زیرساخت آزموده شده است. وضعیت **فعال‌بودن در Production**،
+SHA انتشار و شواهد domain/restart را از `project-status-and-roadmap.md` بخوانید؛
+پیکربندی عملیاتی پایلوت در `deploy/cpanel/README.md` است. متن زیر قرارداد پایه/تاریخی
+است؛ PITR، retention و RTO کامل پیشنهادی را قابلیت تحویل‌شده فرض نکنید.
+
 این Runbook قرارداد عملیاتی Foundation است. CI روی PostgreSQL 16 واقعی migrations،
 RLS و logical dump/restore را در یک دیتابیس تازه drill می‌کند و RTO را در Job Summary
 ثبت می‌کند. محیط Production PostgreSQL هنوز provision نشده است؛ Gate نهایی Production

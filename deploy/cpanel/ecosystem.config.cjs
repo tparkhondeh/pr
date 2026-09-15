@@ -1,3 +1,19 @@
+const { existsSync, readFileSync } = require('node:fs');
+const runtimePath = '/home/wealthos/apps/pr/.private/runtime.json';
+let persistent = {};
+if (existsSync(runtimePath)) {
+  const values = JSON.parse(readFileSync(runtimePath, 'utf8'));
+  for (const key of ['DATABASE_URL', 'PR_TENANT_ID', 'PR_OWNER_USER_ID']) {
+    if (typeof values[key] !== 'string' || !values[key]) throw new Error('Incomplete private runtime configuration.');
+  }
+  persistent = {
+    DATABASE_URL: values.DATABASE_URL,
+    PR_TENANT_ID: values.PR_TENANT_ID,
+    PR_OWNER_USER_ID: values.PR_OWNER_USER_ID,
+    PR_ALLOW_EPHEMERAL_PRODUCTION: 'false',
+  };
+}
+
 module.exports = {
   apps: [
     {
@@ -15,8 +31,9 @@ module.exports = {
         PR_BIND_HOST: '127.0.0.1',
         PORT: 31056,
         PR_STATIC_ROOT: '/home/wealthos/apps/pr/apps/web/dist',
-        // Private owner preview only. Remove this override when PostgreSQL is provisioned.
+        // Fail-closed application validation checks the private runtime role and schema.
         PR_ALLOW_EPHEMERAL_PRODUCTION: 'true',
+        ...persistent,
       },
     },
   ],

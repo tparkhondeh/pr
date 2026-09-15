@@ -22,7 +22,10 @@ class PgCommissioningConnection implements CommissioningConnection {
 }
 
 async function main(): Promise<void> {
-  const config = loadPostgresCommissioningConfig();
+  const input = process.argv.includes('--private-server')
+    ? JSON.parse(readFileSync('/home/wealthos/apps/pr/.private/commissioning.json', 'utf8')) as NodeJS.ProcessEnv
+    : process.env;
+  const config = loadPostgresCommissioningConfig(input);
   const migrations = readdirSync(resolve('db/migrations'))
     .filter((name) => /^\d{4}_[a-z0-9_]+\.sql$/u.test(name))
     .sort()
@@ -57,7 +60,7 @@ async function main(): Promise<void> {
   }
 }
 
-await main().catch((error: unknown) => {
+void main().catch((error: unknown) => {
   const raw = error instanceof Error ? error.message : 'PostgreSQL commissioning failed.';
   const message = raw.replace(/postgres(?:ql)?:\/\/[^\s]+/giu, '[redacted database URL]');
   process.stderr.write(`${message}\n`);

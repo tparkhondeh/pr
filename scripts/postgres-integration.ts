@@ -1292,7 +1292,7 @@ function requiredEnvironment(name: string): string {
   return value;
 }
 
-await main().catch((error: unknown) => {
+void main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : 'PostgreSQL integration failed.';
   process.stderr.write(`${message}\n`);
   if (process.env['GITHUB_ACTIONS'] === 'true') {

@@ -1,5 +1,36 @@
 # cPanel private preview deployment
 
+## پایلوت پایدار تک‌مالک — سپتامبر ۲۰۲۶
+
+وضعیت زنده/آخرین انتشار در `docs/operations/project-status-and-roadmap.md` ثبت می‌شود.
+PostgreSQL اختصاصی PR در `.infrastructure/pgsql`، داده و secrets در `.private` با
+مجوز 0700/0600 هستند. پورت 31556 فقط loopback؛ هیچ DB یا سرویس پروژهٔ دیگری استفاده نمی‌شود.
+`scripts/install-private-postgres.sh` نصب از منبع رسمی با بررسی SHA256، و
+`scripts/private-postgres-bootstrap.ts` ساخت cluster و دو نقش محدود را انجام می‌دهند.
+commissioning فقط با `scripts/postgres-commission.ts --private-server` به هر دو نقش دسترسی دارد.
+
+فایل `.private/runtime-candidate.json` پس از commissioning/restore/canary به
+`.private/runtime.json` منتقل/کپی می‌شود. ecosystem تنها سه مقدار runtime را بارگذاری
+و ephemeral را false می‌کند؛ credential مهاجرت وارد فرایند وب نمی‌شود.
+نبود runtime.json فقط برای preview قدیمی memory مجاز است، نه بازگشت پس از پذیرش دادهٔ پایدار.
+
+ابزارهای نگهداری به CJS در `runtime` bundle می‌شوند:
+
+- `private-postgres-backup.cjs`: dump رمزگذاری‌شده؛ `--restore` بازسازی در DB تازه و تطبیق fingerprint همهٔ جدول‌ها.
+- `private-services.cjs --install-cron`: حفظ و backup crontab موجود، backup روزانه ساعت 02:17 به وقت سرور و recovery اختصاصی PR در reboot.
+- `private-services.cjs --recover`: فقط PG/وب PR را برمی‌گرداند؛ جایگزین آزمون reboot واقعی میزبان نیست.
+
+نگهداری نمونهٔ خارج سرور و کلید رمزگذاری باید جدا و امن احراز شود. backup restore با
+`--no-owner --no-privileges` است؛ برای بازگرداندن کامل سرویس باید ownership نقش migration،
+grantهای runtime و commissioning در مقصد ایزوله برقرار و readiness/RLS دوباره آزموده شوند.
+صرف برابری dump اثبات RTO کامل سرویس نیست. PITR و حذف خودکار retention پیاده نشده‌اند.
+زیر ۱GiB فضای آزاد، backup برای جلوگیری از پرکردن دیسک fail می‌شود؛ بررسی خطا/ظرفیت لازم است.
+
+این نصب تک‌مالک با Basic Auth است. حساب مشترک را به دیگران ندهید؛ multi-user login و
+SIWC/session قبل از onboarding اشخاص دیگر لازم‌اند. Provider بدون بودجه/رضایت/secret فعال نمی‌شود.
+
+## پیکربندی تاریخی Preview و قواعد پایه
+
 این پیکربندی برای استقرار آزمایشی `pr.wealthos.ir` روی ساختار فعلی cPanel است:
 
 - Source: `/home/wealthos/apps/pr`
