@@ -192,6 +192,8 @@ describe('Postgres conversation memory repository', () => {
     expect(transaction.queries).toHaveLength(9);
     expect(transaction.queries[2]?.sql).toContain('app.evidence_items');
     expect(transaction.queries[3]?.sql).toContain('app.assertions');
+    expect(transaction.queries[3]?.sql).toContain("$2::uuid::text, 'shared_reflection'");
+    expect(transaction.queries[3]?.sql).toContain('$5, $2::uuid)');
     expect(transaction.queries[4]?.sql).toContain('app.assertion_evidence');
     expect(transaction.queries[5]?.sql).toContain('app.consent_grants');
     expect(transaction.queries[5]?.values[3]).toBe(
@@ -286,6 +288,8 @@ describe('Postgres conversation memory repository', () => {
     expect(transaction.queries).toHaveLength(12);
     expect(transaction.queries[3]?.sql).toContain('app.evidence_items');
     expect(transaction.queries[4]?.sql).toContain('supersedes_id');
+    expect(transaction.queries[4]?.sql).toContain("$2::uuid::text, 'shared_reflection'");
+    expect(transaction.queries[4]?.sql).toContain('$4, $2::uuid)');
     expect(transaction.queries[7]?.sql).toContain('WITH revoked AS');
     expect(transaction.queries[9]?.sql).toContain('app.memory_rights_requests');
     expect(transaction.queries[10]?.sql).toContain('app.audit_events');

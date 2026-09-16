@@ -357,9 +357,9 @@ export class PostgresTextAssetRepository implements TextAssetRepository {
         `INSERT INTO app.assertions (
            tenant_id, subject_ref, predicate, value, epistemic_type, data_class,
            confidence, confidence_rationale, valid_from, created_at, created_by
-         ) VALUES ($1, $2, 'asset_supported_reflection', $3::jsonb, 'self_report',
+         ) VALUES ($1, $2::uuid::text, 'asset_supported_reflection', $3::jsonb, 'self_report',
            'confidential', 0.6, 'User-authored interpretation linked to one imported asset.',
-           $4, $5, $2)
+           $4, $5, $2::uuid)
          RETURNING id::text AS id`,
         [
           this.context.tenantId,

@@ -164,6 +164,8 @@ describe('text asset intake', () => {
     expect(combinedSql).toContain("'asset.text_imported'");
     expect(combinedSql).toContain('INSERT INTO app.outbox_events');
     expect(combinedSql).toContain('INSERT INTO app.asset_intake_requests');
+    expect(combinedSql).toContain("$2::uuid::text, 'asset_supported_reflection'");
+    expect(combinedSql).toContain('$4, $5, $2::uuid)');
   });
 
   it('revokes PostgreSQL brand consent and records the right atomically', async () => {

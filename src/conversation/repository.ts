@@ -626,9 +626,9 @@ export class PostgresConversationMemoryRepository implements ConversationMemoryR
         `INSERT INTO app.assertions (
            tenant_id, subject_ref, predicate, value, epistemic_type, data_class,
            confidence, confidence_rationale, valid_from, created_at, created_by
-         ) VALUES ($1, $2, 'shared_reflection', $3::jsonb, 'self_report',
+         ) VALUES ($1, $2::uuid::text, 'shared_reflection', $3::jsonb, 'self_report',
            'confidential', 0.5,
-           'Single user self-report; not independently corroborated.', $4, $5, $2)
+           'Single user self-report; not independently corroborated.', $4, $5, $2::uuid)
          RETURNING id`,
         [
           this.context.tenantId,
@@ -1027,9 +1027,9 @@ async function applyPostgresMemoryRight(
          tenant_id, subject_ref, predicate, value, epistemic_type, data_class,
          confidence, confidence_rationale, valid_from, supersedes_id,
          created_at, created_by
-       ) VALUES ($1, $2, 'shared_reflection', $3::jsonb, 'self_report',
+       ) VALUES ($1, $2::uuid::text, 'shared_reflection', $3::jsonb, 'self_report',
          'confidential', 0.75, 'Direct user correction of a prior self-report.',
-         $4, $5, $4, $2)
+         $4, $5, $4, $2::uuid)
        RETURNING id`,
       [
         context.tenantId,

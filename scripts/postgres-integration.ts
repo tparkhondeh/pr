@@ -60,7 +60,7 @@ import { ContentDraftService, PostgresDraftWorkspaceRepository } from '../src/cl
 import { InMemoryStrategyContextRepository, StrategyContextService, defaultStrategyContext } from '../src/strategy/context.js';
 import { InMemoryWorkbenchApprovalRepository } from '../src/workbench/approval-repository.js';
 import { OwnerEvidenceContextService } from '../src/workbench/evidence-context.js';
-import { InMemoryTextAssetRepository, TextAssetIntakeService } from '../src/assets/text-asset-intake.js';
+import { PostgresTextAssetRepository, TextAssetIntakeService } from '../src/assets/text-asset-intake.js';
 
 const tenantA = '11111111-1111-4111-8111-111111111111';
 const tenantB = '22222222-2222-4222-8222-222222222222';
@@ -1089,12 +1089,19 @@ async function verifyDraftRepeatDownload(): Promise<void> {
   const strategy = new StrategyContextService(
     new InMemoryStrategyContextRepository(defaultStrategyContext(context.tenantId, owner), approvals), context,
   );
-  const assets = new TextAssetIntakeService(new InMemoryTextAssetRepository(), context);
+  const assets = new TextAssetIntakeService(new PostgresTextAssetRepository(runtime, context), context);
   const workbench = createDefaultWorkbenchService(() => at, approvals, context, strategy,
     new OwnerEvidenceContextService(assets, conversation, context, () => at));
   const repository = new PostgresDraftWorkspaceRepository(runtime, context);
   const service = new ContentDraftService(repository, context, conversation, workbench, strategy);
   try {
+    const imported = await assets.importText({ actorId: owner, requestId: 'draft_pg_text_intake',
+      title: 'یادداشت آزمون ذخیره پایدار', content: 'این متن ساختگی برای آزمون ذخیره پایدار یک تجربه روشن نوشته شده است.',
+      assertionText: 'برای یک تصمیم، توضیح روشن ارائه شد.',
+      permissions: { personalUnderstanding: true, brandUsage: true }, occurredAt: at, importedAt: at });
+    const loadedAssets = await new TextAssetIntakeService(new PostgresTextAssetRepository(runtime, context), context).snapshot(owner, at);
+    if (!loadedAssets.records.some(record => record.assetId === imported.record.assetId &&
+      record.assertionText === imported.record.assertionText)) throw new Error('PostgreSQL text intake did not persist its assertion.');
     const turn = await conversation.submitTurn({ tenantId: context.tenantId, actorId: owner,
       conversationId: 'draft_repeat_integration', turnId: 'draft_repeat_source',
       text: 'در یک تصمیم دشوار، توضیح روشن را به نمایش قطعیت ترجیح دادم.', proposeMemory: true, occurredAt: at });
