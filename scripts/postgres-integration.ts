@@ -55,6 +55,12 @@ import {
   assessAction,
 } from '../src/risk/brand-protection.js';
 import type { WorkbenchAction, WorkbenchSnapshot } from '../src/workbench/workbench.js';
+import { createDefaultWorkbenchService } from '../src/workbench/workbench.js';
+import { ContentDraftService, PostgresDraftWorkspaceRepository } from '../src/claims/workspace.js';
+import { InMemoryStrategyContextRepository, StrategyContextService, defaultStrategyContext } from '../src/strategy/context.js';
+import { InMemoryWorkbenchApprovalRepository } from '../src/workbench/approval-repository.js';
+import { OwnerEvidenceContextService } from '../src/workbench/evidence-context.js';
+import { InMemoryTextAssetRepository, TextAssetIntakeService } from '../src/assets/text-asset-intake.js';
 
 const tenantA = '11111111-1111-4111-8111-111111111111';
 const tenantB = '22222222-2222-4222-8222-222222222222';
@@ -153,6 +159,7 @@ async function main(): Promise<void> {
     await verifyModelInvocationJournalPersistence();
     await verifyBrandRiskPersistence();
     await verifyConversationOrchestrationPersistence();
+    await verifyDraftRepeatDownload();
     await verifyArbitrationPersistence();
     await verifyInitiativePersistence();
     await verifyRelationshipPersistence();
@@ -1067,6 +1074,63 @@ async function verifyConversationOrchestrationPersistence(): Promise<void> {
         throw new Error('Stored orchestration snapshot is missing or duplicates raw user text.');
       }
     });
+  } finally {
+    await runtime.close();
+  }
+}
+
+async function verifyDraftRepeatDownload(): Promise<void> {
+  const runtime = new PostgresRuntime(requiredEnvironment('PR_TEST_APP_DATABASE_URL'));
+  const context = { tenantId: tenantId(tenantA), ownerUserId: userId(userA) };
+  const owner = context.ownerUserId;
+  const at = new Date('2026-09-01T09:00:00.000Z');
+  const conversation = new ConversationIntakeService(new PostgresConversationMemoryRepository(runtime, context));
+  const approvals = new InMemoryWorkbenchApprovalRepository();
+  const strategy = new StrategyContextService(
+    new InMemoryStrategyContextRepository(defaultStrategyContext(context.tenantId, owner), approvals), context,
+  );
+  const assets = new TextAssetIntakeService(new InMemoryTextAssetRepository(), context);
+  const workbench = createDefaultWorkbenchService(() => at, approvals, context, strategy,
+    new OwnerEvidenceContextService(assets, conversation, context, () => at));
+  const repository = new PostgresDraftWorkspaceRepository(runtime, context);
+  const service = new ContentDraftService(repository, context, conversation, workbench, strategy);
+  try {
+    const turn = await conversation.submitTurn({ tenantId: context.tenantId, actorId: owner,
+      conversationId: 'draft_repeat_integration', turnId: 'draft_repeat_source',
+      text: 'در یک تصمیم دشوار، توضیح روشن را به نمایش قطعیت ترجیح دادم.', proposeMemory: true, occurredAt: at });
+    if (!turn.memoryProposal) throw new Error('Draft integration source proposal missing.');
+    await conversation.confirmMemory({ tenantId: context.tenantId, actorId: owner,
+      proposalId: turn.memoryProposal.id, permissions: { personalUnderstanding: true, brandUsage: true, publicUsage: false },
+      confirmedAt: at });
+    await workbench.approve('essay', owner, at);
+    const created = await service.create({ actorId: owner, requestId: 'draft_repeat_create',
+      sourceKind: 'memory', sourceRef: turn.memoryProposal.id, channel: 'linkedin',
+      narrativeAngle: 'روایت یک تصمیم روشن', takeaway: 'شفافیت برای من مهم است.',
+      publicDraftingConsent: true, occurredAt: at });
+    const approved = await service.approve({ actorId: owner, requestId: 'draft_repeat_approve',
+      draftId: created.snapshot.draftId, expectedRevision: created.snapshot.revision, occurredAt: at });
+    const exported = await service.export({ actorId: owner, requestId: 'draft_repeat_export',
+      draftId: approved.snapshot.draftId, expectedRevision: approved.snapshot.revision, occurredAt: at });
+    const counts = () => runtime.transaction(async transaction => {
+      await transaction.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
+      const result = await transaction.query<{ fingerprint: string }>(
+        `SELECT json_build_array(
+          (SELECT count(*) FROM app.audit_events WHERE tenant_id = $1),
+          (SELECT count(*) FROM app.outbox_events WHERE tenant_id = $1),
+          (SELECT count(*) FROM app.draft_workspace_requests WHERE tenant_id = $1)
+        )::text AS fingerprint`, [tenantA]);
+      return result.rows[0]?.fingerprint;
+    });
+    const before = await counts();
+    // Fresh repository/service instance proves this does not rely on browser memory.
+    const reloaded = new ContentDraftService(new PostgresDraftWorkspaceRepository(runtime, context),
+      context, conversation, workbench, strategy);
+    const repeated = await reloaded.export({ actorId: owner, requestId: 'draft_repeat_download',
+      draftId: exported.snapshot.draftId, expectedRevision: exported.snapshot.revision, occurredAt: at });
+    if (repeated.outcome !== 'already_applied' || repeated.content !== exported.content ||
+      repeated.snapshot.revision !== exported.snapshot.revision ||
+      repeated.snapshot.exportedAt?.getTime() !== exported.snapshot.exportedAt?.getTime() ||
+      before !== await counts()) throw new Error('Repeat download mutated draft state or audit/request history.');
   } finally {
     await runtime.close();
   }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   InMemoryTextAssetRepository,
   TextAssetIntakeService,
@@ -88,8 +88,9 @@ async function fixture(claimPolicy?: Readonly<{
     new InMemoryFeedbackLearningRepository(),
     { tenantId: tenant, ownerUserId: owner },
   );
+  const repository = new InMemoryDraftWorkspaceRepository();
   const service = new ContentDraftService(
-    new InMemoryDraftWorkspaceRepository(),
+    repository,
     { tenantId: tenant, ownerUserId: owner },
     conversation,
     workbench,
@@ -100,6 +101,8 @@ async function fixture(claimPolicy?: Readonly<{
   );
   return {
     service,
+    repository,
+    strategy,
     conversation,
     learning,
     assets,
@@ -111,6 +114,91 @@ async function fixture(claimPolicy?: Readonly<{
 }
 
 describe('evidence-bound draft workspace', () => {
+  async function exportedFixture(claimPolicy?: Parameters<typeof fixture>[0]) {
+    const context = await fixture(claimPolicy);
+    const created = await context.service.create({
+      actorId: owner, requestId: 'repeat_create', sourceKind: 'text_asset',
+      sourceRef: context.approvedAssetRef, channel: 'linkedin',
+      narrativeAngle: 'روایت یک تجربه واقعی', takeaway: 'شفافیت برای من مهم است.',
+      publicDraftingConsent: true, occurredAt: now,
+    });
+    const approved = await context.service.approve({
+      actorId: owner, requestId: 'repeat_approve', draftId: created.snapshot.draftId,
+      expectedRevision: created.snapshot.revision, occurredAt: now,
+    });
+    const command = { actorId: owner, requestId: 'repeat_export', draftId: approved.snapshot.draftId,
+      expectedRevision: approved.snapshot.revision, occurredAt: now };
+    const exported = await context.service.export(command);
+    return { ...context, exported, command };
+  }
+
+  it('re-downloads the current exported version without a repository mutation or new timestamp', async () => {
+    const { service, repository, exported, command } = await exportedFixture();
+    const mutation = vi.spyOn(repository, 'export');
+    const again = await service.export({ ...command, requestId: 'download_current_again',
+      expectedRevision: exported.snapshot.revision, occurredAt: new Date(now.getTime() + 1000) });
+    expect(again).toEqual({ ...exported, outcome: 'already_applied' });
+    expect(mutation).not.toHaveBeenCalled();
+    expect(await repository.find()).toEqual(exported.snapshot);
+  });
+
+  it('preserves original-request retries while refusing a fresh request for an older revision', async () => {
+    const { service, exported, command } = await exportedFixture();
+    expect(await service.export(command)).toEqual({ ...exported, outcome: 'already_applied' });
+    await expect(service.export({ ...command, requestId: 'stale_new_download' }))
+      .rejects.toMatchObject({ reason: 'revision_changed' });
+  });
+
+  it('rechecks source permission before a repeat download', async () => {
+    const { service, assets, approvedAssetRef, exported, command } = await exportedFixture();
+    await assets.applyRight({ actorId: owner, requestId: 'revoke_export_source',
+      assetId: approvedAssetRef, operation: 'revoke_brand_usage', reason: 'لغو مجوز استفاده', occurredAt: now });
+    await expect(service.export({ ...command, requestId: 'download_after_revoke',
+      expectedRevision: exported.snapshot.revision })).rejects.toMatchObject({ reason: 'source_not_available' });
+  });
+
+  it('rechecks the claim before a repeat download', async () => {
+    let disputed = false;
+    const { service, exported, command } = await exportedFixture({
+      effectiveStatus: () => Promise.resolve(disputed ? 'disputed' : 'verified'),
+    });
+    disputed = true;
+    await expect(service.export({ ...command, requestId: 'download_after_dispute',
+      expectedRevision: exported.snapshot.revision })).rejects.toMatchObject({ reason: 'claim_not_verified' });
+  });
+
+  it('rejects a repeat download if an edit wins while asynchronous guards run', async () => {
+    let delay = false;
+    let release: () => void = () => { throw new Error('Guard barrier not initialized.'); };
+    let reached: () => void = () => { throw new Error('Guard notification not initialized.'); };
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { reached = resolve; });
+    const { service, repository, exported, command } = await exportedFixture({ effectiveStatus: async () => {
+      if (delay) { reached(); await barrier; }
+      return 'verified';
+    } });
+    delay = true;
+    const pending = service.export({ ...command, requestId: 'download_racing_edit',
+      expectedRevision: exported.snapshot.revision });
+    await entered;
+    await repository.edit({ tenantId: tenant, actorId: owner, requestId: 'concurrent_draft_edit',
+      draftId: exported.snapshot.draftId, expectedRevision: exported.snapshot.revision,
+      body: `${exported.content}\nیک یادداشت تازه`, guard: exported.snapshot.guard, occurredAt: now });
+    release();
+    await expect(pending).rejects.toMatchObject({ reason: 'revision_changed' });
+  });
+
+  it('rechecks strategy and owner permission before repeat downloads', async () => {
+    const { service, strategy, exported, command } = await exportedFixture();
+    await expect(service.export({ ...command, actorId: userId('33333333-3333-4333-8333-333333333333'),
+      expectedRevision: exported.snapshot.revision })).rejects.toThrow('Only the owner');
+    const previous = await strategy.snapshot(owner);
+    await strategy.save({ actorId: owner, requestId: 'strategy_after_export',
+      expectedRevision: previous.revision, value: previous, occurredAt: now });
+    await expect(service.export({ ...command, requestId: 'download_after_strategy',
+      expectedRevision: exported.snapshot.revision })).rejects.toMatchObject({ reason: 'strategy_changed' });
+  });
+
   it('creates, rechecks edits, approves and exports only the reviewed revision', async () => {
     const { service, proposalId } = await fixture();
     const created = await service.create({

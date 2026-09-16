@@ -363,7 +363,18 @@ export class ContentDraftService {
     if (current.status !== 'approved' && current.status !== 'exported') {
       throw new DraftBlockedError('draft_not_approved');
     }
-    const result = await this.repository.export({ ...input, tenantId: this.identity.tenantId });
+    // Re-downloading the current exported revision is a guarded read, not another
+    // approval/export event. Older-revision retries still use repository idempotency.
+    let result: DraftRepositoryResult;
+    if (current.status === 'exported' && current.revision === input.expectedRevision) {
+      const latest = await this.requiredCurrent(input.draftId);
+      if (latest.revision !== current.revision || latest.status !== 'exported') {
+        throw new DraftConflictError('revision_changed');
+      }
+      result = { outcome: 'already_applied', snapshot: latest };
+    } else {
+      result = await this.repository.export({ ...input, tenantId: this.identity.tenantId });
+    }
     return {
       outcome: result.outcome,
       filename: `pr-${result.snapshot.channel}-draft-v${String(result.snapshot.revision)}.txt`,

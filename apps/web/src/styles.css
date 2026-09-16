@@ -1032,6 +1032,17 @@ main code { overflow-wrap: anywhere; }
 .option :is(h3, p), .reasoning :is(p, li, span) { overflow-wrap: anywhere; }
 .reasoning { min-width: 0; }
 .evidence-card { border-radius: 14px; overflow-wrap: anywhere; }
+.draft-unsaved { display: flex; gap: 12px; padding: 16px; border: 1px solid #d5bd8c; border-radius: 12px; background: #fff8e8; margin: 16px 0; color: #70531f; }
+.draft-unsaved > svg { flex: 0 0 auto; margin-top: 4px; }
+.draft-unsaved strong, .draft-export-next strong { font-size: 13px; }
+.draft-unsaved p, .draft-export-next p { margin: 6px 0; font-size: 12px; }
+.draft-unsaved button, .draft-export-next button { padding: 9px 12px; border: 1px solid #a9beaa; background: #fff; color: var(--forest); cursor: pointer; }
+.draft-export-next { padding: 16px; margin-top: 16px; border: 1px solid #c8dccb; border-radius: 10px; background: #f0f7ef; }
+.draft-trace .draft-export-next { color: #18382c; }
+.draft-trace .draft-export-next strong { color: #18382c; }
+.draft-trace .draft-export-next p { color: #405b4a; }
+.draft-trace .draft-export-next button { color: #164c38; background: #fff; border-color: #8faa95; }
+.draft-trace .draft-export-next button:hover { color: #0d3125; background: #e2efdf; }
 .evidence-card :is(span, li, p, small), .decision-contract > span, .decision-contract > p, .decision-contract > span b { font-size: 12px; line-height: 1.9; }
 .evidence-card li { align-items: flex-start; }
 .evidence-card li svg { flex: 0 0 auto; margin-top: 5px; }

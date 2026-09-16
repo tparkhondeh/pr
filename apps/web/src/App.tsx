@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type SyntheticEvent } from 'react';
 import { OwnerJourney } from './OwnerJourney';
+import { draftActionState, reconcileDraftEditor, type DraftEditorState } from './draft-action-state';
 import {
   WorkbenchApiError,
   applyTextAssetRight,
@@ -844,7 +845,7 @@ export function App() {
   };
 
   const mutateDraft = async (operation: 'edit' | 'approve' | 'export', body?: string) => {
-    if (!draftSnapshot) return;
+    if (!draftSnapshot || draftViewState !== 'ready') return;
     setDraftViewState('mutating');
     setDraftViewError(null);
     try {
@@ -1503,6 +1504,7 @@ export function App() {
             onCreate={createDraftWorkspace}
             onEdit={(body) => mutateDraft('edit', body)}
             onExport={() => mutateDraft('export')}
+            onGoToLearning={() => { setActiveView('learning'); void refreshFeedback(); }}
             onReject={rejectCurrentDraft}
             onGoToContentAction={() => {
               setSelected('essay');
@@ -2101,6 +2103,7 @@ function DraftWorkspacePanel({
   onEdit,
   onExport,
   onGoToContentAction,
+  onGoToLearning,
   onReject,
   onRefresh,
   snapshot,
@@ -2121,6 +2124,7 @@ function DraftWorkspacePanel({
   onEdit: (body: string) => Promise<void>;
   onExport: () => Promise<void>;
   onGoToContentAction: () => void;
+  onGoToLearning: () => void;
   onReject: (reason: string) => Promise<void>;
   onRefresh: () => Promise<void>;
   snapshot: DraftWorkspaceSnapshot | null;
@@ -2138,11 +2142,12 @@ function DraftWorkspacePanel({
   const [angle, setAngle] = useState('یک تجربه واقعی که نگاه من به تصمیم‌گیری را تغییر داد');
   const [takeaway, setTakeaway] = useState('اعتماد با صداقت درباره ابهام ساخته می‌شود، نه با نمایش قطعیت.');
   const [consent, setConsent] = useState(false);
-  const [body, setBody] = useState(snapshot?.body ?? '');
+  const [editor, setEditor] = useState<DraftEditorState>({ body: snapshot?.body ?? '', savedBody: snapshot?.body ?? '', draftId: snapshot?.draftId ?? '', conflict: false });
+  const body = editor.body;
   const [rejectionReason, setRejectionReason] = useState('');
 
   useEffect(() => {
-    if (snapshot) setBody(snapshot.body);
+    if (snapshot) setEditor((current) => reconcileDraftEditor(current, snapshot));
   }, [snapshot]);
   useEffect(() => {
     if (!sourceKey && activeSources[0]) {
@@ -2194,7 +2199,7 @@ function DraftWorkspacePanel({
               const source = activeSources.find(
                 (item) => draftSourceKey(item.kind, item.ref) === sourceKey,
               );
-              if (!contentApproved || !source || !consent) return;
+              if (!contentApproved || !source || !consent || state === 'loading' || state === 'mutating') return;
               void onCreate({
                 sourceKind: source.kind,
                 sourceRef: source.ref,
@@ -2229,7 +2234,7 @@ function DraftWorkspacePanel({
               <input checked={consent} onChange={(event) => { setConsent(event.target.checked); }} type="checkbox" />
               <span><strong>مجوز صریح برای Public Drafting</strong> فقط همین Assertion و همین کانال برای ساخت Draft قابل استفاده باشد؛ انتشار خودکار انجام نشود.</span>
             </label>
-            <button className="draft-primary" disabled={!contentApproved || !consent || state === 'mutating'} type="submit">
+            <button className="draft-primary" disabled={!contentApproved || !consent || state === 'mutating' || state === 'loading'} type="submit">
               {state === 'mutating' ? <LoaderCircle className="spin" size={17} /> : <PencilLine size={17} />}
               {state === 'mutating' ? 'در حال ساخت…' : 'ساخت Draft و اجرای Claim Check'}
             </button>
@@ -2240,9 +2245,9 @@ function DraftWorkspacePanel({
     );
   }
 
-  const canApprove = snapshot.status === 'awaiting_approval' && snapshot.guard.mayRequestApproval &&
-    snapshot.sourceAvailable && !snapshot.staleStrategy;
-  const canExport = snapshot.status === 'approved' && snapshot.sourceAvailable && !snapshot.staleStrategy;
+  const { dirty, canSave, canApprove, canExport } = draftActionState({ body, savedBody: snapshot.body,
+    status: snapshot.status, sourceAvailable: snapshot.sourceAvailable, staleStrategy: snapshot.staleStrategy,
+    mayRequestApproval: snapshot.guard.mayRequestApproval, state, conflict: editor.conflict });
   const adaptation = snapshot.adaptation;
   const currentCharacters = body.length;
   const withinRecommendedLength = currentCharacters >= adaptation.recommendedCharacters.min &&
@@ -2258,7 +2263,13 @@ function DraftWorkspacePanel({
         <span className={`guard-badge ${snapshot.guard.classification}`}>
           <ShieldCheck size={16} /> {guardLabel(snapshot.guard.classification)}
         </span>
+        <button disabled={state === 'loading' || state === 'mutating'} onClick={() => void onRefresh()} type="button"><RefreshCw size={16} /> بررسی نسخهٔ ثبت‌شده</button>
       </header>
+      {dirty || editor.conflict ? <div className="draft-unsaved" role="status">
+        <PencilLine size={19} /><div><strong>{editor.conflict ? 'نسخهٔ ثبت‌شده تغییر کرده؛ ویرایش شما حفظ شده است' : 'تغییرات شما هنوز ذخیره نشده‌اند'}</strong>
+        <p>{editor.conflict ? 'پیش از ادامه، متن خود را کپی کنید و با نسخهٔ ثبت‌شده تطبیق دهید. تأیید و خروجی فعلاً متوقف است.' : 'ابتدا «ذخیره و بررسی دوباره» را بزنید؛ سپس همین نسخه را تأیید و خروجی بگیرید. با ترک این بخش، ویرایش ذخیره‌نشده حفظ نمی‌شود.'}</p>
+        {editor.conflict ? <button type="button" onClick={() => { setEditor({ body: snapshot.body, savedBody: snapshot.body, draftId: snapshot.draftId, conflict: false }); }}>جایگزینی متن با نسخهٔ ثبت‌شده</button> : null}</div>
+      </div> : null}
       {snapshot.staleStrategy || !snapshot.sourceAvailable ? (
         <div className="draft-gate danger">
           <TriangleAlert size={20} />
@@ -2274,7 +2285,8 @@ function DraftWorkspacePanel({
           <textarea
             id="draft-body"
             maxLength={adaptation.hardMaximumCharacters}
-            onChange={(event) => { setBody(event.target.value); }}
+            onChange={(event) => { setEditor((current) => ({ ...current, body: event.target.value })); }}
+            disabled={state === 'mutating'}
             rows={18}
             value={body}
           />
@@ -2283,7 +2295,7 @@ function DraftWorkspacePanel({
               {currentCharacters.toLocaleString('fa-IR')} / {adaptation.hardMaximumCharacters.toLocaleString('fa-IR')} نویسه
               {' · '}{withinRecommendedLength ? 'در بازه پیشنهادی' : `پیشنهاد ${adaptation.recommendedCharacters.min.toLocaleString('fa-IR')}–${adaptation.recommendedCharacters.max.toLocaleString('fa-IR')}`}
             </span>
-            <button disabled={state === 'mutating' || body.trim() === snapshot.body} onClick={() => void onEdit(body)} type="button">
+            <button disabled={!canSave} onClick={() => { if (canSave) void onEdit(body); }} type="button">
               <FileCheck2 size={16} /> ذخیره و بررسی دوباره
             </button>
           </div>
@@ -2315,13 +2327,14 @@ function DraftWorkspacePanel({
             </ul>
           ) : <div className="guard-clean"><Check size={15} /> ادعای بی‌منبع شناسایی نشد.</div>}
           <div className="draft-actions">
-            <button disabled={!canApprove || state === 'mutating'} onClick={() => void onApprove()} type="button">
+            <button disabled={!canApprove} onClick={() => { if (canApprove) void onApprove(); }} type="button">
               <Check size={16} /> {snapshot.status === 'approved' ? 'تأیید شده' : 'تأیید انسانی این نسخه'}
             </button>
-            <button className="export" disabled={!canExport || state === 'mutating'} onClick={() => void onExport()} type="button">
-              <Download size={16} /> {snapshot.status === 'exported' ? 'خروجی گرفته شد' : 'Export فایل متنی'}
+            <button className="export" disabled={!canExport} onClick={() => { if (canExport) void onExport(); }} type="button">
+              <Download size={16} /> {snapshot.status === 'exported' ? 'دریافت دوبارهٔ همین نسخه' : 'دریافت فایل متنی'}
             </button>
           </div>
+          {snapshot.status === 'exported' && !dirty && !editor.conflict ? <div className="draft-export-next"><strong>خروجی این نسخه ثبت شده است</strong><p>پس از استفاده، نتیجه یا نظر خود را ثبت کنید. دریافت فایل به معنی انتشار یا رضایت شما نیست.</p><button type="button" onClick={onGoToLearning}>رفتن به بازخورد و یادگیری</button></div> : null}
           <div className="draft-rejection">
             <label htmlFor="draft-rejection-reason">اگر این نسخه مناسب نیست، دلیل رد را ثبت کنید</label>
             <textarea
