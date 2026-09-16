@@ -387,6 +387,7 @@ const staticRequestHandler = environment.staticRoot
 const authenticateOwner = environment.nodeEnv === 'production' ? createCpanelOwnerAuthenticator() : undefined;
 const ownerSessionGate = authenticateOwner ? createOwnerSessionGate({
   authenticate: authenticateOwner, version: cpanelOwnerVersion, origin: 'https://pr.wealthos.ir',
+  rememberedStorePath: '/home/wealthos/apps/pr/.private/owner-sessions.json',
 }) : undefined;
 const server = createServer((request, response) => {
   const path = request.url ? new URL(request.url, 'http://localhost').pathname : '/';

@@ -2,14 +2,21 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { createOwnerSessionGate } from '../src/http/owner-session.js';
 import { createOwnerAuthenticator } from '../src/http/owner-authentication.js';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { rememberedSessionStore } from '../src/http/remembered-sessions.js';
 
 const servers: Server[] = [];
+const directories: string[] = [];
+afterEach(() => { for (const path of directories.splice(0)) rmSync(path, { recursive: true }); });
 afterEach(async () => { for (const server of servers.splice(0)) { server.closeAllConnections(); await new Promise<void>(resolve => { server.close(() => { resolve(); }); }); } });
-async function fixture(authenticate?: ReturnType<typeof createOwnerAuthenticator>) {
+async function fixture(authenticate?: ReturnType<typeof createOwnerAuthenticator>, rememberedStorePath?: string) {
   let time = 1000;
   let version = 'v1';
   const origin = 'https://pr.wealthos.ir';
   const gate = createOwnerSessionGate({ origin, now: () => time, version: () => version,
+    ...(rememberedStorePath ? { rememberedStorePath } : {}),
     authenticate: authenticate ?? createOwnerAuthenticator({ version: () => version, maintenanceToken: () => 'a'.repeat(64), verifyPassword: password => Promise.resolve(password === 'synthetic-only') }) });
   const server = createServer((req, res) => { void gate(req, res).then(handled => { if (!handled) { res.writeHead(200); res.end('private-app'); } }); });
   servers.push(server);
@@ -17,10 +24,68 @@ async function fixture(authenticate?: ReturnType<typeof createOwnerAuthenticator
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('No address');
   const request = (path: string, init: RequestInit = {}) => fetch(`http://127.0.0.1:${String(address.port)}${path}`, { ...init, redirect: 'manual' });
-  const login = (password = 'synthetic-only') => request('/login', { method: 'POST', headers: { origin, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ username: 'pr_owner', password }) });
+  const login = (password = 'synthetic-only', remember = false) => request('/login', { method: 'POST', headers: { origin, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ username: 'pr_owner', password, ...(remember ? { remember: 'yes' } : {}) }) });
   return { request, login, origin, advance: (ms: number) => { time += ms; }, rotate: () => { version = 'v2'; } };
 }
 describe('owner browser sessions', () => {
+  it('remembers for fourteen absolute days across restart, never stores the bearer or password', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pr-remember-test-')); directories.push(dir);
+    const path = join(dir, 'sessions.json');
+    const f = await fixture(undefined, path);
+    const response = await f.login('synthetic-only', true);
+    const set = response.headers.get('set-cookie') ?? '';
+    expect(set).toContain('Max-Age=1209600; Secure');
+    const cookie = set.split(';')[0] ?? '';
+    const disk = readFileSync(path, 'utf8');
+    expect(disk).not.toContain(cookie.split('=')[1]);
+    expect(disk).not.toContain('synthetic-only');
+    const restarted = await fixture(undefined, path);
+    restarted.advance(13 * 86400_000);
+    expect((await restarted.request('/api/workbench', { headers: { cookie } })).status).toBe(200);
+    expect((await restarted.request('/api/workbench')).status).toBe(401);
+    restarted.advance(86400_000);
+    expect((await restarted.request('/api/workbench', { headers: { cookie } })).status).toBe(401);
+    expect(rememberedSessionStore(path).load().size).toBe(0);
+  });
+  it('persists individual logout without revoking another remembered device', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pr-remember-test-')); directories.push(dir);
+    const path = join(dir, 'sessions.json');
+    const f = await fixture(undefined, path);
+    const first = (await f.login('synthetic-only', true)).headers.get('set-cookie')?.split(';')[0] ?? '';
+    const second = (await f.login('synthetic-only', true)).headers.get('set-cookie')?.split(';')[0] ?? '';
+    expect((await f.request('/logout', { method: 'POST', headers: { cookie: first, origin: f.origin } })).status).toBe(303);
+    const restarted = await fixture(undefined, path);
+    expect((await restarted.request('/api/workbench', { headers: { cookie: first } })).status).toBe(401);
+    expect((await restarted.request('/api/workbench', { headers: { cookie: second } })).status).toBe(200);
+  });
+  it('revokes remembered devices persistently, protects all-device logout and invalidates rotation', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pr-remember-test-')); directories.push(dir);
+    const path = join(dir, 'sessions.json');
+    const f = await fixture(undefined, path);
+    const first = (await f.login('synthetic-only', true)).headers.get('set-cookie')?.split(';')[0] ?? '';
+    const second = (await f.login('synthetic-only', true)).headers.get('set-cookie')?.split(';')[0] ?? '';
+    const headers = { origin: f.origin, 'x-pr-revoke-all': '1' };
+    expect((await f.request('/logout', { method: 'POST', headers })).status).toBe(401);
+    expect((await f.request('/logout', { method: 'POST', headers: { ...headers, cookie: first, origin: 'https://evil.invalid' } })).status).toBe(403);
+    expect((await f.request('/logout', { method: 'POST', headers: { ...headers, cookie: first } })).status).toBe(303);
+    const restarted = await fixture(undefined, path);
+    for (const cookie of [first, second]) expect((await restarted.request('/api/workbench', { headers: { cookie } })).status).toBe(401);
+    const cookie = (await restarted.login('synthetic-only', true)).headers.get('set-cookie')?.split(';')[0] ?? '';
+    restarted.rotate();
+    expect((await restarted.request('/api/workbench', { headers: { cookie } })).status).toBe(401);
+    expect(rememberedSessionStore(path).load().size).toBe(0);
+  });
+  it('keeps ordinary sessions non-durable and fails closed on corrupt persistence', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pr-remember-test-')); directories.push(dir);
+    const path = join(dir, 'sessions.json');
+    const f = await fixture(undefined, path);
+    const cookie = (await f.login()).headers.get('set-cookie')?.split(';')[0] ?? '';
+    const restarted = await fixture(undefined, path);
+    expect((await restarted.request('/api/workbench', { headers: { cookie } })).status).toBe(401);
+    writeFileSync(path, 'broken', { mode: 0o600 });
+    expect(() => rememberedSessionStore(path).load()).toThrow();
+    expect((await f.login('synthetic-only', true)).status).toBe(503);
+  });
   it('serves a Persian login without a Basic challenge, protects shell/API/assets', async () => {
     const f = await fixture();
     const login = await f.request('/login');

@@ -10,7 +10,8 @@ async function main(): Promise<void> {
   const page = await request('/login');
   if (!page.ok || !(await page.text()).includes('خوش آمدید')) throw new Error('page');
   const login = await request('/login', { method: 'POST', headers: { origin: 'https://pr.wealthos.ir', 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ username: 'pr_owner', password: decoded.slice(9) }) });
+    body: new URLSearchParams({ username: 'pr_owner', password: decoded.slice(9), remember: 'yes' }) });
+  if (!login.headers.get('set-cookie')?.includes('Max-Age=1209600; Secure')) throw new Error('remember-lifetime');
   const cookie = login.headers.get('set-cookie')?.split(';')[0];
   if (login.status !== 303 || !cookie) throw new Error('login');
   for (const path of ['/', '/api/workbench', '/api/strategy', '/api/memory']) {
@@ -21,6 +22,6 @@ async function main(): Promise<void> {
   if ((await request('/logout', { method: 'POST', headers: { cookie, origin: 'https://evil.invalid' } })).status !== 403) throw new Error('csrf');
   if ((await request('/logout', { method: 'POST', headers: { cookie, origin: 'https://pr.wealthos.ir' } })).status !== 303) throw new Error('logout');
   if ((await request('/api/workbench', { headers: { cookie } })).status !== 401) throw new Error('revocation');
-  process.stdout.write('Session smoke passed: Persian login, private reads, CSRF, logout and revocation.\n');
+  process.stdout.write('Session smoke passed: fourteen-day login, private reads, CSRF, logout and revocation.\n');
 }
 void main().catch(() => { process.stderr.write('Session smoke failed; no private details emitted.\n'); process.exitCode = 1; });
