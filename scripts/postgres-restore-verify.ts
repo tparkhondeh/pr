@@ -15,7 +15,12 @@ try {
     'SELECT count(*)::text AS count FROM app.tenants',
   );
   const assets = await client.query<Readonly<{ count: string }>>(
-    'SELECT count(*)::text AS count FROM app.assets',
+    `SELECT count(*)::text AS count FROM app.assets
+      WHERE object_key IN ('fixture-a', 'fixture-b', 'inline://draft_pg_text_intake')`,
+  );
+  const drafts = await client.query<Readonly<{ count: string }>>(
+    `SELECT count(*)::text AS count FROM app.draft_artifacts
+      WHERE status = 'exported' AND exported_at IS NOT NULL`,
   );
   const expectedMigrationCount = readdirSync('db/migrations')
     .filter((name) => /^\d{4}_[a-z0-9_]+\.sql$/u.test(name))
@@ -29,7 +34,8 @@ try {
     throw new Error('Restored migration journal is incomplete.');
   }
   if (tenants.rows[0]?.count !== '2') throw new Error('Restored tenant fixtures are incomplete.');
-  if (assets.rows[0]?.count !== '2') throw new Error('Restored asset fixtures are incomplete.');
+  if (assets.rows[0]?.count !== '3') throw new Error('Restored asset fixtures are incomplete.');
+  if (drafts.rows[0]?.count !== '1') throw new Error('Restored exported draft fixture is incomplete.');
   process.stdout.write('PostgreSQL restore verification passed (RPO 0 for the drill snapshot).\n');
 } finally {
   await client.end();
