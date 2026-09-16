@@ -23,7 +23,7 @@ try {
         @('scripts/private-postgres-backup.ts', 'private-postgres-backup'),
         @('scripts/private-services.ts', 'private-services'),
         @('scripts/postgres-commission.ts', 'postgres-commission'),
-        @('scripts/export-private-state.ts', 'export-private-state')
+        @('scripts/export-private-state.ts', 'export-private-state'),
         @('scripts/private-session-smoke.ts', 'private-session-smoke')
     )) {
         $output = Join-Path $runtime ($pair[1] + '.cjs')
