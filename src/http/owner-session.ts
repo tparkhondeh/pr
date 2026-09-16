@@ -10,6 +10,9 @@ type Options = {
   now?: () => number;
 };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+// Fetch keeps login compatible with embedded browsers that intercept top-level form navigation.
+const formScript = `document.querySelector('form').addEventListener('submit',async function(event){event.preventDefault();const button=this.querySelector('button');const message=document.getElementById('message');button.disabled=true;message.textContent='در حال بررسی…';try{const response=await fetch(this.action,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(this))});const target=this.getAttribute('action')==='/logout'?'/login':'/';if(response.ok&&new URL(response.url).pathname===target){location.replace(target);return}message.textContent=response.status===429?'تلاش‌های زیاد؛ یک دقیقه دیگر دوباره امتحان کنید.':'ورود انجام نشد. نام کاربری و رمز را بررسی کنید.';}catch{message.textContent='ارتباط برقرار نشد. دوباره امتحان کنید.';}button.disabled=false;});`;
+const formPolicy = `default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-${createHash('sha256').update(formScript).digest('base64')}'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`;
 
 /** Single-owner sessions: opaque cookies only, bounded memory, fail closed on restart/rotation. */
 export function createOwnerSessionGate(options: Options) {
@@ -42,8 +45,8 @@ export function createOwnerSessionGate(options: Options) {
     if (path === '/login' || path === '/logout') {
       if (request.method === 'GET' || request.method === 'HEAD') {
         if (path === '/login' && session) { redirect(response, '/'); return true; }
-        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
-        response.end(request.method === 'HEAD' ? '' : loginPage(path === '/logout'));
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': formPolicy });
+        response.end(request.method === 'HEAD' ? '' : loginDocument(path === '/logout'));
         return true;
       }
       if (request.method !== 'POST') { response.writeHead(405, { allow: 'GET, HEAD, POST' }); response.end(); return true; }
@@ -70,8 +73,8 @@ export function createOwnerSessionGate(options: Options) {
       const password = form.get('password') ?? '';
       const valid = username === 'pr_owner' && await options.authenticate({ authorization: `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}` }, 'POST');
       if (!valid) {
-        response.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
-        response.end(loginPage(false, true)); return true;
+        response.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': formPolicy });
+        response.end(loginDocument(false, true)); return true;
       }
       sessions.delete(key);
       if (sessions.size >= 64) sessions.delete(sessions.keys().next().value ?? '');
@@ -92,6 +95,10 @@ export function createOwnerSessionGate(options: Options) {
     else redirect(response, '/login');
     return true;
   };
+}
+
+function loginDocument(logout: boolean, failed = false): string {
+  return loginPage(logout, failed).replace('</main>', `<p id="message" role="status" aria-live="polite"></p><script>${formScript}</script></main>`);
 }
 
 function loginPage(logout: boolean, failed = false): string {
