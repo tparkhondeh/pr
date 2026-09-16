@@ -92,6 +92,11 @@ describe('owner browser sessions', () => {
     expect(login.status).toBe(200);
     const html = await login.text();
     expect(html).toContain('خوش آمدید');
+    expect(html).toContain('/fonts/Vazirmatn-33.003.woff2');
+    expect(login.headers.get('content-security-policy')).toContain("font-src 'self'");
+    expect((await f.request('/fonts/Vazirmatn-33.003.woff2')).status).toBe(200);
+    expect((await f.request('/fonts/private.woff2')).status).toBe(303);
+    expect((await f.request('/fonts/Vazirmatn-33.003.woff2', { method: 'POST' })).status).toBe(303);
     expect(html).toContain('action="https://pr.wealthos.ir/login"');
     expect(html).toContain("credentials:'same-origin'");
     expect(login.headers.get('www-authenticate')).toBeNull();
