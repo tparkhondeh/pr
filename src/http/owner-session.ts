@@ -20,6 +20,7 @@ export function createOwnerSessionGate(options: Options) {
   const name = options.secure === false ? 'pr_session' : '__Host-pr_session';
   const sessions = new Map<string, { created: number; seen: number; version: string }>();
   let attempts: number[] = [];
+  let pendingBasicAttempts = 0;
   const cookie = (token: string, age: number) => `${name}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${String(age)}${options.secure === false ? '' : '; Secure'}`;
   const tokenOf = (request: IncomingMessage) => {
     const values = (request.headers.cookie ?? '').split(';').map(x => x.trim()).filter(x => x.startsWith(`${name}=`));
@@ -33,6 +34,8 @@ export function createOwnerSessionGate(options: Options) {
     response.setHeader('x-content-type-options', 'nosniff');
     response.setHeader('referrer-policy', 'no-referrer');
     response.setHeader('x-frame-options', 'DENY');
+    // Browsers accept HSTS only over HTTPS; never infer TLS from untrusted proxy headers.
+    if (options.secure !== false) response.setHeader('strict-transport-security', 'max-age=31536000');
     const path = new URL(request.url ?? '/', options.origin).pathname;
     const token = tokenOf(request);
     const key = digest(token);
@@ -58,7 +61,7 @@ export function createOwnerSessionGate(options: Options) {
         sessions.delete(key); response.setHeader('set-cookie', cookie('', 0)); redirect(response, '/login'); return true;
       }
       attempts = attempts.filter(time => now() - time < 60_000);
-      if (attempts.length >= 10) { response.writeHead(429, { 'retry-after': '60' }); response.end('تلاش‌های زیاد؛ یک دقیقه دیگر دوباره امتحان کنید.'); return true; }
+      if (attempts.length + pendingBasicAttempts >= 10) { response.writeHead(429, { 'retry-after': '60' }); response.end('تلاش‌های زیاد؛ یک دقیقه دیگر دوباره امتحان کنید.'); return true; }
       attempts.push(now());
       if (request.headers['content-type']?.split(';')[0] !== 'application/x-www-form-urlencoded') { response.writeHead(415); response.end(); return true; }
       let body = '';
@@ -87,9 +90,19 @@ export function createOwnerSessionGate(options: Options) {
     // Existing explicit Basic clients and read-only maintenance remain supported; no challenge popups.
     if (request.headers['sec-fetch-site'] === undefined) {
       attempts = attempts.filter(time => now() - time < 60_000);
-      if (request.headers.authorization && attempts.length >= 10) { response.writeHead(429, { 'retry-after': '60' }); response.end(); return true; }
-      if (await options.authenticate(request.headers, request.method)) return false;
-      if (request.headers.authorization) attempts.push(now());
+      const basicAttempt = request.headers.authorization !== undefined;
+      if (basicAttempt && attempts.length + pendingBasicAttempts >= 10) { response.writeHead(429, { 'retry-after': '60' }); response.end(); return true; }
+      // Reserve before await, so parallel requests cannot bypass the failed-attempt window.
+      if (basicAttempt) pendingBasicAttempts++;
+      let valid = false;
+      try { valid = await options.authenticate(request.headers, request.method); }
+      finally {
+        if (basicAttempt) {
+          pendingBasicAttempts--;
+          if (!valid) attempts.push(now());
+        }
+      }
+      if (valid) return false;
     }
     if (path.startsWith('/api/')) { response.writeHead(401, { 'content-type': 'application/json' }); response.end('{"error":"authentication_required"}'); }
     else redirect(response, '/login');

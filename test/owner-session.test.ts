@@ -5,12 +5,12 @@ import { createOwnerAuthenticator } from '../src/http/owner-authentication.js';
 
 const servers: Server[] = [];
 afterEach(async () => { for (const server of servers.splice(0)) { server.closeAllConnections(); await new Promise<void>(resolve => { server.close(() => { resolve(); }); }); } });
-async function fixture() {
+async function fixture(authenticate?: ReturnType<typeof createOwnerAuthenticator>) {
   let time = 1000;
   let version = 'v1';
   const origin = 'https://pr.wealthos.ir';
   const gate = createOwnerSessionGate({ origin, now: () => time, version: () => version,
-    authenticate: createOwnerAuthenticator({ version: () => version, maintenanceToken: () => 'a'.repeat(64), verifyPassword: password => Promise.resolve(password === 'synthetic-only') }) });
+    authenticate: authenticate ?? createOwnerAuthenticator({ version: () => version, maintenanceToken: () => 'a'.repeat(64), verifyPassword: password => Promise.resolve(password === 'synthetic-only') }) });
   const server = createServer((req, res) => { void gate(req, res).then(handled => { if (!handled) { res.writeHead(200); res.end('private-app'); } }); });
   servers.push(server);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -30,6 +30,7 @@ describe('owner browser sessions', () => {
     expect(html).toContain('action="https://pr.wealthos.ir/login"');
     expect(html).toContain("credentials:'same-origin'");
     expect(login.headers.get('www-authenticate')).toBeNull();
+    expect(login.headers.get('strict-transport-security')).toBe('max-age=31536000');
     expect(login.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
     for (const path of ['/', '/assets/app.js', '/private']) expect((await f.request(path)).status).toBe(303);
     expect((await f.request('/api/workbench')).status).toBe(401);
@@ -63,8 +64,9 @@ describe('owner browser sessions', () => {
     cookie = (await f.login()).headers.get('set-cookie')?.split(';')[0] ?? '';
     f.rotate(); expect((await f.request('/api/workbench', { headers: { cookie } })).status).toBe(401);
     cookie = (await f.login()).headers.get('set-cookie')?.split(';')[0] ?? '';
-    for (let i = 0; i < 15; i++) { f.advance(29 * 60_000); expect((await f.request('/api/workbench', { headers: { cookie } })).status).toBe(200); }
-    f.advance(46 * 60_000); expect((await f.request('/api/workbench', { headers: { cookie } })).status).toBe(401);
+    for (let i = 0; i < 16; i++) { f.advance(29 * 60_000); expect((await f.request('/api/workbench', { headers: { cookie } })).status).toBe(200); }
+    // Still active within the idle window, but exactly eight hours old.
+    f.advance(16 * 60_000); expect((await f.request('/api/workbench', { headers: { cookie } })).status).toBe(401);
   });
   it('ignores cached browser Basic credentials so logout cannot be bypassed by the browser', async () => {
     const f = await fixture();
@@ -72,5 +74,32 @@ describe('owner browser sessions', () => {
     expect((await f.request('/api/workbench', { headers: { authorization } })).status).toBe(200);
     expect((await f.request('/api/workbench', { headers: { authorization, 'sec-fetch-site': 'same-origin' } })).status).toBe(401);
     expect((await f.request('/login', { method: 'POST', headers: { origin: f.origin, 'sec-fetch-site': 'cross-site' } })).status).toBe(403);
+  });
+  it('keeps successful scripted reads out of the failure budget and maintenance available', async () => {
+    const f = await fixture();
+    const authorization = `Basic ${Buffer.from('pr_owner:synthetic-only').toString('base64')}`;
+    for (let i = 0; i < 20; i++) expect((await f.request('/api/workbench', { headers: { authorization } })).status).toBe(200);
+    for (let i = 0; i < 10; i++) expect((await f.login('wrong')).status).toBe(401);
+    expect((await f.login()).status).toBe(429);
+    expect((await f.request('/api/workbench', { headers: { 'x-pr-maintenance-token': 'a'.repeat(64) } })).status).toBe(200);
+    expect((await f.request('/api/workbench', { method: 'POST', headers: { 'x-pr-maintenance-token': 'a'.repeat(64) } })).status).toBe(401);
+  });
+  it('reserves parallel Basic attempts and shares their limit with form login', async () => {
+    let calls = 0;
+    let release: ((valid: boolean) => void) | undefined;
+    const pending = new Promise<boolean>(resolve => { release = resolve; });
+    let admitted: (() => void) | undefined;
+    const allAdmitted = new Promise<void>(resolve => { admitted = resolve; });
+    const f = await fixture(() => { calls++; if (calls === 10) admitted?.(); return pending; });
+    const requests = Array.from({ length: 10 }, () => f.request('/api/workbench', { headers: { authorization: 'Basic synthetic' } }));
+    await allAdmitted;
+    expect((await f.request('/api/workbench', { headers: { authorization: 'Basic synthetic' } })).status).toBe(429);
+    expect((await f.login()).status).toBe(429);
+    expect(calls).toBe(10);
+    release?.(false);
+    expect((await Promise.all(requests)).every(response => response.status === 401)).toBe(true);
+    expect((await f.login()).status).toBe(429);
+    f.advance(60_001);
+    expect((await f.login()).status).toBe(401);
   });
 });

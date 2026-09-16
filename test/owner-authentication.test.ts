@@ -38,6 +38,17 @@ describe('private owner authentication', () => {
     expect(await authenticate(basic('anything'))).toBe(false);
     expect(await authenticate({ 'x-pr-maintenance-token': token })).toBe(false);
   });
+  it('rejects credentials verified across a concurrent password rotation', async () => {
+    let version = 'v1';
+    let release: ((valid: boolean) => void) | undefined;
+    const pending = new Promise<boolean>(resolve => { release = resolve; });
+    const authenticate = createOwnerAuthenticator({ version: () => version, maintenanceToken: () => token,
+      verifyPassword: () => pending });
+    const check = authenticate(basic('old-password'));
+    version = 'v2';
+    release?.(true);
+    expect(await check).toBe(false);
+  });
   it('bounds simultaneous expensive verifier calls', async () => {
     let release: ((valid: boolean) => void) | undefined;
     const pending = new Promise<boolean>((resolve) => { release = resolve; });

@@ -29,12 +29,15 @@ export function createOwnerAuthenticator(verifier: OwnerVerifier): (headers: Inc
       const password = decoded.slice('pr_owner:'.length);
       if (!password || /[\r\n\0]/u.test(password)) return false;
       // Includes the current verifier bytes: rotation invalidates successful cache immediately.
-      const key = createHash('sha256').update(authorization).update(verifier.version()).digest('hex');
+      const version = verifier.version();
+      const key = createHash('sha256').update(authorization).update(version).digest('hex');
       if (key === successfulKey) return true;
       const existing = pending.get(key);
       if (existing) return await existing;
       if (pending.size >= 4) return false;
       const check = verifier.verifyPassword(password).then((valid) => {
+        // A password rotation during native verification must not authorize an old credential.
+        if (verifier.version() !== version) return false;
         if (valid) successfulKey = key;
         return valid;
       }).catch(() => false).finally(() => { pending.delete(key); });

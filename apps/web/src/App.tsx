@@ -29,6 +29,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type SyntheticEvent } from 'react';
+import { OwnerJourney } from './OwnerJourney';
 import {
   WorkbenchApiError,
   applyTextAssetRight,
@@ -155,6 +156,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
   const [activeView, setActiveView] = useState<'today' | 'intake' | 'memory' | 'research' | 'opportunities' | 'claims' | 'risk' | 'arbitration' | 'initiative' | 'relationships' | 'perception' | 'expression' | 'strategy' | 'draft' | 'learning' | 'connectors' | 'data'>('today');
   const [selected, setSelected] = useState('');
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const [state, setState] = useState<'loading' | 'ready' | 'approving' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
   const [conversationId] = useState(() => `conversation_${Date.now().toString(36)}`);
@@ -232,10 +234,21 @@ export function App() {
   const [onboardingSnapshot, setOnboardingSnapshot] = useState<OnboardingSnapshot | null>(null);
   const [onboardingState, setOnboardingState] = useState<'loading' | 'ready' | 'mutating' | 'error'>('loading');
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
+  const workspaceGeneration = useRef(0);
+  const draftLoadSequence = useRef(0);
+  const feedbackLoadSequence = useRef(0);
+  const invalidateWorkspaceReads = useCallback(() => {
+    workspaceGeneration.current += 1;
+    setDraftViewState('idle');
+    setFeedbackViewState('idle');
+  }, []);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState('loading');
     setError(null);
+    // Source/goal changes can invalidate an earlier approval or export.
+    // Retained objects are not fresh evidence until their workspace is reloaded.
+    invalidateWorkspaceReads();
     try {
       const [next, onboarding, initiative] = await Promise.all([
         loadWorkbench(signal),
@@ -258,7 +271,7 @@ export function App() {
       setError(errorMessage(caught));
       setState('error');
     }
-  }, []);
+  }, [invalidateWorkspaceReads]);
 
   const refreshOnboarding = useCallback(async (signal?: AbortSignal) => {
     setOnboardingState('loading');
@@ -306,6 +319,7 @@ export function App() {
   ) => {
     setOnboardingState('mutating');
     setOnboardingError(null);
+    invalidateWorkspaceReads();
     try {
       await applyTextAssetRight({
         requestId: `asset_right_${crypto.randomUUID()}`,
@@ -431,6 +445,7 @@ export function App() {
   }>) => {
     setClaimViewState('mutating');
     setClaimViewError(null);
+    invalidateWorkspaceReads();
     try {
       await reviewClaim({ requestId: `claim_review_${crypto.randomUUID()}`, ...input });
       await Promise.all([refreshClaims(), refreshDraft(), refreshAudit()]);
@@ -715,6 +730,9 @@ export function App() {
   };
 
   const refreshDraft = useCallback(async (signal?: AbortSignal) => {
+    const generation = workspaceGeneration.current;
+    const sequence = ++draftLoadSequence.current;
+    const isCurrent = () => !signal?.aborted && generation === workspaceGeneration.current && sequence === draftLoadSequence.current;
     setDraftViewState('loading');
     setDraftViewError(null);
     try {
@@ -722,17 +740,21 @@ export function App() {
         loadDraftWorkspace(signal),
         loadDraftSources(signal),
       ]);
+      if (!isCurrent()) return;
       setDraftSnapshot(draft);
       setDraftSources(sources);
       setDraftViewState('ready');
     } catch (caught: unknown) {
-      if (signal?.aborted) return;
+      if (!isCurrent()) return;
       setDraftViewError(errorMessage(caught));
       setDraftViewState('error');
     }
   }, []);
 
   const refreshFeedback = useCallback(async (signal?: AbortSignal) => {
+    const generation = workspaceGeneration.current;
+    const sequence = ++feedbackLoadSequence.current;
+    const isCurrent = () => !signal?.aborted && generation === workspaceGeneration.current && sequence === feedbackLoadSequence.current;
     setFeedbackViewState('loading');
     setFeedbackViewError(null);
     try {
@@ -742,13 +764,14 @@ export function App() {
         loadWorkflowCosts(signal),
         loadModelGovernance(signal),
       ]);
+      if (!isCurrent()) return;
       setFeedbackSnapshot(feedback);
       setStrategicQualitySnapshot(quality);
       setWorkflowCostSnapshot(costs);
       setModelGovernanceSnapshot(modelGovernance);
       setFeedbackViewState('ready');
     } catch (caught: unknown) {
-      if (signal?.aborted) return;
+      if (!isCurrent()) return;
       setFeedbackViewError(errorMessage(caught));
       setFeedbackViewState('error');
     }
@@ -960,11 +983,22 @@ export function App() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void refresh(controller.signal);
+    void refresh(controller.signal).then(async () => {
+      if (controller.signal.aborted) return;
+      await Promise.all([refreshDraft(controller.signal), refreshFeedback(controller.signal)]);
+    });
     return () => {
       controller.abort();
     };
-  }, [refresh]);
+  }, [refresh, refreshDraft, refreshFeedback]);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      document.getElementById('main-content')?.focus({ preventScroll: true });
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    });
+    return () => { cancelAnimationFrame(frame); };
+  }, [activeView]);
 
   useEffect(() => {
     const candidate = initiativeSnapshot?.preview.candidate;
@@ -1086,6 +1120,7 @@ export function App() {
     setMemoryRightRequestId(requestId);
     setConversationState('applying_right');
     setError(null);
+    invalidateWorkspaceReads();
     try {
       const result = await applyMemoryRight(proposalId, {
         requestId,
@@ -1096,6 +1131,7 @@ export function App() {
       setMemoryRightResult(result);
       setMemoryRightRequestId(null);
       setConversationState('idle');
+      await Promise.all([refresh(), refreshMemory()]);
     } catch (caught: unknown) {
       setError(errorMessage(caught));
       setConversationState('idle');
@@ -1110,7 +1146,8 @@ export function App() {
         ) : (
           <>
             <TriangleAlert size={30} />
-            <h1>Workbench به API متصل نشد</h1>
+            <h1>فعلاً نتوانستیم فضای شما را باز کنیم</h1>
+            <p>اتصال را بررسی کنید و دوباره تلاش کنید. این خطا به معنی حذف اطلاعات شما نیست.</p>
             <p>{error}</p>
             <button type="button" onClick={() => void refresh()}><RefreshCw size={17} /> تلاش دوباره</button>
           </>
@@ -1182,7 +1219,7 @@ export function App() {
         : undefined,
     },
     {
-      label: 'روایت و Voice',
+      label: 'روایت و لحن',
       icon: Sparkles,
       view: 'expression' as const,
       badge: expressionReview?.outcome === 'block' ? '!' : expressionReview?.outcome === 'revise' ? '۱' : undefined,
@@ -1201,26 +1238,36 @@ export function App() {
       view: 'connectors' as const,
     },
     { label: 'داده و شفافیت', icon: History, view: 'data' as const },
-    {
-      label: 'تأییدها',
-      icon: FileCheck2,
-      badge: snapshot.workflow.status === 'awaiting_approval' ? '۱' : undefined,
-    },
+  ];
+
+  const navigationGroups = [
+    { title: 'مسیر اصلی', views: ['today', 'intake', 'memory', 'strategy', 'draft', 'learning'], primary: true },
+    { title: 'شناخت و فرصت‌ها', views: ['research', 'opportunities', 'relationships', 'perception', 'expression'], primary: false },
+    { title: 'امنیت و مدیریت', views: ['claims', 'risk', 'arbitration', 'initiative', 'connectors', 'data'], primary: false },
   ];
 
   return (
     <div className="shell">
-      <aside className="rail">
-        <div className="brand-mark"><span>PR</span><i /></div>
-        <nav aria-label="ناوبری اصلی">
-          {nav.map(({ label, icon: Icon, view, badge }) => (
+      <a className="skip-link" href="#main-content">رفتن به محتوای صفحه</a>
+      <aside className={navigationOpen ? 'rail navigation-open' : 'rail'}>
+        <div className="brand-mark"><span>PR</span><div><strong>برند شخصی شما</strong><small>تصمیم روشن، اقدام آگاهانه</small></div></div>
+        <button className="mobile-menu-toggle" type="button" aria-expanded={navigationOpen} aria-controls="primary-navigation" onClick={() => { setNavigationOpen(!navigationOpen); }}>
+          <CircleGauge size={20} /><span>{nav.find((item) => item.view === activeView)?.label}</span><b>{navigationOpen ? 'بستن فهرست' : 'بخش‌های پروژه'}</b>
+        </button>
+        <nav id="primary-navigation" aria-label="ناوبری اصلی">
+          {navigationGroups.map((group) => (
+            <details className="nav-group" key={group.title} open={group.primary || group.views.includes(activeView) || undefined}>
+              <summary>{group.title}<ChevronLeft size={14} /></summary>
+          {nav.filter((item) => group.views.includes(item.view)).map(({ label, icon: Icon, view, badge }) => (
             <button
               aria-label={badge ? `${label} ${badge}` : label}
+              aria-current={view === activeView ? 'page' : undefined}
               className={view === activeView ? 'nav-item active' : 'nav-item'}
               key={label}
               onClick={() => {
-                if (!view) return;
                 setActiveView(view);
+                setNavigationOpen(false);
+                document.getElementById('main-content')?.focus({ preventScroll: true });
                 if (view === 'intake') void refreshOnboarding();
                 if (view === 'memory') void refreshMemory();
                 if (view === 'research') void refreshResearch();
@@ -1245,6 +1292,8 @@ export function App() {
               {badge ? <b>{badge}</b> : null}
             </button>
           ))}
+            </details>
+          ))}
         </nav>
         <div className="rail-foot">
           <div className="maturity"><span>بلوغ مدل شخصی</span><strong>{onboardingSnapshot?.modelMaturity.percent ?? 0}٪</strong></div>
@@ -1253,18 +1302,19 @@ export function App() {
         </div>
       </aside>
 
-      <main>
+      <main id="main-content" tabIndex={-1}>
         <header className="topbar">
           <div>
             <span className="date">{formatDate(snapshot.generatedAt)}</span>
-            <h1>{activeView === 'memory'
+            <h1>{nav.find((item) => item.view === activeView)?.label}</h1>
+            <p className="page-description">{activeView === 'memory'
               ? 'حافظه‌ای که شما کنترل می‌کنید.'
               : activeView === 'research'
                 ? 'منبع بیرونی، جدا از حافظه شخصی.'
               : activeView === 'opportunities'
                 ? 'ترند فقط زمانی فرصت است که با شما و زمان شما تناسب داشته باشد.'
               : activeView === 'claims'
-                ? 'هیچ ادعایی بدون Trace عمومی نشود.'
+                ? 'هر ادعا باید به یک شاهد قابل‌بررسی متصل باشد.'
               : activeView === 'risk'
                 ? 'ریسک باید قبل از اقدام دیده و پذیرفته شود.'
               : activeView === 'arbitration'
@@ -1274,9 +1324,9 @@ export function App() {
               : activeView === 'relationships'
                 ? 'رابطه سرمایه است؛ اما انسان امتیاز CRM نیست.'
               : activeView === 'perception'
-                ? 'نظر دیگران Signal است، نه حقیقت.'
+                ? 'نظر دیگران نشانه‌ای برای بررسی است، نه حقیقت قطعی.'
               : activeView === 'expression'
-                ? 'روایت باید به شواهد و Voice واقعی شما متصل بماند.'
+                ? 'روایت شما، با شواهد و لحن خودتان.'
               : activeView === 'intake'
                 ? 'اولین شاهد واقعی را وارد کنید.'
               : activeView === 'strategy'
@@ -1289,18 +1339,34 @@ export function App() {
                       ? 'هر اتصال باید محدود، قابل ابطال و قابل اثبات باشد.'
                     : activeView === 'data'
                       ? 'داده‌های شما، زیر کنترل شما.'
-                : 'حرکت بعدی، نه پست بعدی.'}</h1>
+                : 'حرکت بعدی، نه صرفاً پست بعدی.'}</p>
           </div>
           <div className="top-actions">
             <a href="/logout">خروج امن</a>
             <span className="system-state">
-              <i /> API متصل · {persistenceLabel(snapshot.runtime.persistence)}
+              <i /> متصل · {persistenceLabel(snapshot.runtime.persistence)}
             </span>
-            <button className="avatar" type="button" aria-label="پروفایل کاربر">TP</button>
+            <span className="avatar" aria-label="فضای شخصی"><Fingerprint size={20} /></span>
           </div>
         </header>
 
         {error ? <div className="inline-error" role="alert"><TriangleAlert size={16} />{error}</div> : null}
+
+        {activeView === 'today' ? (
+          <OwnerJourney workbench={snapshot} onboarding={onboardingSnapshot} draft={draftSnapshot} feedback={feedbackSnapshot} draftLoaded={draftViewState === 'ready'} feedbackLoaded={feedbackViewState === 'ready'} onNavigate={(view) => {
+            setActiveView(view);
+            if (view === 'today') {
+              const target = document.getElementById('today-decisions');
+              target?.focus({ preventScroll: true });
+              target?.scrollIntoView({ block: 'start', behavior: 'instant' });
+            }
+            if (view === 'intake') void refreshOnboarding();
+            if (view === 'memory') void refreshMemory();
+            if (view === 'strategy') void refreshStrategy();
+            if (view === 'draft') void refreshDraft();
+            if (view === 'learning') void refreshFeedback();
+          }} />
+        ) : null}
 
         {activeView === 'today' && activeInitiativeCue ? (
           <button
@@ -1326,7 +1392,8 @@ export function App() {
         ) : activeView === 'memory' ? (
           <PersonalMemoryPanel
             error={memoryViewError}
-            onRefresh={() => refreshMemory()}
+            onChanging={invalidateWorkspaceReads}
+            onRefresh={async () => { await Promise.all([refresh(), refreshMemory()]); }}
             snapshot={memorySnapshot}
             state={memoryViewState}
           />
@@ -1662,7 +1729,7 @@ export function App() {
           </div>
         </section>
 
-        <section className="decision-head">
+        <section className="decision-head" id="today-decisions" tabIndex={-1} aria-label="انتخاب اقدام بعدی">
           <div>
             <p className="overline">پیشنهاد استراتژیک امروز</p>
             <h2>برای {snapshot.goal.title}</h2>
@@ -4688,11 +4755,13 @@ function AssetIntakePanel({
 
 function PersonalMemoryPanel({
   error,
+  onChanging,
   onRefresh,
   snapshot,
   state,
 }: Readonly<{
   error: string | null;
+  onChanging: () => void;
   onRefresh: () => Promise<void>;
   snapshot: PersonalMemorySnapshot | null;
   state: 'idle' | 'loading' | 'ready' | 'error';
@@ -4779,7 +4848,7 @@ function PersonalMemoryPanel({
                 </span>
               </div>
               {record.lifecycle.status !== 'deleted' ? (
-                <MemoryRecordControls record={record} onApplied={onRefresh} />
+                <MemoryRecordControls record={record} onApplied={onRefresh} onChanging={onChanging} />
               ) : null}
             </article>
           ))}
@@ -4794,9 +4863,11 @@ function PersonalMemoryPanel({
 
 function MemoryRecordControls({
   onApplied,
+  onChanging,
   record,
 }: Readonly<{
   onApplied: () => Promise<void>;
+  onChanging: () => void;
   record: PersonalMemoryRecord;
 }>) {
   const [kind, setKind] = useState<MemoryRightKind>('contest');
@@ -4816,6 +4887,7 @@ function MemoryRecordControls({
       (kind === 'correct' && trimmedCorrection.length < 3)
     ) return;
     const stableRequestId = requestId ?? `right_${crypto.randomUUID()}`;
+    onChanging();
     setRequestId(stableRequestId);
     setState('submitting');
     setError(null);
