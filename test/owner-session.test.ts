@@ -24,7 +24,11 @@ describe('owner browser sessions', () => {
   it('serves a Persian login without a Basic challenge, protects shell/API/assets', async () => {
     const f = await fixture();
     const login = await f.request('/login');
-    expect(login.status).toBe(200); expect(await login.text()).toContain('خوش آمدید');
+    expect(login.status).toBe(200);
+    const html = await login.text();
+    expect(html).toContain('خوش آمدید');
+    expect(html).toContain('action="https://pr.wealthos.ir/login"');
+    expect(html).toContain("credentials:'same-origin'");
     expect(login.headers.get('www-authenticate')).toBeNull();
     expect(login.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
     for (const path of ['/', '/assets/app.js', '/private']) expect((await f.request(path)).status).toBe(303);

@@ -11,7 +11,7 @@ type Options = {
 };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 // Fetch keeps login compatible with embedded browsers that intercept top-level form navigation.
-const formScript = `document.querySelector('form').addEventListener('submit',async function(event){event.preventDefault();const button=this.querySelector('button');const message=document.getElementById('message');button.disabled=true;message.textContent='در حال بررسی…';try{const response=await fetch(this.action,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(this))});const target=this.getAttribute('action')==='/logout'?'/login':'/';if(response.ok&&new URL(response.url).pathname===target){location.replace(target);return}message.textContent=response.status===429?'تلاش‌های زیاد؛ یک دقیقه دیگر دوباره امتحان کنید.':'ورود انجام نشد. نام کاربری و رمز را بررسی کنید.';}catch{message.textContent='ارتباط برقرار نشد. دوباره امتحان کنید.';}button.disabled=false;});`;
+const formScript = `if(location.protocol!=='https:')location.replace('https://pr.wealthos.ir/login');document.querySelector('form').addEventListener('submit',async function(event){event.preventDefault();const button=this.querySelector('button');const message=document.getElementById('message');button.disabled=true;message.textContent='در حال بررسی…';try{const response=await fetch(this.action,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(this))});const target=new URL(this.action).pathname==='/logout'?'/login':'/';if(response.ok&&new URL(response.url).pathname===target){location.replace(target);return}message.textContent=response.status===429?'تلاش‌های زیاد؛ یک دقیقه دیگر دوباره امتحان کنید.':'ورود انجام نشد. نام کاربری و رمز را بررسی کنید.';}catch{message.textContent='ارتباط برقرار نشد. دوباره امتحان کنید.';}button.disabled=false;});`;
 const formPolicy = `default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-${createHash('sha256').update(formScript).digest('base64')}'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`;
 
 /** Single-owner sessions: opaque cookies only, bounded memory, fail closed on restart/rotation. */
@@ -98,7 +98,10 @@ export function createOwnerSessionGate(options: Options) {
 }
 
 function loginDocument(logout: boolean, failed = false): string {
-  return loginPage(logout, failed).replace('</main>', `<p id="message" role="status" aria-live="polite"></p><script>${formScript}</script></main>`);
+  return loginPage(logout, failed)
+    .replace('action="/login"', 'action="https://pr.wealthos.ir/login"')
+    .replace('action="/logout"', 'action="https://pr.wealthos.ir/logout"')
+    .replace('</main>', `<p id="message" role="status" aria-live="polite"></p><script>${formScript}</script></main>`);
 }
 
 function loginPage(logout: boolean, failed = false): string {
