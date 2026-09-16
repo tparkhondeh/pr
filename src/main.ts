@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
-import { createCpanelOwnerAuthenticator } from './http/owner-authentication.js';
+import { createCpanelOwnerAuthenticator, cpanelOwnerVersion } from './http/owner-authentication.js';
+import { createOwnerSessionGate } from './http/owner-session.js';
 import {
   DecisionArbitrationService,
   InMemoryArbitrationRepository,
@@ -384,6 +385,9 @@ const staticRequestHandler = environment.staticRoot
   ? createStaticRequestHandler(environment.staticRoot)
   : undefined;
 const authenticateOwner = environment.nodeEnv === 'production' ? createCpanelOwnerAuthenticator() : undefined;
+const ownerSessionGate = authenticateOwner ? createOwnerSessionGate({
+  authenticate: authenticateOwner, version: cpanelOwnerVersion, origin: 'https://pr.wealthos.ir',
+}) : undefined;
 const server = createServer((request, response) => {
   const path = request.url ? new URL(request.url, 'http://localhost').pathname : '/';
   const routeRequest = () => {
@@ -396,15 +400,12 @@ const server = createServer((request, response) => {
       if (!handled) void requestHandler(request, response);
     });
   };
-  if (authenticateOwner && path.startsWith('/api/')) {
-    void authenticateOwner(request.headers, request.method).then((authorized) => {
-      if (!authorized) {
-        response.writeHead(401, { 'content-type': 'application/json', 'cache-control': 'no-store',
-          'www-authenticate': 'Basic realm="WealthOS PR Private Preview"', 'x-content-type-options': 'nosniff' });
-        response.end(JSON.stringify({ error: 'authentication_required' }));
-        return;
-      }
-      routeRequest();
+  if (ownerSessionGate) {
+    void ownerSessionGate(request, response).then((handled) => {
+      if (!handled) routeRequest();
+    }).catch(() => {
+      if (!response.headersSent) response.writeHead(503, { 'cache-control': 'no-store' });
+      response.end();
     });
     return;
   }

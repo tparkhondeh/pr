@@ -1292,6 +1292,7 @@ export function App() {
                 : 'حرکت بعدی، نه پست بعدی.'}</h1>
           </div>
           <div className="top-actions">
+            <a href="/logout">خروج امن</a>
             <span className="system-state">
               <i /> API متصل · {persistenceLabel(snapshot.runtime.persistence)}
             </span>

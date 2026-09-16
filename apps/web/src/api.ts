@@ -2288,6 +2288,9 @@ async function requestJson(url: string, init: RequestInit): Promise<unknown> {
   }
 
   const payload: unknown = await response.json().catch(() => null);
+  if (response.status === 401 && readErrorCode(payload) === 'authentication_required') {
+    window.location.assign('/login');
+  }
   if (!response.ok) {
     throw new WorkbenchApiError(response.status, readErrorCode(payload));
   }

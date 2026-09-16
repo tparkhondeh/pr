@@ -24,6 +24,7 @@ try {
         @('scripts/private-services.ts', 'private-services'),
         @('scripts/postgres-commission.ts', 'postgres-commission'),
         @('scripts/export-private-state.ts', 'export-private-state')
+        @('scripts/private-session-smoke.ts', 'private-session-smoke')
     )) {
         $output = Join-Path $runtime ($pair[1] + '.cjs')
         pnpm --dir apps/web exec esbuild (Join-Path $repo $pair[0]) --bundle --platform=node --target=node22 --format=cjs "--outfile=$output"; Assert-Exit

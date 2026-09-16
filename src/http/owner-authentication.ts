@@ -44,10 +44,14 @@ export function createOwnerAuthenticator(verifier: OwnerVerifier): (headers: Inc
   };
 }
 
+export function cpanelOwnerVersion(): string {
+  return createHash('sha256').update(readFileSync('/home/wealthos/pr.wealthos.ir/.htpasswd')).digest('hex');
+}
+
 export function createCpanelOwnerAuthenticator(): ReturnType<typeof createOwnerAuthenticator> {
   const file = '/home/wealthos/pr.wealthos.ir/.htpasswd';
   return createOwnerAuthenticator({
-    version: () => createHash('sha256').update(readFileSync(file)).digest('hex'),
+    version: cpanelOwnerVersion,
     maintenanceToken: () => readFileSync('/home/wealthos/apps/pr/.private/maintenance.token', 'utf8').trim(),
     verifyPassword: (password) => new Promise<boolean>((resolve) => {
       // Password travels only through stdin, never command arguments, environment or logs.

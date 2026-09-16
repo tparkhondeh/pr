@@ -8,7 +8,7 @@ $handler=[Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect=$false
 $client=[Net.Http.HttpClient]::new($handler); $client.Timeout=[TimeSpan]::FromSeconds(20)
 try {
     $anonymous=$client.GetAsync('https://pr.wealthos.ir/').GetAwaiter().GetResult()
-    if ([int]$anonymous.StatusCode -ne 401) { throw 'Anonymous access was not denied.' }
+    if ([int]$anonymous.StatusCode -ne 303 -or $anonymous.Headers.Location.OriginalString -ne '/login') { throw 'Anonymous access must redirect to login.' }
     $token=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($credential.UserName+':'+$credential.GetNetworkCredential().Password))
     $client.DefaultRequestHeaders.Authorization=[Net.Http.Headers.AuthenticationHeaderValue]::new('Basic',$token)
     $results=@()
@@ -43,5 +43,5 @@ try {
         if ([int]$response.StatusCode -ne $probe.Expected) { throw 'Browser request security boundary failed.' }
         $request.Dispose()
     }
-    [pscustomobject]@{ AnonymousStatus=401; AuthenticatedChecks=$results; Persistence='postgres'; Durability='persistent'; TLSValidation='system-default'; Asset=$asset; CSRFSecurityProbes='403/415/404 passed' } | ConvertTo-Json -Depth 4 -Compress
+    [pscustomobject]@{ AnonymousStatus=303; AuthenticatedChecks=$results; Persistence='postgres'; Durability='persistent'; TLSValidation='system-default'; Asset=$asset; CSRFSecurityProbes='403/415/404 passed' } | ConvertTo-Json -Depth 4 -Compress
 } finally { $client.Dispose(); $credential=$null; $token=$null; $body=$null }
